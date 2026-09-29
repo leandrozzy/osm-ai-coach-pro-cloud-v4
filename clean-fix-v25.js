@@ -12,7 +12,7 @@
   Não carrega os hotfixes 2.4.x anteriores.
 */
 (function(){
-  const CLEAN_VERSION='2.5.9';
+  const CLEAN_VERSION='2.6.0';
 
   function e(v){
     return String(v ?? 'NI').replace(/[&<>"']/g,m=>({
@@ -65,6 +65,15 @@
 
   function currentCalendarIndex(s){
     const rows=calendarRows(s);
+
+    const pendingIndex=Number(s?.pendingFixture?.scheduleIndex);
+    if(Number.isInteger(pendingIndex) && pendingIndex>=0 && pendingIndex<rows.length){
+      const pendingRow=rows[pendingIndex];
+      if(pendingRow && !pendingRow.played && !pendingRow.skipped){
+        return pendingIndex;
+      }
+    }
+
     const opp=n(s?.opponent?.teamName);
     const round=Number(s?.round);
 
@@ -162,11 +171,21 @@
     if(idx<0)return {row:null,index:-1};
 
     const row=s.schedule[idx];
+
+    if(!realOpponent(row.opponent) && realOpponent(s?.opponent?.teamName)){
+      row.opponent=s.opponent.teamName;
+    }
+
     row.played=true;
     row.result=score||`${gf}-${ga}`;
     row.outcome=outcome(gf,ga);
     row.conditional=false;
     row.placeholder=false;
+
+    if(s.pendingFixture && Number(s.pendingFixture.scheduleIndex)===idx){
+      s.pendingFixture=null;
+    }
+
     return {row,index:idx};
   }
 
@@ -224,24 +243,55 @@
     if(form!=='NI')patterns.push(`${form}: ${sameForm.length} jogo(s) neste slot — ${formW}V/${formD}E/${formL}D.`);
     if(oppForm!=='NI')patterns.push(`Contra ${oppForm}: ${sameOppForm.length} jogo(s) — ${oppW}V/${oppD}E/${oppL}D.`);
 
+    const increaseWeight=[];
+    const decreaseWeight=[];
+    const avoid=[];
+    const nextUse=[];
+
+    if(form!=='NI'){
+      if(formW>=2 && formW>formL)increaseWeight.push(`${form} ganha peso quando o contexto for semelhante.`);
+      if(formL>=2 && formL>formW){
+        decreaseWeight.push(`${form} perde peso em contexto semelhante.`);
+        avoid.push(`Evitar repetir automaticamente ${form} nas mesmas condições sem mudar plano/sliders.`);
+      }
+    }
+
+    if(oppForm!=='NI'){
+      if(oppW>=2 && oppW>oppL)increaseWeight.push(`As respostas usadas contra ${oppForm} estão funcionando melhor.`);
+      if(oppL>=2 && oppL>oppW)decreaseWeight.push(`Histórico contra ${oppForm} está ruim; buscar alternativa.`);
+    }
+
     if(filled(stats.myShots)&&filled(stats.oppShots)){
       const ms=Number(stats.myShots),os=Number(stats.oppShots);
       if(Number.isFinite(ms)&&Number.isFinite(os)){
-        if(resultCode==='D' && ms>os)patterns.push('Criou mais remates que o rival, mas perdeu: eficiência/conversão deve ganhar peso na próxima análise semelhante.');
-        if(resultCode==='V' && ms<os)patterns.push('Venceu mesmo com menos remates: resultado foi eficiente, mas não deve ser tratado sozinho como superioridade tática.');
+        if(resultCode==='D' && ms>os){
+          decreaseWeight.push('Mais remates sem conversão não serão tratados como sucesso tático.');
+          nextUse.push('Priorizar eficiência ofensiva/mentalidade/ritmo em cenário semelhante.');
+        }
+        if(resultCode==='V' && ms>os)increaseWeight.push('Superioridade em remates acompanhou vitória.');
+        if(resultCode==='V' && ms<os)nextUse.push('Vitória eficiente com menos remates; não aumentar pressão automaticamente.');
       }
     }
+
     if(filled(stats.myPossession)&&filled(stats.oppPossession)){
       const mp=parseFloat(String(stats.myPossession).replace(',','.'));
       const op=parseFloat(String(stats.oppPossession).replace(',','.'));
       if(Number.isFinite(mp)&&Number.isFinite(op)){
-        if(resultCode==='D' && mp>op)patterns.push('Mais posse não se converteu em resultado; posse isolada não será tratada como sinal de sucesso.');
-        if(resultCode==='V' && mp<op)patterns.push('Vitória com menos posse; contra contexto semelhante, controle de posse não precisa ser prioridade absoluta.');
+        if(resultCode==='D' && mp>op)decreaseWeight.push('Mais posse sem resultado: posse isolada perde importância.');
+        if(resultCode==='V' && mp<op)increaseWeight.push('Vitória sem dominar posse: posse alta não é prioridade absoluta.');
       }
     }
 
-    const events=Array.isArray(entry?.events)?entry.events:[];
-    const eventNotes=events.slice(0,12).map(x=>typeof x==='string'?x:JSON.stringify(x));
+    if(filled(stats.myRedCards) && Number(stats.myRedCards)>0){
+      decreaseWeight.push('Houve vermelho do meu time; este jogo terá peso menor para avaliar a tática.');
+    }
+    if(filled(stats.oppRedCards) && Number(stats.oppRedCards)>0){
+      decreaseWeight.push('Rival teve vermelho; este jogo terá peso menor para avaliar a tática.');
+    }
+
+    if(resultCode==='V')nextUse.push('Reutilizar apenas se força, local, árbitro e formação rival forem semelhantes.');
+    else if(resultCode==='D')nextUse.push('No próximo contexto semelhante, testar formação/plano/sliders diferentes.');
+    else nextUse.push('Empate mantém a solução como neutra; exigir mais evidência antes de priorizar.');
 
     const lesson={
       at:new Date().toISOString(),
@@ -254,15 +304,22 @@
       tactic:cloneSafe(t),
       context:cloneSafe(ctx),
       stats:cloneSafe(stats),
-      events:cloneSafe(events),
+      events:cloneSafe(Array.isArray(entry?.events)?entry.events:[]),
       facts,
       statFacts,
       patterns,
+      increaseWeight,
+      decreaseWeight,
+      avoid,
+      nextUse,
       notes:[
         ...facts,
         ...statFacts,
         ...patterns,
-        ...(eventNotes.length?['Eventos relevantes: '+eventNotes.join(' | ')]:[])
+        ...increaseWeight.map(x=>'Ganha peso: '+x),
+        ...decreaseWeight.map(x=>'Perde peso: '+x),
+        ...avoid.map(x=>'Evitar: '+x),
+        ...nextUse.map(x=>'Próxima decisão: '+x)
       ],
       sampleSize:rows.length
     };
@@ -708,8 +765,8 @@ REGRA CRÍTICA DE RESULTADO:
     const w=rows.filter(r=>Number(r.gf)>Number(r.ga)).length;
     const d=rows.filter(r=>Number(r.gf)===Number(r.ga)).length;
     const l=rows.filter(r=>Number(r.gf)<Number(r.ga)).length;
-
     const last=s?.lastLearning||null;
+
     const byForm={};
     for(const r of rows){
       const f=r?.tactic?.formation||r?.context?.myFormation||'NI';
@@ -720,11 +777,28 @@ REGRA CRÍTICA DE RESULTADO:
       else byForm[f].l++;
     }
 
+    const section=(title,items,cls='')=>items?.length
+      ? `<div class="learning-section ${cls}"><b>${e(title)}</b>${items.map(x=>`<div class="learning-row">${e(x)}</div>`).join('')}</div>`
+      : '';
+
     const target=document.getElementById('learningContent');
     if(!target)return;
 
-    const latest=last?`
-      <div class="card learning-detail-card" style="margin-top:12px">
+    target.innerHTML=`
+      <div class="card">
+        <div class="section-head compact-head">
+          <div><span class="eyebrow">SLOT ${e(s.slotNumber)}</span><h3>${e(s.teamName||'Sem time')}</h3></div>
+        </div>
+        <div class="kpis">
+          <div class="kpi"><span>Jogos aprendidos</span><b>${rows.length}</b></div>
+          <div class="kpi"><span>Vitórias</span><b>${w}</b></div>
+          <div class="kpi"><span>Empates</span><b>${d}</b></div>
+          <div class="kpi"><span>Derrotas</span><b>${l}</b></div>
+        </div>
+        <p class="small muted">A IA usa contexto + estatísticas + padrões, não apenas o placar.</p>
+      </div>
+
+      ${last?`<div class="card learning-detail-card" style="margin-top:12px">
         <div class="learning-detail-head">
           <div>
             <span class="eyebrow">ÚLTIMO JOGO APRENDIDO</span>
@@ -732,35 +806,15 @@ REGRA CRÍTICA DE RESULTADO:
           </div>
           <span class="result-badge ${last.outcome==='V'?'win':last.outcome==='E'?'draw':'loss'}">${e(last.outcome)}</span>
         </div>
+        ${section('Contexto usado pela IA',last.facts)}
+        ${section('Estatísticas consideradas',last.statFacts)}
+        ${section('Padrões detectados',last.patterns,'learning-patterns')}
+        ${section('O que ganhou peso',last.increaseWeight,'learning-positive')}
+        ${section('O que perdeu peso',last.decreaseWeight,'learning-negative')}
+        ${section('O que evitar',last.avoid,'learning-avoid')}
+        ${section('Como isso será usado na próxima tática',last.nextUse,'learning-next')}
+      </div>`:''}
 
-        <div class="learning-section">
-          <b>Contexto usado pela IA</b>
-          ${(last.facts||[]).map(x=>`<div class="learning-row">${e(x)}</div>`).join('')||'<div class="learning-row muted">Sem contexto adicional.</div>'}
-        </div>
-
-        <div class="learning-section">
-          <b>Estatísticas consideradas</b>
-          ${(last.statFacts||[]).map(x=>`<div class="learning-row">${e(x)}</div>`).join('')||'<div class="learning-row muted">O vídeo não forneceu estatísticas suficientes.</div>'}
-        </div>
-
-        <div class="learning-section">
-          <b>Padrões que passam a influenciar próximas táticas</b>
-          ${(last.patterns||[]).map(x=>`<div class="learning-row learning-pattern">${e(x)}</div>`).join('')||'<div class="learning-row muted">Ainda não há amostra suficiente para formar padrão.</div>'}
-        </div>
-      </div>`:'';
-
-    target.innerHTML=`
-      <div class="card">
-        <div class="section-head compact-head"><div><span class="eyebrow">SLOT ${e(s.slotNumber)}</span><h3>${e(s.teamName||'Sem time')}</h3></div></div>
-        <div class="kpis">
-          <div class="kpi"><span>Jogos aprendidos</span><b>${rows.length}</b></div>
-          <div class="kpi"><span>Vitórias</span><b>${w}</b></div>
-          <div class="kpi"><span>Empates</span><b>${d}</b></div>
-          <div class="kpi"><span>Derrotas</span><b>${l}</b></div>
-        </div>
-        <p class="small muted">Este histórico é enviado como contexto nas próximas análises de tática deste slot.</p>
-      </div>
-      ${latest}
       ${Object.keys(byForm).length?`<div class="card" style="margin-top:12px">
         <h3>Histórico por formação</h3>
         <table class="simple-table">
@@ -1412,7 +1466,11 @@ VALIDAÇÃO FORTE DE DATAS:
         strengthBucket:x.strengthBucket,
         context:x.context,
         stats:x.stats,
-        patterns:x.patterns
+        patterns:x.patterns,
+        increaseWeight:x.increaseWeight,
+        decreaseWeight:x.decreaseWeight,
+        avoid:x.avoid,
+        nextUse:x.nextUse
       }));
       p+=`
 
@@ -1751,6 +1809,47 @@ Porém, se realmente não estiver visível, mantenha null — nunca invente.`;
     if(html){
       target.insertAdjacentHTML('afterbegin',html);
     }
+  };
+
+
+  // ------------------------------------------------------------
+  // 2.6.0 — DIRETOR MOSTRA O QUE A IA APRENDEU
+  // ------------------------------------------------------------
+  const _renderMarket260=renderMarket;
+  renderMarket=function(){
+    _renderMarket260();
+    const s=selectedSlot();
+    const target=document.getElementById('marketContent');
+    if(!target || !s || s.status!=='active')return;
+
+    const learn=(Array.isArray(s.learningLog)?s.learningLog:[]).slice(0,5);
+    if(!learn.length){
+      target.insertAdjacentHTML('beforeend',`
+        <div class="card director-learning-card" style="margin-top:12px">
+          <span class="eyebrow">APRENDIZADO DA IA</span>
+          <h3>Ainda sem padrões suficientes</h3>
+          <p class="small muted">Registre resultados. Aqui aparecerá o que ganhou peso, perdeu peso e deve ser evitado.</p>
+        </div>`);
+      return;
+    }
+
+    const positives=[...new Set(learn.flatMap(x=>x.increaseWeight||[]))].slice(0,6);
+    const negatives=[...new Set(learn.flatMap(x=>x.decreaseWeight||[]))].slice(0,6);
+    const avoid=[...new Set(learn.flatMap(x=>x.avoid||[]))].slice(0,4);
+    const next=[...new Set(learn.flatMap(x=>x.nextUse||[]))].slice(0,6);
+
+    target.insertAdjacentHTML('beforeend',`
+      <div class="card director-learning-card" style="margin-top:12px">
+        <div class="section-head compact-head">
+          <div><span class="eyebrow">APRENDIZADO DA IA · SLOT ${e(s.slotNumber)}</span><h3>O que está mudando nas decisões</h3></div>
+        </div>
+        <p class="small muted">Resumo dos últimos ${learn.length} aprendizado(s) salvos.</p>
+        ${positives.length?`<div class="director-learning-group positive"><b>↑ Ganhando peso</b>${positives.map(x=>`<div>${e(x)}</div>`).join('')}</div>`:''}
+        ${negatives.length?`<div class="director-learning-group negative"><b>↓ Perdendo peso</b>${negatives.map(x=>`<div>${e(x)}</div>`).join('')}</div>`:''}
+        ${avoid.length?`<div class="director-learning-group avoid"><b>⚠ Evitar</b>${avoid.map(x=>`<div>${e(x)}</div>`).join('')}</div>`:''}
+        ${next.length?`<div class="director-learning-group next"><b>→ Próximas decisões</b>${next.map(x=>`<div>${e(x)}</div>`).join('')}</div>`:''}
+        <div class="actions"><button class="btn ghost" onclick="showView('learning')">Ver aprendizado completo</button></div>
+      </div>`);
   };
 
   // ------------------------------------------------------------

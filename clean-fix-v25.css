@@ -302,3 +302,27 @@
 .strong433-waiting h3{
   margin:5px 0 4px;
 }
+
+
+/* 2.6.0 — aprendizado real */
+.learning-positive{border-color:#246b57!important}
+.learning-positive>b{color:#67e3b8!important}
+.learning-negative{border-color:#76502b!important}
+.learning-negative>b{color:#ffcc74!important}
+.learning-avoid{border-color:#713743!important}
+.learning-avoid>b{color:#ff96a3!important}
+.learning-next{border-color:#2e5f84!important}
+.learning-next>b{color:#78d9ff!important}
+
+.director-learning-card{border-color:#2a5f55!important}
+.director-learning-group{
+  margin-top:10px;padding:10px;border-radius:10px;border:1px solid #1f4058;background:#091827
+}
+.director-learning-group>b{display:block;font-size:11px;margin-bottom:6px}
+.director-learning-group>div{
+  font-size:10px;line-height:1.45;padding:6px 7px;margin-top:5px;border-radius:7px;background:#0b2030
+}
+.director-learning-group.positive>b{color:#67e3b8}
+.director-learning-group.negative>b{color:#ffd36b}
+.director-learning-group.avoid>b{color:#ff95a2}
+.director-learning-group.next>b{color:#74d8ff}
