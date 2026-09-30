@@ -153,23 +153,9 @@
   </div>
   <div id="toast" class="toast"></div>
 
-  <script>
-  (async function(){
-    try{
-      if('serviceWorker' in navigator){
-        const regs=await navigator.serviceWorker.getRegistrations();
-        for(const reg of regs){try{await reg.unregister()}catch(e){}}
-      }
-      if('caches' in window){
-        const keys=await caches.keys();
-        for(const key of keys){if(key.startsWith('osm-pro-v4-')){try{await caches.delete(key)}catch(e){}}}
-      }
-    }catch(e){}
-  })();
-  </script>
-
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script src="app.js?v=2.7.0"></script>
   <script src="clean-fix-v25.js?v=2.7.0"></script>
+  <script src="push-integrated.js?v=4.0.0"></script>
 </body>
 </html>

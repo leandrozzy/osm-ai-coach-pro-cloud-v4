@@ -1,8 +1,9 @@
 {
-  "name": "osm-ai-coach-webpush",
-  "version": "1.0.0",
+  "name": "osm-ai-coach-push-integrated",
+  "version": "4.0.0",
   "private": true,
   "dependencies": {
+    "firebase-admin": "^13.5.0",
     "web-push": "^3.6.7"
   }
 }

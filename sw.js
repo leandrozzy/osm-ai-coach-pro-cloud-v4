@@ -1,38 +1,74 @@
 
-const CACHE='osm-pro-v4-webpush-20260930-v3';
-const ASSETS=['./','./index.html','./styles.css','./app.js','./manifest.webmanifest','./icon.svg','./push.html','./push.js'];
+const CACHE='osm-pro-v4-push-integrated-20260930-v4';
+const ASSETS=['./','./index.html','./styles.css','./clean-fix-v25.css','./app.js','./clean-fix-v25.js','./push-integrated.js','./manifest.webmanifest','./icon.svg'];
 
 self.addEventListener('install',event=>{
-  event.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)).catch(()=>null).then(()=>self.skipWaiting()));
+  event.waitUntil(
+    caches.open(CACHE)
+      .then(c=>c.addAll(ASSETS))
+      .catch(()=>null)
+      .then(()=>self.skipWaiting())
+  );
 });
+
 self.addEventListener('activate',event=>{
-  event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim()));
+  event.waitUntil(
+    caches.keys()
+      .then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k))))
+      .then(()=>self.clients.claim())
+  );
 });
+
 self.addEventListener('fetch',event=>{
   if(event.request.method!=='GET')return;
-  event.respondWith(fetch(event.request).then(r=>{
-    const copy=r.clone(); caches.open(CACHE).then(c=>c.put(event.request,copy)).catch(()=>{}); return r;
-  }).catch(()=>caches.match(event.request).then(r=>r||caches.match('./index.html'))));
+  event.respondWith(
+    fetch(event.request).then(r=>{
+      const copy=r.clone();
+      caches.open(CACHE).then(c=>c.put(event.request,copy)).catch(()=>{});
+      return r;
+    }).catch(()=>caches.match(event.request).then(r=>r||caches.match('./index.html')))
+  );
 });
+
 self.addEventListener('push',event=>{
   let data={};
   try{data=event.data?event.data.json():{}}catch(_){data={body:event.data?event.data.text():''}}
   const title=data.title||'OSM AI Coach';
   const options={
     body:data.body||'Você tem uma atualização.',
-    icon:'/icon.svg',
-    badge:'/icon.svg',
+    icon:data.icon||'/icon.svg',
+    badge:data.badge||'/icon.svg',
     tag:data.tag||'osm-ai-coach',
     renotify:true,
-    data:{url:data.url||'/',...data}
+    requireInteraction:!!data.requireInteraction,
+    vibrate:data.vibrate||[160,80,160],
+    data:{url:data.url||'/',slot:data.slot||null,view:data.view||null,...data},
+    actions:Array.isArray(data.actions)?data.actions:[]
   };
   event.waitUntil(self.registration.showNotification(title,options));
 });
+
 self.addEventListener('notificationclick',event=>{
   event.notification.close();
-  const url=event.notification?.data?.url||'/';
-  event.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(list=>{
-    for(const c of list){ if('focus'in c){ if('navigate'in c)c.navigate(url).catch(()=>{}); return c.focus(); } }
-    return clients.openWindow?clients.openWindow(url):null;
-  }));
+  const d=event.notification?.data||{};
+  let url=d.url||'/';
+  if(d.view||d.slot){
+    const u=new URL(url,self.location.origin);
+    if(d.view)u.searchParams.set('view',d.view);
+    if(d.slot)u.searchParams.set('slot',d.slot);
+    url=u.pathname+u.search;
+  }
+  event.waitUntil(
+    clients.matchAll({type:'window',includeUncontrolled:true}).then(list=>{
+      for(const c of list){
+        if('navigate'in c)c.navigate(url).catch(()=>{});
+        if('focus'in c)return c.focus();
+      }
+      return clients.openWindow?clients.openWindow(url):null;
+    })
+  );
+});
+
+self.addEventListener('message',event=>{
+  if(event.data?.type==='SKIP_WAITING')self.skipWaiting();
 });
