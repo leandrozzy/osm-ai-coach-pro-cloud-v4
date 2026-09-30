@@ -12,7 +12,7 @@
   Não carrega os hotfixes 2.4.x anteriores.
 */
 (function(){
-  const CLEAN_VERSION='2.6.9';
+  const CLEAN_VERSION='2.7.0';
 
   function e(v){
     return String(v ?? 'NI').replace(/[&<>"']/g,m=>({
@@ -3279,6 +3279,228 @@ Porém, se realmente não estiver visível, mantenha null — nunca invente.`;
 
   // Executa uma vez na carga desta camada.
   persist269();
+
+
+  // ------------------------------------------------------------
+  // 2.7.0 — TÁTICA FORTE FUNCIONA IGUAL EM TODOS OS SLOTS
+  // ------------------------------------------------------------
+  function strong433ByRule(s){
+    if(!s || s.status!=='active' || !s.tactic)return false;
+
+    const d=strengthDiff(s);
+    if(d===null || d<13)return false;
+
+    const formation=String(s.tactic.formation||'').trim().toUpperCase();
+
+    // REGRA OBJETIVA:
+    // vantagem >= 13 + 4-3-3 A aplicada = tática forte,
+    // independentemente da versão/engine/marker que salvou o slot.
+    return formation==='4-3-3 A' || formation==='4-3-3A';
+  }
+
+  const _isStrong433Applied270 = isStrong433Applied;
+  isStrong433Applied=function(s){
+    if(strong433ByRule(s))return true;
+    try{return !!_isStrong433Applied270(s)}catch{return false}
+  };
+
+  function normalizeStrong433AllSlots(){
+    for(const s of (state?.slots||[])){
+      if(!strong433ByRule(s))continue;
+
+      s.tactic.strong433=true;
+      s.tactic.engine='Tática forte 4-3-3';
+
+      if(filled(s?.match?.refereeColor) && typeof refereeTackling==='function'){
+        const tk=refereeTackling(s.match.refereeColor);
+        if(tk)s.tactic.tackling=tk;
+      }
+    }
+    try{localStorage.setItem(STATE_KEY,JSON.stringify(state))}catch{}
+  }
+
+  // ------------------------------------------------------------
+  // 2.7.0 — PRONTIDÃO ÚNICA E DIRETA
+  // ------------------------------------------------------------
+  const _readinessSafe270=readinessSafe;
+  readinessSafe=function(s){
+    if(!s || s.status!=='active')return _readinessSafe270(s);
+
+    if(isStrong433Applied(s)){
+      const refereeMissing=!filled(s?.match?.refereeColor);
+      return {
+        quality:refereeMissing?90:100,
+        missing:refereeMissing?['match.refereeColor']:[],
+        sufficient:!refereeMissing,
+        label:refereeMissing?'Falta árbitro':'Pronto'
+      };
+    }
+
+    return _readinessSafe270(s);
+  };
+
+  // ------------------------------------------------------------
+  // 2.7.0 — PATCH VISUAL DO CARD SELECIONADO
+  // Não depende da versão que gerou o HTML.
+  // ------------------------------------------------------------
+  function patchSelectedSlotVisual(){
+    const s=selectedSlot();
+    if(!s || s.status!=='active')return;
+
+    const r=readinessSafe(s);
+
+    // Procura o card do slot selecionado pelo texto SLOT X.
+    const cards=[...document.querySelectorAll('#slotsGrid .slot-card, #slotsGrid > div')];
+    const card=cards.find(el=>n(el.textContent||'').includes(`slot ${s.slotNumber}`)) || cards[0];
+    if(card){
+      // Badge "Dados parciais / Pronto"
+      const badges=[...card.querySelectorAll('.status, .badge, [class*="status"]')];
+      const badge=badges.find(el=>/dados parciais|dados suficientes|pronto|quase completo|falta arbitro|falta árbitro/i.test(el.textContent||''));
+      if(badge){
+        badge.textContent=r.label;
+        badge.classList.remove('ready','warn','partial','danger');
+        badge.classList.add(r.sufficient?'ready':(r.quality>=70?'warn':'partial'));
+      }
+
+      // KPI LEITURA
+      const all=[...card.querySelectorAll('*')];
+      for(const el of all){
+        if(n(el.textContent||'')==='leitura'){
+          const parent=el.parentElement;
+          const val=parent?.querySelector('b,strong');
+          if(val)val.textContent=`${r.quality}%`;
+        }
+      }
+    }
+
+    // Hero "4 campos pendentes"
+    const hero=document.getElementById('heroAction');
+    if(hero){
+      const p=hero.querySelector('p');
+      if(p){
+        if(isStrong433Applied(s)){
+          if(r.sufficient){
+            p.textContent=`${s.match?.venue||'Local NI'} · ${s.match?.nextMatchAt?fmtDate(s.match.nextMatchAt):'Horário NI'} · 4-3-3 forte pronta.`;
+          }else{
+            p.textContent=`${s.match?.venue||'Local NI'} · ${s.match?.nextMatchAt?fmtDate(s.match.nextMatchAt):'Horário NI'} · falta apenas o árbitro para ajustar o desarme.`;
+          }
+        }
+      }
+    }
+  }
+
+  // ------------------------------------------------------------
+  // 2.7.0 — DASHBOARD SEM ALTERAR renderAll()
+  // ------------------------------------------------------------
+  const _renderDashboard270=renderDashboard;
+  renderDashboard=function(){
+    normalizeStrong433AllSlots();
+    _renderDashboard270();
+    patchSelectedSlotVisual();
+  };
+
+  // ------------------------------------------------------------
+  // 2.7.0 — RADAR EM QUALQUER SLOT
+  // ------------------------------------------------------------
+  const _renderRadar270=renderRadar;
+  renderRadar=function(){
+    normalizeStrong433AllSlots();
+
+    const s=selectedSlot();
+    if(!s || s.status!=='active')return _renderRadar270();
+
+    if(isStrong433Applied(s)){
+      const el=document.getElementById('radarPanel');
+      if(!el)return;
+
+      const refereeMissing=!filled(s?.match?.refereeColor);
+
+      el.innerHTML=`<div class="section-head">
+          <div><span class="eyebrow">RADAR DO SLOT ${s.slotNumber}</span><h2>Próximas ações</h2></div>
+        </div>
+        <div class="card radar-list">
+          ${refereeMissing
+            ? radarItemActionHtml(
+                'Definir árbitro',
+                'A 4-3-3 forte já está aplicada. Falta somente o árbitro para ajustar o desarme.',
+                'warn',
+                'Atenção',
+                'referee',
+                s.slotNumber
+              )
+            : '<p class="muted">4-3-3 forte pronta. Nenhuma pendência obrigatória nesta partida.</p>'
+          }
+        </div>`;
+      return;
+    }
+
+    return _renderRadar270();
+  };
+
+  // ------------------------------------------------------------
+  // 2.7.0 — PRÉ-JOGO EM QUALQUER SLOT
+  // ------------------------------------------------------------
+  const _renderPregame270=renderPregame;
+  renderPregame=function(){
+    normalizeStrong433AllSlots();
+    _renderPregame270();
+
+    const s=selectedSlot();
+    if(!s || !isStrong433Applied(s))return;
+
+    const target=document.getElementById('pregameContent');
+    if(!target)return;
+
+    const r=readinessSafe(s);
+
+    // Remove/esconde qualquer bloco genérico de revisão/pendência.
+    for(const card of target.querySelectorAll('.card')){
+      const txt=n(card.textContent||'');
+      if(
+        txt.includes('revisao necessaria') ||
+        txt.includes('dados parciais') ||
+        txt.includes('resolver campos ausentes') ||
+        txt.includes('campos essenciais sem confirmacao')
+      ){
+        card.classList.add('strong433-hidden-audit');
+      }
+    }
+
+    // Garante um resumo coerente no topo.
+    target.querySelector('.strong433-global-state')?.remove();
+    target.insertAdjacentHTML('afterbegin',`
+      <div class="card strong433-global-state ${r.sufficient?'ok':'warn'}">
+        <span class="eyebrow">TÁTICA FORTE 4-3-3 · SLOT ${s.slotNumber}</span>
+        <h3>${r.sufficient?'Pronta para o jogo':'Falta apenas o árbitro'}</h3>
+        <p class="small muted">
+          ${r.sufficient
+            ? `Vantagem ${e('+'+strengthDiff(s))} · árbitro ${e(s.match?.refereeColor)} · desarme ${e(s.tactic?.tackling||'NI')}.`
+            : 'A tática já está definida. Informe o árbitro para o tipo de entrada/desarme.'
+          }
+        </p>
+        ${!r.sufficient
+          ? `<button class="btn" onclick="editField(${s.slotNumber},'match.refereeColor')">Definir árbitro</button>`
+          : ''
+        }
+      </div>`);
+  };
+
+  // ------------------------------------------------------------
+  // 2.7.0 — LIMPA WARNINGS ANTIGOS EM TODOS OS SLOTS
+  // ------------------------------------------------------------
+  function clearAllStaleCalendarWarnings(){
+    for(const s of (state?.slots||[])){
+      try{
+        if(typeof clearStaleCalendarWarning==='function'){
+          clearStaleCalendarWarning(s);
+        }
+      }catch{}
+    }
+    try{localStorage.setItem(STATE_KEY,JSON.stringify(state))}catch{}
+  }
+
+  normalizeStrong433AllSlots();
+  clearAllStaleCalendarWarnings();
 
   // ------------------------------------------------------------
   // INICIALIZAÇÃO — NÃO altera adversário/rodada/calendário

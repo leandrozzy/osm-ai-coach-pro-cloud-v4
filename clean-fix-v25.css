@@ -469,3 +469,17 @@
 .strong433-hidden-audit{
   display:none!important;
 }
+
+
+/* 2.7.0 — estado global da 4-3-3 forte */
+.strong433-global-state{
+  margin-bottom:12px;
+}
+.strong433-global-state.ok{
+  border-color:#2c735d!important;
+  background:linear-gradient(180deg,#0e2e27,#091827)!important;
+}
+.strong433-global-state.warn{
+  border-color:#8b6e2e!important;
+  background:linear-gradient(180deg,#2c2511,#0b1925)!important;
+}
