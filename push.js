@@ -31,7 +31,29 @@
 
   async function ensureSW() {
     if (!('serviceWorker' in navigator)) throw new Error('Service Worker não suportado neste navegador.');
-    return await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+
+    // Registra/atualiza o worker da raiz.
+    let reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+    try { await reg.update(); } catch (_) {}
+
+    // Se houver uma versão aguardando, mande ativar imediatamente.
+    if (reg.waiting) {
+      try { reg.waiting.postMessage({ type: 'SKIP_WAITING' }); } catch (_) {}
+    }
+
+    // Aguarda existir um Service Worker realmente ATIVO.
+    reg = await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('O Service Worker não ficou ativo. Recarregue a página e tente novamente.')), 15000)
+      )
+    ]);
+
+    if (!reg.active) {
+      throw new Error('Service Worker registrado, mas ainda não está ativo. Recarregue a página e tente novamente.');
+    }
+
+    return reg;
   }
 
   function loadSaved() {
