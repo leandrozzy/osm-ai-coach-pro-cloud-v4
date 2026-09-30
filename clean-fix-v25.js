@@ -12,7 +12,7 @@
   Não carrega os hotfixes 2.4.x anteriores.
 */
 (function(){
-  const CLEAN_VERSION='2.6.0';
+  const CLEAN_VERSION='2.6.1';
 
   function e(v){
     return String(v ?? 'NI').replace(/[&<>"']/g,m=>({
@@ -1850,6 +1850,223 @@ Porém, se realmente não estiver visível, mantenha null — nunca invente.`;
         ${next.length?`<div class="director-learning-group next"><b>→ Próximas decisões</b>${next.map(x=>`<div>${e(x)}</div>`).join('')}</div>`:''}
         <div class="actions"><button class="btn ghost" onclick="showView('learning')">Ver aprendizado completo</button></div>
       </div>`);
+  };
+
+
+  // ------------------------------------------------------------
+  // 2.6.1 — IA RÁPIDA: SOMENTE O MODELO ESCOLHIDO
+  // ------------------------------------------------------------
+  geminiJson=async function(parts,temperature=.1,maxOutputTokens=5000){
+    const key=localStorage.getItem(API_KEY_STORAGE);
+    if(!key)throw new Error('API Gemini não configurada.');
+
+    const model=settings.model||'gemini-3.5-flash';
+    if(document.getElementById('analysisDiagnostics')){
+      document.getElementById('analysisDiagnostics').textContent=`Gemini: ${model}`;
+    }
+    job(`Consultando ${model}…`);
+
+    const body={
+      contents:[{role:'user',parts}],
+      generationConfig:{
+        temperature,
+        maxOutputTokens,
+        responseMimeType:'application/json'
+      }
+    };
+
+    let res;
+    try{
+      res=await geminiFetch(model,key,body);
+    }catch(err){
+      const b=document.getElementById('jobBanner');
+      if(b){b.className='job-banner error';b.textContent='Falha ao consultar a IA.'}
+      throw new Error(err?.message||'Falha ao consultar a IA.');
+    }
+
+    if(!res.ok){
+      const txt=await res.text();
+      const b=document.getElementById('jobBanner');
+      if(b){b.className='job-banner error';b.textContent=`Falha no ${model}.`}
+      throw new Error(`Gemini ${res.status}: ${txt.slice(0,220)}`);
+    }
+
+    const data=await res.json();
+    const text=(data.candidates?.[0]?.content?.parts||[])
+      .map(p=>p.text||'')
+      .join('')
+      .trim();
+
+    if(!text)throw new Error('A IA não retornou conteúdo utilizável.');
+
+    if(document.getElementById('analysisDiagnostics')){
+      document.getElementById('analysisDiagnostics').textContent=`Análise concluída com ${model}.`;
+    }
+
+    const b=document.getElementById('jobBanner');
+    if(b){
+      b.className='job-banner done';
+      b.textContent=`Concluído com ${model}.`;
+      setTimeout(()=>b.classList.add('hidden'),1800);
+    }
+    return parseJsonText(text);
+  };
+
+  // ------------------------------------------------------------
+  // 2.6.1 — PLANO 72H DE EVOLUÇÃO
+  // ------------------------------------------------------------
+  function rosterRatings(s){
+    return (Array.isArray(s?.roster)?s.roster:[])
+      .map((p,index)=>({
+        index,
+        raw:p,
+        name:playerNameValue(p)||`Jogador ${index+1}`,
+        pos:normalizePos(playerPosValue(p)),
+        rating:Number(playerRatingValue(p)),
+        training:p?.training===true,
+        forSale:p?.forSale===true
+      }))
+      .filter(x=>['ATA','MEI','DEF','GOL'].includes(x.pos) && Number.isFinite(x.rating));
+  }
+
+  function aggressiveGrowthPlan(s){
+    const players=rosterRatings(s);
+    const counts=countPositions(s.roster);
+    const byPos={ATA:[],MEI:[],DEF:[],GOL:[]};
+    for(const p of players)byPos[p.pos].push(p);
+    for(const arr of Object.values(byPos))arr.sort((a,b)=>a.rating-b.rating);
+
+    const all=players.map(x=>x.rating);
+    const avg=all.length?all.reduce((a,b)=>a+b,0)/all.length:null;
+    const displayed=Number(s?.myTeam?.overall);
+    const baseline=Number.isFinite(displayed)?displayed:(avg!==null?Math.round(avg):null);
+
+    const candidates=[];
+    for(const pos of ['ATA','MEI','DEF','GOL']){
+      const arr=byPos[pos];
+      const target=POS_TARGET[pos];
+      const excess=Math.max(0,arr.length-target);
+      for(let i=0;i<excess;i++){
+        const p=arr[i];
+        if(p && !p.training)candidates.push({...p,reason:`Excesso em ${pos}; pode sair sem quebrar a estrutura ${target}.`});
+      }
+    }
+
+    if(candidates.length<4){
+      const remaining=players
+        .filter(p=>!p.training && !candidates.some(c=>c.index===p.index))
+        .sort((a,b)=>a.rating-b.rating);
+      for(const p of remaining){
+        if(candidates.length>=4)break;
+        candidates.push({...p,reason:`Troca por upgrade: comprar substituto ${p.pos} antes da venda.`,replaceFirst:true});
+      }
+    }
+
+    const sellQueue=candidates.slice(0,4);
+
+    const priorities=[];
+    for(const pos of ['ATA','MEI','DEF','GOL']){
+      const arr=byPos[pos];
+      if(!arr.length){
+        priorities.push({pos,priority:100,weakest:null,target:baseline?baseline+8:75,reason:`Sem ${pos} reconhecido.`});
+        continue;
+      }
+      const weakest=arr[0];
+      const strongest=arr[arr.length-1];
+      const target=Math.max(
+        weakest.rating+10,
+        avg!==null?Math.ceil(avg+6):weakest.rating+10,
+        Math.ceil(strongest.rating*.92)
+      );
+      const deficit=Math.max(0,POS_TARGET[pos]-(counts[pos]||0));
+      const gap=(avg!==null?avg-weakest.rating:0);
+      priorities.push({
+        pos,
+        priority:deficit*50+gap,
+        weakest,
+        target,
+        reason:deficit
+          ? `Faltam ${deficit} jogador(es) para a estrutura ${POS_TARGET[pos]}.`
+          : `Substituir o mais fraco (${weakest.rating}) por ${target}+ gera salto real.`
+      });
+    }
+    priorities.sort((a,b)=>b.priority-a.priority);
+
+    const target72=baseline!==null?Math.min(99,baseline+12):null;
+    const stretchTarget=baseline!==null?Math.min(99,baseline+20):null;
+
+    const actions=[];
+    if(sellQueue.length)actions.push(`Manter 4 vendas ativas: ${sellQueue.map(x=>x.name).join(', ')}.`);
+    actions.push(`Comprar primeiro nas prioridades: ${priorities.slice(0,2).map(x=>`${x.pos} ${x.target}+`).join(' e ')}.`);
+    actions.push('Toda compra precisa ser upgrade claro; evitar jogador só para completar número.');
+    actions.push('Repor imediatamente cada venda sem cair abaixo de 4 ATA / 6 MEI / 6 DEF / 2 GOL.');
+    actions.push('Treinar continuamente os jogadores mais fortes/de maior teto e usar amistosos quando compensar.');
+    actions.push('Após cada compra ou venda, recalcular o plano e trocar a fila de venda se necessário.');
+
+    return {baseline,avg:avg!==null?Math.round(avg*10)/10:null,target72,stretchTarget,sellQueue,priorities,actions,counts};
+  }
+
+  function growthPlanHtml(s){
+    const p=aggressiveGrowthPlan(s);
+    const sells=p.sellQueue.length
+      ? p.sellQueue.map((x,i)=>`
+          <div class="growth-row">
+            <span class="growth-rank">${i+1}</span>
+            <div><b>${e(x.name)}</b><small>${e(x.pos)} · força ${e(x.rating)}</small></div>
+            <em>${e(x.replaceFirst?'Comprar substituto antes':'Pode listar agora')}</em>
+          </div>`).join('')
+      : '<p class="small muted">Nenhum jogador elegível identificado para venda.</p>';
+
+    const buys=p.priorities.slice(0,4).map((x,i)=>`
+      <div class="growth-row">
+        <span class="growth-rank">${i+1}</span>
+        <div><b>${e(x.pos)} · buscar ${e(x.target)}+</b><small>${e(x.reason)}</small></div>
+        <em>${x.weakest?`Atual ${e(x.weakest.rating)}`:'Prioridade'}</em>
+      </div>`).join('');
+
+    return `<div class="card growth72-card">
+      <div class="section-head compact-head">
+        <div>
+          <span class="eyebrow">PLANO 72H · SLOT ${e(s.slotNumber)}</span>
+          <h3>Subir força rapidamente</h3>
+        </div>
+      </div>
+
+      <div class="growth-kpis">
+        <div><span>Força atual</span><b>${e(p.baseline)}</b></div>
+        <div><span>Meta 72h</span><b>${e(p.target72)}</b></div>
+        <div><span>Meta agressiva</span><b>${e(p.stretchTarget)}</b></div>
+        <div><span>Média elenco</span><b>${e(p.avg)}</b></div>
+      </div>
+
+      <p class="small muted">Metas são referências agressivas, não garantia. O salto depende de vendas, preços da lista, eventos e frequência de treino.</p>
+
+      <h4>1. Fila de venda agora</h4>
+      <div class="growth-list">${sells}</div>
+
+      <h4>2. Compras que realmente melhoram o time</h4>
+      <div class="growth-list">${buys}</div>
+
+      <h4>3. Execução</h4>
+      <div class="growth-actions">${p.actions.map(x=>`<div>${e(x)}</div>`).join('')}</div>
+
+      <div class="actions">
+        <button class="btn" onclick="addBoughtPlayerModal()">Registrar compra</button>
+        <button class="btn ghost" onclick="sellPlayerModal()">Registrar venda</button>
+        <button class="btn ghost" onclick="renderMarket()">Recalcular plano</button>
+      </div>
+    </div>`;
+  }
+
+  const _renderMarket261=renderMarket;
+  renderMarket=function(){
+    _renderMarket261();
+    const s=selectedSlot();
+    const target=document.getElementById('marketContent');
+    if(!target || !s || s.status!=='active')return;
+    const old=document.getElementById('growth72Host');
+    if(old)old.remove();
+    target.insertAdjacentHTML('afterbegin',`<div id="growth72Host">${growthPlanHtml(s)}</div>`);
   };
 
   // ------------------------------------------------------------

@@ -326,3 +326,44 @@
 .director-learning-group.negative>b{color:#ffd36b}
 .director-learning-group.avoid>b{color:#ff95a2}
 .director-learning-group.next>b{color:#74d8ff}
+
+
+/* 2.6.1 — plano 72h */
+.growth72-card{
+  margin-bottom:12px;
+  border-color:#38644e!important;
+  background:linear-gradient(180deg,#0d2924,#091827)!important;
+}
+.growth-kpis{
+  display:grid;
+  grid-template-columns:repeat(4,1fr);
+  gap:7px;
+  margin:10px 0;
+}
+.growth-kpis>div{
+  padding:9px;border-radius:10px;background:#071522;border:1px solid #1d4650
+}
+.growth-kpis span{display:block;font-size:9px;color:var(--muted);text-transform:uppercase}
+.growth-kpis b{display:block;margin-top:4px;font-size:17px}
+.growth-list{display:grid;gap:7px}
+.growth-row{
+  display:grid;
+  grid-template-columns:28px 1fr auto;
+  gap:9px;align-items:center;
+  padding:9px 10px;border-radius:10px;background:#091827;border:1px solid #1b3b50
+}
+.growth-rank{
+  width:26px;height:26px;border-radius:8px;display:grid;place-items:center;
+  background:#174638;color:#74ebc6;font-weight:950;font-size:11px
+}
+.growth-row b{font-size:11px}
+.growth-row small{display:block;color:var(--muted);font-size:9px;margin-top:2px}
+.growth-row em{font-style:normal;font-size:9px;color:#ffd36b;text-align:right}
+.growth-actions{display:grid;gap:6px}
+.growth-actions>div{
+  padding:8px 9px;border-radius:9px;background:#0a2030;border:1px solid #1d4057;
+  font-size:10px;line-height:1.4
+}
+@media(max-width:640px){
+  .growth-kpis{grid-template-columns:repeat(2,1fr)}
+}
