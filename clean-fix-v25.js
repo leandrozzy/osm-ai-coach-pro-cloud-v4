@@ -12,7 +12,7 @@
   Não carrega os hotfixes 2.4.x anteriores.
 */
 (function(){
-  const CLEAN_VERSION='2.6.8';
+  const CLEAN_VERSION='2.6.9';
 
   function e(v){
     return String(v ?? 'NI').replace(/[&<>"']/g,m=>({
@@ -3044,6 +3044,241 @@ Porém, se realmente não estiver visível, mantenha null — nunca invente.`;
         }
       </div>`;
   };
+
+
+  // ------------------------------------------------------------
+  // 2.6.9 — RECONHECER 4-3-3 FORTE EM TODO O APP
+  // ------------------------------------------------------------
+  const _isStrong433Applied269 = typeof isStrong433Applied==='function' ? isStrong433Applied : null;
+
+  isStrong433Applied=function(s){
+    if(!s?.tactic)return false;
+
+    if(_isStrong433Applied269 && _isStrong433Applied269(s))return true;
+
+    const formation=String(s.tactic.formation||'').trim();
+    const plan=n(s.tactic.gamePlan||'');
+    const d=strengthDiff(s);
+
+    // Reconhece também táticas fortes antigas que foram salvas antes do marker strong433.
+    if(
+      formation==='4-3-3 A' &&
+      d!==null && d>=13 &&
+      (
+        s.tactic.strong433===true ||
+        /forte 4-3-3|padrao ofensivo|padrão ofensivo/i.test(String(s.tactic.engine||'')) ||
+        plan.includes('alas')
+      )
+    ){
+      return true;
+    }
+
+    return false;
+  };
+
+  // Se a 4-3-3 forte antiga for reconhecida, grava o marker para as próximas telas.
+  function normalizeStrong433State(s){
+    if(!s || !isStrong433Applied(s) || !s.tactic)return;
+    s.tactic.strong433=true;
+    if(!s.tactic.engine || /fallback/i.test(String(s.tactic.engine))){
+      s.tactic.engine='Tática forte 4-3-3';
+    }
+
+    if(filled(s?.match?.refereeColor) && typeof refereeTackling==='function'){
+      const tk=refereeTackling(s.match.refereeColor);
+      if(tk)s.tactic.tackling=tk;
+    }
+  }
+
+  // ------------------------------------------------------------
+  // 2.6.9 — LIMPAR ALERTA ANTIGO DE CALENDÁRIO QUANDO JÁ ESTÁ OK
+  // ------------------------------------------------------------
+  function calendarCurrentStateIsValid(s){
+    if(!s || !Array.isArray(s.schedule) || !s.schedule.length)return false;
+
+    const opp=n(s?.opponent?.teamName);
+    if(!opp)return false;
+
+    // Se o adversário atual aparece como partida não jogada no calendário,
+    // o calendário já está coerente e um warning antigo não deve continuar no Radar.
+    const current=s.schedule.find(x=>
+      !x.played &&
+      !x.skipped &&
+      n(x.opponent)===opp
+    );
+
+    return !!current;
+  }
+
+  function clearStaleCalendarWarning(s){
+    if(!s?.lastCalendarSyncWarning)return;
+    if(calendarCurrentStateIsValid(s)){
+      s.lastCalendarSyncWarning=null;
+    }
+  }
+
+  // ------------------------------------------------------------
+  // 2.6.9 — PRONTIDÃO CORRETA DA TÁTICA FORTE
+  // ------------------------------------------------------------
+  const _readinessSafe269=readinessSafe;
+  readinessSafe=function(s){
+    if(!s || s.status!=='active')return _readinessSafe269(s);
+
+    normalizeStrong433State(s);
+    clearStaleCalendarWarning(s);
+
+    if(isStrong433Applied(s)){
+      const refereeMissing=!filled(s?.match?.refereeColor);
+      return {
+        quality:refereeMissing?90:100,
+        missing:refereeMissing?['match.refereeColor']:[],
+        sufficient:!refereeMissing,
+        label:refereeMissing?'Falta árbitro':'Pronto'
+      };
+    }
+
+    return _readinessSafe269(s);
+  };
+
+  // ------------------------------------------------------------
+  // 2.6.9 — CARD DO SLOT: NUNCA 0% APÓS 4-3-3 FORTE
+  // ------------------------------------------------------------
+  const _slotCard269=slotCard;
+  slotCard=function(s){
+    normalizeStrong433State(s);
+    clearStaleCalendarWarning(s);
+
+    let html=String(_slotCard269(s));
+    const r=readinessSafe(s);
+
+    html=html.replace(
+      /(<span>LEITURA<\/span>\s*<b>)[^<]*(<\/b>)/i,
+      `$1${r.quality}%$2`
+    );
+
+    html=html.replace(
+      /(<span class="status[^"]*">)(Dados parciais|Pronto|Dados suficientes|Quase completo|Falta árbitro)(<\/span>)/i,
+      `$1${r.label}$3`
+    );
+
+    return html;
+  };
+
+  // ------------------------------------------------------------
+  // 2.6.9 — HOJE: TEXTO COERENTE COM A 4-3-3 FORTE
+  // ------------------------------------------------------------
+  const _nextAction269=nextAction;
+  nextAction=function(){
+    const s=selectedSlot();
+    if(!s || s.status!=='active')return _nextAction269();
+
+    normalizeStrong433State(s);
+    clearStaleCalendarWarning(s);
+
+    if(isStrong433Applied(s)){
+      const r=readinessSafe(s);
+
+      if(!r.sufficient){
+        return {
+          priority:`SLOT ${s.slotNumber} · TÁTICA FORTE`,
+          title:`${s.teamName||'Meu time'} × ${s.opponent?.teamName||'Adversário'}`,
+          detail:'4-3-3 forte aplicada. Falta apenas confirmar o árbitro para ajustar o desarme.',
+          buttons:`<button class="btn" onclick="editField(${s.slotNumber},'match.refereeColor')">Definir árbitro</button><button class="btn ghost" onclick="openTacticMediaPicker(${s.slotNumber})">Atualizar vídeo</button><button class="btn ghost" onclick="resultModal(${s.slotNumber})">Registrar resultado</button>`
+        };
+      }
+
+      return {
+        priority:`SLOT ${s.slotNumber} · TÁTICA FORTE PRONTA`,
+        title:`${s.teamName||'Meu time'} × ${s.opponent?.teamName||'Adversário'}`,
+        detail:`${s.match?.venue||'Local NI'} · ${s.match?.nextMatchAt?fmtDate(s.match.nextMatchAt):'Horário NI'} · 4-3-3 forte pronta.`,
+        buttons:`<button class="btn" onclick="showView('pregame')">Ver plano</button><button class="btn ghost" onclick="openTacticMediaPicker(${s.slotNumber})">Atualizar vídeo</button><button class="btn ghost" onclick="resultModal(${s.slotNumber})">Registrar resultado</button>`
+      };
+    }
+
+    return _nextAction269();
+  };
+
+  // ------------------------------------------------------------
+  // 2.6.9 — RADAR: SEM PENDÊNCIA GENÉRICA APÓS TÁTICA FORTE
+  // ------------------------------------------------------------
+  const _renderRadar269=renderRadar;
+  renderRadar=function(){
+    const s=selectedSlot();
+    if(!s || s.status!=='active')return _renderRadar269();
+
+    normalizeStrong433State(s);
+    clearStaleCalendarWarning(s);
+
+    if(isStrong433Applied(s)){
+      const el=document.getElementById('radarPanel');
+      if(!el)return;
+
+      const refereeMissing=!filled(s.match?.refereeColor);
+      el.innerHTML=`<div class="section-head">
+          <div><span class="eyebrow">RADAR DO SLOT ${s.slotNumber}</span><h2>Próximas ações</h2></div>
+        </div>
+        <div class="card radar-list">
+          ${refereeMissing
+            ? radarItemActionHtml(
+                'Definir árbitro',
+                'A 4-3-3 forte já está aplicada. Falta apenas o árbitro para ajustar o desarme.',
+                'warn',
+                'Atenção',
+                'referee',
+                s.slotNumber
+              )
+            : '<p class="muted">Tática forte pronta. Nenhuma pendência obrigatória nesta partida.</p>'
+          }
+        </div>`;
+      return;
+    }
+
+    return _renderRadar269();
+  };
+
+  // ------------------------------------------------------------
+  // 2.6.9 — PRÉ-JOGO: ESCONDER BLOCO GENÉRICO DE PENDÊNCIAS
+  // ------------------------------------------------------------
+  const _renderPregame269=renderPregame;
+  renderPregame=function(){
+    _renderPregame269();
+
+    const s=selectedSlot();
+    if(!s || !s.status || !isStrong433Applied(s))return;
+
+    normalizeStrong433State(s);
+    clearStaleCalendarWarning(s);
+
+    const target=document.getElementById('pregameContent');
+    if(!target)return;
+
+    // Procura cards de revisão genérica e os remove da exibição,
+    // pois a preparação forte já foi decidida.
+    for(const card of target.querySelectorAll('.card')){
+      const txt=n(card.textContent||'');
+      if(
+        txt.includes('revisao necessaria') ||
+        txt.includes('campos essenciais sem confirmacao') ||
+        txt.includes('resolver campos ausentes')
+      ){
+        card.classList.add('strong433-hidden-audit');
+      }
+    }
+  };
+
+  // Salva a limpeza do warning/marker sem substituir renderAll.
+  function persist269(){
+    try{
+      for(const s of (state?.slots||[])){
+        normalizeStrong433State(s);
+        clearStaleCalendarWarning(s);
+      }
+      localStorage.setItem(STATE_KEY,JSON.stringify(state));
+    }catch{}
+  }
+
+  // Executa uma vez na carga desta camada.
+  persist269();
 
   // ------------------------------------------------------------
   // INICIALIZAÇÃO — NÃO altera adversário/rodada/calendário

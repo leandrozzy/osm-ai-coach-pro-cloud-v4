@@ -463,3 +463,9 @@
 .radar-status-action{
   white-space:nowrap;
 }
+
+
+/* 2.6.9 */
+.strong433-hidden-audit{
+  display:none!important;
+}
