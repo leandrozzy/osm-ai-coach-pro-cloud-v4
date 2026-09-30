@@ -12,7 +12,7 @@
   Não carrega os hotfixes 2.4.x anteriores.
 */
 (function(){
-  const CLEAN_VERSION='2.6.5';
+  const CLEAN_VERSION='2.6.6';
 
   function e(v){
     return String(v ?? 'NI').replace(/[&<>"']/g,m=>({
@@ -2713,6 +2713,229 @@ Porém, se realmente não estiver visível, mantenha null — nunca invente.`;
       const errors=settled.map(x=>`${x.model}: ${x.error?.message||'falhou'}`).join(' | ');
       throw new Error(`${primaryErr?.message||'Modelo principal falhou'} | ${errors}`);
     }
+  };
+
+
+  // ------------------------------------------------------------
+  // 2.6.6 — UMA ÚNICA VERDADE DE QUALIDADE PARA TODO O APP
+  // ------------------------------------------------------------
+  function unifiedSlotReadiness(s){
+    if(!s || s.status!=='active'){
+      return {
+        quality:0,
+        missing:[],
+        status:'empty',
+        label:'Slot livre',
+        sufficient:false,
+        strong433:false
+      };
+    }
+
+    // Se tática forte foi aplicada, a preparação prática depende apenas do árbitro.
+    if(typeof isStrong433Applied==='function' && isStrong433Applied(s)){
+      const missing=filled(s?.match?.refereeColor)?[]:['match.refereeColor'];
+      return {
+        quality:missing.length?90:100,
+        missing,
+        status:missing.length?'warning':'ready',
+        label:missing.length?'Falta árbitro':'Pronto',
+        sufficient:missing.length===0,
+        strong433:true
+      };
+    }
+
+    const missing=missingRequired(s);
+    const total=REQUIRED_FIELDS.length || 1;
+    const confirmed=Math.max(0,total-missing.length);
+    const quality=Math.max(0,Math.min(100,Math.round((confirmed/total)*100)));
+
+    // "Dados suficientes" deve ser calculado pela MESMA lista REQUIRED_FIELDS.
+    const sufficient=missing.length===0;
+
+    return {
+      quality,
+      missing,
+      status:sufficient?'ready':quality>=70?'warning':'partial',
+      label:sufficient?'Dados suficientes':quality>=70?'Quase completo':'Dados parciais',
+      sufficient,
+      strong433:false
+    };
+  }
+
+  function readinessBadgeHtml(s){
+    const r=unifiedSlotReadiness(s);
+    const cls=r.status==='ready'?'ready':r.status==='warning'?'warn':'partial';
+    return `<span class="unified-readiness-badge ${cls}">${e(r.label)} · ${r.quality}%</span>`;
+  }
+
+  // Mantém analysisQuality sincronizado com a mesma regra em todo render.
+  function syncUnifiedQuality(s){
+    if(!s)return null;
+    const r=unifiedSlotReadiness(s);
+    s.analysisQuality=r.quality;
+    s.unifiedReadiness={
+      quality:r.quality,
+      missing:[...r.missing],
+      status:r.status,
+      label:r.label,
+      sufficient:r.sufficient,
+      updatedAt:new Date().toISOString()
+    };
+    return r;
+  }
+
+  // Dashboard: usa exatamente o mesmo status do Pré-jogo.
+  const _slotCard266=slotCard;
+  slotCard=function(s){
+    syncUnifiedQuality(s);
+    const html=_slotCard266(s);
+    const r=unifiedSlotReadiness(s);
+
+    // Troca badges/percentuais antigos renderizados pela função base.
+    let out=String(html);
+    out=out.replace(/<span class="status[^"]*">[^<]*(?:Dados parciais|Pronto|Dados suficientes|Quase completo)[^<]*<\/span>/i,
+      `<span class="status ${r.status==='ready'?'ready':r.status==='warning'?'warn':'partial'}">${e(r.label)}</span>`);
+
+    // Troca "LEITURA xx%" pelo valor unificado.
+    out=out.replace(/(<span>LEITURA<\/span>\s*<b>)[^<]*(<\/b>)/i,`$1${r.quality}%$2`);
+
+    return out;
+  };
+
+  // Hoje: detalhe e contagem de pendências vêm da mesma função.
+  const _nextAction266=nextAction;
+  nextAction=function(){
+    const s=selectedSlot();
+    if(!s || s.status!=='active')return _nextAction266();
+
+    const r=syncUnifiedQuality(s);
+
+    if(r.strong433){
+      return _nextAction266();
+    }
+
+    const base=_nextAction266();
+
+    if(r.sufficient){
+      base.detail=`${s.match?.venue||'Local NI'} · ${s.match?.nextMatchAt?fmtDate(s.match.nextMatchAt):'Horário NI'} · dados essenciais confirmados.`;
+    }else{
+      base.detail=`${s.match?.venue||'Local NI'} · ${s.match?.nextMatchAt?fmtDate(s.match.nextMatchAt):'Horário NI'} · ${r.missing.length} campo(s) essencial(is) pendente(s).`;
+    }
+    return base;
+  };
+
+  // Pré-jogo: substitui qualquer qualidade antiga pela unificada.
+  const _renderPregame266=renderPregame;
+  renderPregame=function(){
+    _renderPregame266();
+    const s=selectedSlot();
+    if(!s || s.status!=='active')return;
+    const r=syncUnifiedQuality(s);
+
+    const target=document.getElementById('pregameContent');
+    if(!target)return;
+
+    // Atualiza textos que podem ter sido produzidos pelo renderer antigo.
+    target.querySelectorAll('*').forEach(el=>{
+      if(el.children.length)return;
+      const txt=String(el.textContent||'').trim();
+
+      if(/^Dados suficientes$/i.test(txt) || /^Revisão necessária$/i.test(txt) || /^Dados parciais$/i.test(txt)){
+        el.textContent=r.sufficient?'Dados suficientes':r.quality>=70?'Quase completo':'Revisão necessária';
+      }
+
+      if(/^\d+%$/.test(txt) && el.closest('.quality-ring,.quality,.coverage,.audit-card')){
+        el.textContent=`${r.quality}%`;
+      }
+
+      if(/campo\(s\) essencial\(is\).*confirma/i.test(txt)){
+        el.textContent=r.sufficient
+          ? 'Todos os campos essenciais estão confirmados.'
+          : `${r.missing.length} campo(s) essencial(is) sem confirmação.`;
+      }
+    });
+  };
+
+  // Radar: usa a mesma pendência do Pré-jogo/Hoje.
+  const _renderRadar266=renderRadar;
+  renderRadar=function(){
+    const s=selectedSlot();
+    if(!s || s.status!=='active'){
+      return _renderRadar266();
+    }
+
+    const r=syncUnifiedQuality(s);
+
+    // Tática forte continua com a regra específica já implementada.
+    if(r.strong433){
+      return _renderRadar266();
+    }
+
+    const el=document.getElementById('radarPanel');
+    if(!el)return;
+
+    const rows=[];
+    const hrs=hoursUntilMatch(s);
+
+    if(r.missing.length){
+      if(hrs!==null && hrs<=18){
+        rows.push([`Completar preparação do Slot ${s.slotNumber}`,`${r.missing.length} campo(s) essencial(is) · jogo em ${Math.max(0,Math.round(hrs))}h`,'danger','Urgente']);
+      }else if(hrs!==null && hrs<=48){
+        rows.push([`Preparar Slot ${s.slotNumber}`,`${r.missing.length} campo(s) pendente(s) · ainda há ${Math.max(1,Math.round(hrs))}h`,'warn','Atenção']);
+      }else{
+        rows.push([`Preparação futura do Slot ${s.slotNumber}`,`${r.missing.length} campo(s) pendente(s)${hrs!==null?` · faltam cerca de ${Math.max(1,Math.round(hrs/24))} dia(s)`:''}`,'','Planejar']);
+      }
+    }else if(!s.tactic && hrs!==null && hrs<=48){
+      rows.push([`Gerar tática do Slot ${s.slotNumber}`,'Dados essenciais disponíveis.','warn','Atenção']);
+    }
+
+    if(s.analysisRuns?.market?.status==='warning'){
+      rows.push(['Revisar elenco',s.analysisRuns.market.message,'warn','Atenção']);
+    }
+
+    el.innerHTML=`<div class="section-head"><div><span class="eyebrow">RADAR DO SLOT ${s.slotNumber}</span><h2>Próximas ações</h2></div></div>
+      <div class="card radar-list">${rows.length
+        ? rows.map(rw=>`<div class="radar-item"><div><b>${e(rw[0])}</b><span>${e(rw[1])}</span></div><span class="status ${rw[2]}">${e(rw[3])}</span></div>`).join('')
+        : '<p class="muted">Nada urgente neste slot agora.</p>'
+      }</div>`;
+  };
+
+  // Analisar: após qualquer análise, sincroniza imediatamente o mesmo status.
+  function syncAllSlotReadiness(){
+    for(const s of (state?.slots||[]))syncUnifiedQuality(s);
+    try{localStorage.setItem(STATE_KEY,JSON.stringify(state))}catch{}
+  }
+
+  // Informações e Diretor também recebem um cabeçalho com o mesmo estado.
+  const _renderInfo266=renderInfo;
+  renderInfo=function(){
+    _renderInfo266();
+    const s=selectedSlot();
+    if(!s || s.status!=='active')return;
+    const target=document.getElementById('infoContent');
+    if(!target)return;
+    target.querySelector('.unified-readiness-line')?.remove();
+    target.insertAdjacentHTML('afterbegin',
+      `<div class="unified-readiness-line">${readinessBadgeHtml(s)}</div>`);
+  };
+
+  const _renderMarket266=renderMarket;
+  renderMarket=function(){
+    _renderMarket266();
+    const s=selectedSlot();
+    if(!s || s.status!=='active')return;
+    const target=document.getElementById('marketContent');
+    if(!target)return;
+    target.querySelector('.unified-readiness-line')?.remove();
+    target.insertAdjacentHTML('afterbegin',
+      `<div class="unified-readiness-line">${readinessBadgeHtml(s)}</div>`);
+  };
+
+  // Toda vez que o app redesenha, sincroniza antes.
+  const _renderAll266=renderAll;
+  renderAll=function(){
+    syncAllSlotReadiness();
+    _renderAll266();
   };
 
   // ------------------------------------------------------------

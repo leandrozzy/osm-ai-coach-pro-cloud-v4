@@ -403,3 +403,37 @@
 }
 .fallback-kpis span{display:block;font-size:9px;color:var(--muted)}
 .fallback-kpis b{display:block;margin-top:3px;font-size:16px}
+
+
+/* 2.6.6 — status unificado em todas as abas */
+.unified-readiness-line{
+  display:flex;
+  justify-content:flex-end;
+  margin-bottom:10px;
+}
+.unified-readiness-badge{
+  display:inline-flex;
+  align-items:center;
+  min-height:28px;
+  padding:5px 9px;
+  border-radius:999px;
+  font-size:10px;
+  font-weight:900;
+  border:1px solid #31516c;
+  background:#0a1a29;
+}
+.unified-readiness-badge.ready{
+  color:#76e8bd;
+  border-color:#2a745d;
+  background:#10352b;
+}
+.unified-readiness-badge.warn{
+  color:#ffd66f;
+  border-color:#796128;
+  background:#322a12;
+}
+.unified-readiness-badge.partial{
+  color:#ffb1ba;
+  border-color:#713946;
+  background:#301921;
+}
