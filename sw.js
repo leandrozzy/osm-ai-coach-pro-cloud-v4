@@ -1,5 +1,5 @@
 
-const CACHE='osm-pro-v4-webpush-20260930-v2';
+const CACHE='osm-pro-v4-webpush-20260930-v3';
 const ASSETS=['./','./index.html','./styles.css','./app.js','./manifest.webmanifest','./icon.svg','./push.html','./push.js'];
 
 self.addEventListener('install',event=>{
