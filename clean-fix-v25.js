@@ -12,7 +12,7 @@
   Não carrega os hotfixes 2.4.x anteriores.
 */
 (function(){
-  const CLEAN_VERSION='2.6.4';
+  const CLEAN_VERSION='2.6.5';
 
   function e(v){
     return String(v ?? 'NI').replace(/[&<>"']/g,m=>({
@@ -2599,6 +2599,121 @@ Porém, se realmente não estiver visível, mantenha null — nunca invente.`;
     }
   };
   window.v21Analyze=v21Analyze;
+
+
+  // ------------------------------------------------------------
+  // 2.6.5 — FALLBACK RÁPIDO ENTRE MODELOS
+  // ------------------------------------------------------------
+  function withTimeout(promise,ms,label='IA'){
+    return Promise.race([
+      promise,
+      new Promise((_,reject)=>setTimeout(()=>reject(new Error(`${label} excedeu ${Math.round(ms/1000)}s`)),ms))
+    ]);
+  }
+
+  async function callGeminiModelFast(model,key,body,timeoutMs=8500){
+    const res=await withTimeout(geminiFetch(model,key,body),timeoutMs,model);
+    if(!res.ok){
+      const txt=await res.text();
+      const err=new Error(`Gemini ${res.status}: ${txt.slice(0,180)}`);
+      err.status=res.status;
+      throw err;
+    }
+    const data=await res.json();
+    const text=(data.candidates?.[0]?.content?.parts||[])
+      .map(p=>p.text||'')
+      .join('')
+      .trim();
+    if(!text)throw new Error(`${model} não retornou conteúdo utilizável.`);
+    return {model,text};
+  }
+
+  geminiJson=async function(parts,temperature=.1,maxOutputTokens=5000){
+    const key=localStorage.getItem(API_KEY_STORAGE);
+    if(!key)throw new Error('API Gemini não configurada.');
+
+    const preferred=settings.model||'gemini-3.5-flash';
+
+    // Pool fixo e curto. Nada de consultar lista de modelos na API.
+    const fallbackPool=[
+      preferred,
+      'gemini-flash-latest',
+      'gemini-3.5-flash',
+      'gemini-3.5-flash-lite'
+    ].filter((x,i,a)=>x && a.indexOf(x)===i);
+
+    const body={
+      contents:[{role:'user',parts}],
+      generationConfig:{temperature,maxOutputTokens,responseMimeType:'application/json'}
+    };
+
+    // 1) Modelo escolhido recebe uma tentativa curta primeiro.
+    job(`Consultando ${preferred}…`);
+    if(document.getElementById('analysisDiagnostics')){
+      document.getElementById('analysisDiagnostics').textContent=`IA principal: ${preferred}`;
+    }
+
+    try{
+      const primary=await callGeminiModelFast(preferred,key,body,6500);
+      const b=document.getElementById('jobBanner');
+      if(b){
+        b.className='job-banner done';
+        b.textContent=`Concluído com ${primary.model}.`;
+        setTimeout(()=>b.classList.add('hidden'),1200);
+      }
+      return parseJsonText(primary.text);
+    }catch(primaryErr){
+      // Só parte para alternativas quando principal falha/atrasa.
+      const alternatives=fallbackPool.filter(m=>m!==preferred).slice(0,2);
+      if(!alternatives.length)throw primaryErr;
+
+      job(`Modelo principal indisponível · tentando alternativas rápidas…`);
+      if(document.getElementById('analysisDiagnostics')){
+        document.getElementById('analysisDiagnostics').textContent=
+          `Principal falhou. Tentando ${alternatives.join(' / ')} em paralelo…`;
+      }
+
+      const attempts=alternatives.map(model=>
+        callGeminiModelFast(model,key,body,7000)
+          .then(r=>({ok:true,...r}))
+          .catch(error=>({ok:false,model,error}))
+      );
+
+      const settled=await Promise.all(attempts);
+      const winner=settled.find(x=>x.ok);
+
+      if(winner){
+        // Memoriza o modelo que funcionou para a próxima análise.
+        settings.model=winner.model;
+        try{
+          saveSettings();
+          hydrateSettings();
+        }catch{}
+
+        const b=document.getElementById('jobBanner');
+        if(b){
+          b.className='job-banner done';
+          b.textContent=`Concluído com ${winner.model}.`;
+          setTimeout(()=>b.classList.add('hidden'),1200);
+        }
+        if(document.getElementById('analysisDiagnostics')){
+          document.getElementById('analysisDiagnostics').textContent=
+            `Análise concluída com fallback rápido: ${winner.model}.`;
+        }
+        return parseJsonText(winner.text);
+      }
+
+      const b=document.getElementById('jobBanner');
+      if(b){
+        b.className='job-banner warn';
+        b.textContent='IAs indisponíveis · usando análise local';
+        setTimeout(()=>b.classList.add('hidden'),1800);
+      }
+
+      const errors=settled.map(x=>`${x.model}: ${x.error?.message||'falhou'}`).join(' | ');
+      throw new Error(`${primaryErr?.message||'Modelo principal falhou'} | ${errors}`);
+    }
+  };
 
   // ------------------------------------------------------------
   // INICIALIZAÇÃO — NÃO altera adversário/rodada/calendário
