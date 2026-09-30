@@ -31,13 +31,18 @@
       if(p!=='granted') throw new Error('Permissão de notificações não concedida.');
 
       const reg=await getActiveSW();
+      // Remove qualquer assinatura antiga criada com outra VAPID
+      // (por exemplo, a tentativa anterior via Firebase/FCM).
       let sub=await reg.pushManager.getSubscription();
-      if(!sub){
-        sub=await reg.pushManager.subscribe({
-          userVisibleOnly:true,
-          applicationServerKey:urlBase64ToUint8Array(window.OSM_WEB_PUSH_PUBLIC_KEY)
-        });
+      if(sub){
+        try{ await sub.unsubscribe(); }catch(_){}
       }
+
+      sub=await reg.pushManager.subscribe({
+        userVisibleOnly:true,
+        applicationServerKey:urlBase64ToUint8Array(window.OSM_WEB_PUSH_PUBLIC_KEY)
+      });
+
       localStorage.setItem(SUB_KEY, JSON.stringify(sub));
       $('testBtn').disabled=false;
       $('closedBtn').disabled=false;
