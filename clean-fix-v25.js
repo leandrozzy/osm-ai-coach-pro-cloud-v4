@@ -12,7 +12,7 @@
   Não carrega os hotfixes 2.4.x anteriores.
 */
 (function(){
-  const CLEAN_VERSION='2.6.1';
+  const CLEAN_VERSION='2.6.3';
 
   function e(v){
     return String(v ?? 'NI').replace(/[&<>"']/g,m=>({
@@ -1516,7 +1516,7 @@ REGRAS PARA USAR O APRENDIZADO:
 
   const FIELD_SELECT_OPTIONS={
     'match.venue':['Casa','Fora'],
-    'match.refereeColor':['Verde','Amarelo','Laranja','Vermelho'],
+    'match.refereeColor':['Verde','Azul','Amarelo','Laranja','Vermelho'],
     'opponent.formation':FORMATIONS,
     'opponent.style':GAME_PLANS,
     'opponent.marking':['À zona','Individual']
@@ -2067,6 +2067,253 @@ Porém, se realmente não estiver visível, mantenha null — nunca invente.`;
     const old=document.getElementById('growth72Host');
     if(old)old.remove();
     target.insertAdjacentHTML('afterbegin',`<div id="growth72Host">${growthPlanHtml(s)}</div>`);
+  };
+
+
+  // ------------------------------------------------------------
+  // 2.6.2 — TÁTICA FORTE: NÃO COBRAR TODOS OS CAMPOS
+  // ------------------------------------------------------------
+  function isStrong433Applied(s){
+    return s?.tactic?.engine==='Padrão ofensivo 2.5.2' ||
+           s?.tactic?.engine==='Tática forte 4-3-3' ||
+           s?.tactic?.strong433===true;
+  }
+
+  function refereeTackling(ref){
+    const r=n(ref);
+    if(r==='vermelho' || r==='laranja')return 'Cuidadoso';
+    if(r==='amarelo')return 'Normal';
+    if(r==='azul' || r==='verde')return 'Agressivo';
+    return null;
+  }
+
+  const _applyOffensiveDefault262=applyOffensiveDefault;
+  window.applyOffensiveDefault=function(slotNo){
+    const s=state.slots[slotNo-1];
+    if(!s)return;
+    _applyOffensiveDefault262(slotNo);
+    const cur=state.slots[slotNo-1];
+    if(cur?.tactic){
+      cur.tactic.strong433=true;
+      cur.tactic.engine='Tática forte 4-3-3';
+      const tk=refereeTackling(cur.match?.refereeColor);
+      cur.tactic.tackling=tk||'NI';
+      localStorage.setItem(STATE_KEY,JSON.stringify(state));
+    }
+    renderAll();
+    showView('pregame');
+  };
+
+  function strongTacticMissing(s){
+    if(!isStrong433Applied(s))return missingRequired(s);
+    return filled(s?.match?.refereeColor)?[]:['match.refereeColor'];
+  }
+
+  function strong433RefereeHtml(s){
+    if(!isStrong433Applied(s))return '';
+    const ref=s?.match?.refereeColor;
+    const tk=refereeTackling(ref);
+    if(!filled(ref)){
+      return `<div class="card strong433-referee-warning">
+        <div>
+          <span class="eyebrow">TÁTICA FORTE APLICADA</span>
+          <h3>Falta apenas o árbitro</h3>
+          <p class="small muted">A 4-3-3 já está pronta. Informe o árbitro para o app definir o desarme correto.</p>
+        </div>
+        <div class="actions">
+          <button class="btn" onclick="editField(${s.slotNumber},'match.refereeColor')">Definir árbitro</button>
+          <button class="btn ghost" onclick="openTacticMediaPicker(${s.slotNumber})">📹 Enviar vídeo / atualizar dados</button>
+        </div>
+      </div>`;
+    }
+    return `<div class="card strong433-referee-ok">
+      <span class="eyebrow">TÁTICA FORTE APLICADA</span>
+      <h3>Árbitro ${e(ref)} · Desarme ${e(tk||s.tactic?.tackling||'NI')}</h3>
+      <div class="actions">
+        <button class="btn ghost" onclick="editField(${s.slotNumber},'match.refereeColor')">Alterar árbitro</button>
+        <button class="btn ghost" onclick="openTacticMediaPicker(${s.slotNumber})">📹 Enviar vídeo / atualizar dados</button>
+      </div>
+    </div>`;
+  }
+
+  window.openTacticMediaPicker=function(slotNo){
+    state.selectedSlot=slotNo;
+    renderAll();
+    showView('analyze');
+    setAnalysisMode('tactic');
+    const select=document.getElementById('analysisSlot');
+    if(select)select.value=String(slotNo);
+    setTimeout(()=>{
+      const input=document.getElementById('mediaInput');
+      if(!input)return;
+      input.value='';
+      try{
+        if(typeof input.showPicker==='function')input.showPicker();
+        else input.click();
+      }catch{
+        input.click();
+      }
+    },220);
+  };
+
+  const _renderPregame262=renderPregame;
+  renderPregame=function(){
+    _renderPregame262();
+    const s=selectedSlot();
+    const target=document.getElementById('pregameContent');
+    if(!target || !s || s.status!=='active')return;
+
+    const refHtml=strong433RefereeHtml(s);
+    if(refHtml)target.insertAdjacentHTML('afterbegin',refHtml);
+
+    if(isStrong433Applied(s)){
+      target.querySelectorAll('.audit-card').forEach(card=>{
+        const txt=String(card.textContent||'');
+        if(/revis[aã]o necess[aá]ria|campo\(s\).*sem confirma/i.test(txt)){
+          card.classList.add('strong433-hidden-audit');
+        }
+      });
+    }
+  };
+
+  const _nextAction262=nextAction;
+  nextAction=function(){
+    const s=selectedSlot();
+    if(!s || !isStrong433Applied(s))return _nextAction262();
+
+    const miss=strongTacticMissing(s);
+    if(miss.length){
+      return {
+        priority:`SLOT ${s.slotNumber} · TÁTICA FORTE`,
+        title:`${s.teamName||'Meu time'} × ${s.opponent?.teamName||'Adversário'}`,
+        detail:'4-3-3 forte aplicada. Falta apenas confirmar o árbitro para ajustar o desarme.',
+        buttons:`<button class="btn" onclick="editField(${s.slotNumber},'match.refereeColor')">Definir árbitro</button><button class="btn ghost" onclick="openTacticMediaPicker(${s.slotNumber})">Enviar vídeo</button><button class="btn ghost" onclick="resultModal(${s.slotNumber})">Registrar resultado</button>`
+      };
+    }
+
+    return {
+      priority:`SLOT ${s.slotNumber} · TÁTICA FORTE PRONTA`,
+      title:`${s.teamName||'Meu time'} × ${s.opponent?.teamName||'Adversário'}`,
+      detail:`${s.match?.venue||'Local NI'} · ${s.match?.nextMatchAt?fmtDate(s.match.nextMatchAt):'Horário NI'} · desarme ${s.tactic?.tackling||'NI'}.`,
+      buttons:`<button class="btn" onclick="showView('pregame')">Ver plano</button><button class="btn ghost" onclick="openTacticMediaPicker(${s.slotNumber})">Atualizar vídeo</button><button class="btn ghost" onclick="resultModal(${s.slotNumber})">Registrar resultado</button>`
+    };
+  };
+
+  const _renderRadar262=renderRadar;
+  renderRadar=function(){
+    const s=selectedSlot();
+    const el=document.getElementById('radarPanel');
+    if(s && isStrong433Applied(s)){
+      const refOk=filled(s.match?.refereeColor);
+      el.innerHTML=`<div class="section-head"><div><span class="eyebrow">RADAR DO SLOT ${s.slotNumber}</span><h2>Próximas ações</h2></div></div>
+        <div class="card radar-list">
+          ${refOk
+            ? '<p class="muted">Tática forte pronta. Nenhum campo adicional é obrigatório agora.</p>'
+            : `<div class="radar-item"><div><b>Definir árbitro</b><span>Necessário apenas para ajustar o desarme da 4-3-3 forte.</span></div><span class="status warn">Atenção</span></div>`
+          }
+        </div>`;
+      return;
+    }
+    _renderRadar262();
+  };
+
+  const _saveEditedField262=saveEditedField;
+  window.saveEditedField=function(slotNo,path){
+    _saveEditedField262(slotNo,path);
+    const s=state.slots[slotNo-1];
+    if(path==='match.refereeColor' && s?.tactic && isStrong433Applied(s)){
+      const tk=refereeTackling(s.match?.refereeColor);
+      s.tactic.tackling=tk||'NI';
+      localStorage.setItem(STATE_KEY,JSON.stringify(state));
+      renderAll();
+      renderPregame();
+      toast(`Árbitro atualizado · Desarme ${tk||'NI'}`);
+    }
+  };
+
+  // ------------------------------------------------------------
+  // 2.6.2 — 503: UMA ÚNICA NOVA TENTATIVA NO MESMO MODELO
+  // ------------------------------------------------------------
+  geminiJson=async function(parts,temperature=.1,maxOutputTokens=5000){
+    const key=localStorage.getItem(API_KEY_STORAGE);
+    if(!key)throw new Error('API Gemini não configurada.');
+
+    const model=settings.model||'gemini-3.5-flash';
+    const body={
+      contents:[{role:'user',parts}],
+      generationConfig:{temperature,maxOutputTokens,responseMimeType:'application/json'}
+    };
+
+    let lastError='';
+    for(let attempt=1;attempt<=2;attempt++){
+      if(document.getElementById('analysisDiagnostics')){
+        document.getElementById('analysisDiagnostics').textContent=
+          attempt===1?`Gemini: ${model}`:`Gemini: ${model} · nova tentativa`;
+      }
+      job(attempt===1?`Consultando ${model}…`:`${model} indisponível · tentando mais uma vez…`);
+
+      let res;
+      try{
+        res=await geminiFetch(model,key,body);
+      }catch(err){
+        lastError=err?.message||String(err);
+        if(attempt===1){
+          await new Promise(r=>setTimeout(r,900));
+          continue;
+        }
+        break;
+      }
+
+      if(res.ok){
+        const data=await res.json();
+        const text=(data.candidates?.[0]?.content?.parts||[]).map(p=>p.text||'').join('').trim();
+        if(!text)throw new Error('A IA não retornou conteúdo utilizável.');
+
+        const b=document.getElementById('jobBanner');
+        if(b){
+          b.className='job-banner done';
+          b.textContent=`Concluído com ${model}.`;
+          setTimeout(()=>b.classList.add('hidden'),1400);
+        }
+        return parseJsonText(text);
+      }
+
+      const txt=await res.text();
+      lastError=`Gemini ${res.status}: ${txt.slice(0,220)}`;
+      if(attempt===1 && [429,500,502,503,504].includes(res.status)){
+        await new Promise(r=>setTimeout(r,900));
+        continue;
+      }
+      break;
+    }
+
+    const b=document.getElementById('jobBanner');
+    if(b){
+      b.className='job-banner error';
+      b.textContent=`Falha no ${model}. Tente novamente em instantes.`;
+    }
+    throw new Error(lastError||`Falha no ${model}.`);
+  };
+
+  // ------------------------------------------------------------
+  // 2.6.2 — LEITURA PARCIAL: UM CARD RUIM NÃO INVALIDA O RESTO
+  // ------------------------------------------------------------
+  const _v21ApplyCapture262=v21ApplyCapture;
+  v21ApplyCapture=function(c){
+    try{
+      _v21ApplyCapture262(c||{});
+    }catch(err){
+      console.warn('Falha parcial ao aplicar captura:',err);
+      const safe=c||{};
+      const s=selectedSlot();
+      if(safe.teamName)s.teamName=safe.teamName;
+      if(safe.opponent?.teamName)s.opponent.teamName=safe.opponent.teamName;
+      if(safe.myTeam)s.myTeam=v21MergeNonNull(s.myTeam,safe.myTeam);
+      if(safe.opponent)s.opponent=v21MergeNonNull(s.opponent,safe.opponent);
+      if(safe.match)s.match=v21MergeNonNull(s.match,safe.match);
+      s.lastAnalysisAt=new Date().toISOString();
+      calcQuality(s);
+    }
   };
 
   // ------------------------------------------------------------

@@ -367,3 +367,19 @@
 @media(max-width:640px){
   .growth-kpis{grid-template-columns:repeat(2,1fr)}
 }
+
+
+/* 2.6.2 — tática forte e árbitro */
+.strong433-referee-warning,
+.strong433-referee-ok{
+  margin-bottom:12px;
+}
+.strong433-referee-warning{
+  border-color:#8b6d2b!important;
+  background:linear-gradient(180deg,#2b2410,#101923)!important;
+}
+.strong433-referee-ok{
+  border-color:#2f725d!important;
+  background:linear-gradient(180deg,#0e2b25,#091827)!important;
+}
+.strong433-hidden-audit{display:none!important}
