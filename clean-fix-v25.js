@@ -12,7 +12,7 @@
   Não carrega os hotfixes 2.4.x anteriores.
 */
 (function(){
-  const CLEAN_VERSION='2.6.7';
+  const CLEAN_VERSION='2.6.8';
 
   function e(v){
     return String(v ?? 'NI').replace(/[&<>"']/g,m=>({
@@ -2884,6 +2884,165 @@ Porém, se realmente não estiver visível, mantenha null — nunca invente.`;
     if(!t || !s || s.status!=='active')return;
     t.querySelector('.safe-readiness-line')?.remove();
     t.insertAdjacentHTML('afterbegin',readinessBadgeSafe(s));
+  };
+
+
+  // ------------------------------------------------------------
+  // 2.6.8 — RADAR / URGENTE SEMPRE CLICÁVEL
+  // ------------------------------------------------------------
+  window.openRadarAction=function(type,slotNo){
+    const s=state.slots[slotNo-1];
+    if(!s)return;
+
+    state.selectedSlot=slotNo;
+    renderSlotSwitcher();
+
+    switch(type){
+      case 'missing_fields':
+        showView('pregame');
+        setTimeout(()=>editAllFields(slotNo,true),120);
+        return;
+
+      case 'referee':
+        showView('pregame');
+        setTimeout(()=>editField(slotNo,'match.refereeColor'),120);
+        return;
+
+      case 'tactic':
+        showView('pregame');
+        return;
+
+      case 'market':
+        showView('market');
+        return;
+
+      case 'calendar':
+        showView('info');
+        return;
+
+      case 'analysis':
+        showView('analyze');
+        setAnalysisMode('tactic');
+        const select=document.getElementById('analysisSlot');
+        if(select)select.value=String(slotNo);
+        return;
+
+      case 'result':
+        showView('dashboard');
+        setTimeout(()=>resultModal(slotNo),120);
+        return;
+
+      default:
+        showView('pregame');
+        return;
+    }
+  };
+
+  function radarItemActionHtml(title,detail,statusClass,statusLabel,actionType,slotNo){
+    return `<button class="radar-item radar-item-action" onclick="openRadarAction('${e(actionType)}',${slotNo})">
+      <div>
+        <b>${e(title)}</b>
+        <span>${e(detail)}</span>
+        <small>Toque para resolver</small>
+      </div>
+      <span class="status ${e(statusClass)} radar-status-action">${e(statusLabel)} ›</span>
+    </button>`;
+  }
+
+  // Substitui apenas a renderização do Radar, preservando toda a lógica de prontidão.
+  renderRadar=function(){
+    const s=selectedSlot();
+    const el=document.getElementById('radarPanel');
+    if(!el)return;
+
+    if(!s || s.status!=='active'){
+      el.innerHTML='';
+      return;
+    }
+
+    const r=typeof readinessSafe==='function'
+      ? readinessSafe(s)
+      : {missing:missingRequired(s),sufficient:missingRequired(s).length===0};
+
+    const rows=[];
+    const hrs=hoursUntilMatch(s);
+
+    // Tática forte: só árbitro pode ficar pendente.
+    if(typeof isStrong433Applied==='function' && isStrong433Applied(s)){
+      if(!filled(s.match?.refereeColor)){
+        rows.push({
+          title:'Definir árbitro',
+          detail:'Necessário para ajustar o desarme da 4-3-3 forte.',
+          cls:'warn',
+          label:'Atenção',
+          action:'referee'
+        });
+      }
+    }else if(r.missing?.length){
+      if(hrs!==null && hrs<=18){
+        rows.push({
+          title:`Completar preparação do Slot ${s.slotNumber}`,
+          detail:`${r.missing.length} campo(s) essencial(is) · jogo em ${Math.max(0,Math.round(hrs))}h`,
+          cls:'danger',
+          label:'Urgente',
+          action:'missing_fields'
+        });
+      }else if(hrs!==null && hrs<=48){
+        rows.push({
+          title:`Preparar Slot ${s.slotNumber}`,
+          detail:`${r.missing.length} campo(s) pendente(s) · ainda há ${Math.max(1,Math.round(hrs))}h`,
+          cls:'warn',
+          label:'Atenção',
+          action:'missing_fields'
+        });
+      }else{
+        rows.push({
+          title:`Preparação futura do Slot ${s.slotNumber}`,
+          detail:`${r.missing.length} campo(s) pendente(s)${hrs!==null?` · faltam cerca de ${Math.max(1,Math.round(hrs/24))} dia(s)`:''}`,
+          cls:'',
+          label:'Planejar',
+          action:'missing_fields'
+        });
+      }
+    }else if(!s.tactic && hrs!==null && hrs<=48){
+      rows.push({
+        title:'Gerar tática',
+        detail:'Dados essenciais disponíveis.',
+        cls:'warn',
+        label:'Atenção',
+        action:'tactic'
+      });
+    }
+
+    if(s.analysisRuns?.market?.status==='warning'){
+      rows.push({
+        title:'Revisar elenco',
+        detail:s.analysisRuns.market.message,
+        cls:'warn',
+        label:'Atenção',
+        action:'market'
+      });
+    }
+
+    if(s.lastCalendarSyncWarning){
+      rows.push({
+        title:'Conferir calendário',
+        detail:s.lastCalendarSyncWarning,
+        cls:'warn',
+        label:'Atenção',
+        action:'calendar'
+      });
+    }
+
+    el.innerHTML=`<div class="section-head">
+        <div><span class="eyebrow">RADAR DO SLOT ${s.slotNumber}</span><h2>Próximas ações</h2></div>
+      </div>
+      <div class="card radar-list">
+        ${rows.length
+          ? rows.map(x=>radarItemActionHtml(x.title,x.detail,x.cls,x.label,x.action,s.slotNumber)).join('')
+          : '<p class="muted">Nada urgente neste slot agora.</p>'
+        }
+      </div>`;
   };
 
   // ------------------------------------------------------------

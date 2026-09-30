@@ -437,3 +437,29 @@
   border-color:#713946;
   background:#301921;
 }
+
+
+/* 2.6.8 — Radar clicável */
+.radar-item-action{
+  width:100%;
+  border:0;
+  text-align:left;
+  cursor:pointer;
+  color:inherit;
+  font:inherit;
+  background:transparent;
+}
+.radar-item-action:hover,
+.radar-item-action:active{
+  background:#0d2334;
+}
+.radar-item-action small{
+  display:block;
+  margin-top:4px;
+  font-size:9px;
+  color:#6fcfb3;
+  font-weight:800;
+}
+.radar-status-action{
+  white-space:nowrap;
+}
