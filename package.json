@@ -1,8 +1,8 @@
 {
-  "name": "osm-ai-coach-pro-cloud-v4-push",
+  "name": "osm-ai-coach-webpush",
   "version": "1.0.0",
   "private": true,
   "dependencies": {
-    "firebase-admin": "^13.5.0"
+    "web-push": "^3.6.7"
   }
 }

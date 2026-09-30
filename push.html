@@ -1,65 +1,49 @@
 <!doctype html>
 <html lang="pt-BR">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="theme-color" content="#07111f">
-  <title>OSM AI Coach · Push</title>
-  <style>
-    :root{color-scheme:dark;font-family:Inter,system-ui,Arial,sans-serif}
-    body{margin:0;background:#07111f;color:#eef6ff}
-    main{max-width:720px;margin:auto;padding:22px}
-    .card{background:#0d1b2b;border:1px solid #22364e;border-radius:18px;padding:18px;margin:14px 0;box-shadow:0 14px 40px #0005}
-    h1{font-size:24px;margin:0 0 6px} h2{font-size:18px}
-    .muted{color:#9fb2c8;font-size:14px;line-height:1.45}
-    textarea,input{width:100%;box-sizing:border-box;background:#07111f;color:#fff;border:1px solid #324b68;border-radius:12px;padding:12px;margin:6px 0 12px}
-    textarea{min-height:190px;font-family:monospace;font-size:12px}
-    button{width:100%;border:0;border-radius:12px;padding:13px;font-weight:700;margin:6px 0;background:#1f8cff;color:white}
-    button.secondary{background:#172a40}
-    button:disabled{opacity:.5}
-    .status{padding:12px;border-radius:12px;background:#111f30;margin-top:12px;white-space:pre-wrap}
-    .ok{border-left:4px solid #32d583} .bad{border-left:4px solid #f97066} .warn{border-left:4px solid #fdb022}
-    code{word-break:break-all}
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#07111f">
+<title>OSM AI Coach · Push</title>
+<style>
+:root{color-scheme:dark;font-family:Inter,system-ui,Arial,sans-serif}
+body{margin:0;background:#07111f;color:#eef6ff}
+main{max-width:720px;margin:auto;padding:22px}
+.card{background:#0d1b2b;border:1px solid #22364e;border-radius:18px;padding:18px;margin:14px 0}
+h1{font-size:24px} .muted{color:#9fb2c8;line-height:1.45}
+button{width:100%;border:0;border-radius:12px;padding:14px;font-weight:700;margin:7px 0;background:#258df5;color:#fff}
+button.secondary{background:#18304a} button:disabled{opacity:.5}
+.status{padding:13px;border-radius:12px;background:#111f30;margin-top:12px;white-space:pre-wrap}
+.ok{border-left:4px solid #32d583} .bad{border-left:4px solid #f97066} .warn{border-left:4px solid #fdb022}
+code{word-break:break-all}
+</style>
 </head>
 <body>
 <main>
-  <h1>🔔 OSM AI Coach · Push</h1>
-  <p class="muted">Configuração isolada para não mexer no app principal. Depois de ativado, o navegador fica registrado para receber push mesmo com o OSM Coach fechado.</p>
+<h1>🔔 OSM AI Coach · Push</h1>
+<p class="muted">Versão Web Push nativo. Não depende do token FCM nem da FCM Registration API.</p>
 
-  <div class="card">
-    <h2>1. Firebase Web Config</h2>
-    <p class="muted">No Firebase: Configurações do projeto → Geral → Seus apps → OSM Coach Web → Configuração do SDK. Cole o bloco <b>firebaseConfig</b> inteiro ou somente o objeto {...}.</p>
-    <textarea id="firebaseConfig" placeholder='const firebaseConfig = { apiKey: "...", authDomain: "...", projectId: "...", storageBucket: "...", messagingSenderId: "...", appId: "..." };'></textarea>
+<div class="card">
+<h2>1. Ativar neste Android</h2>
+<button id="activateBtn">🔔 Ativar notificações Push</button>
+<div id="status" class="status warn">Ainda não configurado.</div>
+</div>
 
-    <label>VAPID pública</label>
-    <input id="vapid" value="BBAL-pZAU9peODlYaQ-v2vpdvm0H4qCWJTPDln1LSADzDXWaXhGtmxZIc1ARwErgXT8hFD-80apg1F0dFygLKq8">
+<div class="card">
+<h2>2. Testar</h2>
+<button id="testBtn" disabled>Enviar push agora</button>
+<button id="closedBtn" class="secondary" disabled>Testar com app fechado em 15 s</button>
+<p class="muted">No teste de 15 s, toque e feche a aba imediatamente.</p>
+</div>
 
-    <button id="saveBtn">Salvar configuração</button>
-  </div>
-
-  <div class="card">
-    <h2>2. Ativar neste Android</h2>
-    <button id="activateBtn">🔔 Ativar notificações Push</button>
-    <button id="copyTokenBtn" class="secondary" disabled>Copiar token FCM</button>
-    <div id="status" class="status warn">Ainda não configurado.</div>
-  </div>
-
-  <div class="card">
-    <h2>3. Testar</h2>
-    <button id="testBtn" disabled>Enviar push agora</button>
-    <button id="testClosedBtn" class="secondary" disabled>Testar com app fechado em 15 s</button>
-    <p class="muted">No teste de 15 s, toque no botão e feche a aba imediatamente. O servidor espera 15 segundos antes de enviar.</p>
-  </div>
-
-  <div class="card">
-    <h2>Próxima etapa</h2>
-    <p class="muted">Para o botão de teste e os alertas automáticos funcionarem, o Vercel precisa da variável secreta <code>FIREBASE_SERVICE_ACCOUNT_JSON</code>. O arquivo deste ZIP já deixa a API pronta; falta apenas cadastrar essa credencial no Vercel.</p>
-  </div>
+<div class="card">
+<h2>Configuração do servidor</h2>
+<p class="muted">Na Vercel crie as variáveis <code>WEB_PUSH_VAPID_PUBLIC_KEY</code>, <code>WEB_PUSH_VAPID_PRIVATE_KEY</code> e <code>WEB_PUSH_SUBJECT</code>. O arquivo LEIA_PUSH.txt explica.</p>
+</div>
 </main>
-
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-messaging-compat.js"></script>
-<script src="/push.js?v=2"></script>
+<script>
+window.OSM_WEB_PUSH_PUBLIC_KEY = "BHDa-AXh-LYzBYAxhpvzV8ToVqSx33jOQABTlUVE8KXff-YOTnVeKVxYyVaX1c5kU0zJ_IC0wHOMKnqZAohYep0";
+</script>
+<script src="/push.js?v=3"></script>
 </body>
 </html>

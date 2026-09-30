@@ -1,68 +1,36 @@
 
-const admin = require('firebase-admin');
+const webpush = require('web-push');
 
-function getAdminApp() {
-  if (admin.apps.length) return admin.app();
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 
-  const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-  if (!raw) {
-    throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON não configurado no Vercel.');
-  }
+module.exports = async function handler(req,res){
+  if(req.method!=='POST') return res.status(405).json({error:'Use POST.'});
+  try{
+    const {subscription,delaySeconds=0}=req.body||{};
+    if(!subscription?.endpoint) return res.status(400).json({error:'Assinatura Web Push ausente.'});
 
-  let serviceAccount;
-  try {
-    serviceAccount = JSON.parse(raw);
-  } catch (_) {
-    throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON não contém JSON válido.');
-  }
+    const publicKey=process.env.WEB_PUSH_VAPID_PUBLIC_KEY;
+    const privateKey=process.env.WEB_PUSH_VAPID_PRIVATE_KEY;
+    const subject=process.env.WEB_PUSH_SUBJECT||'mailto:osm-ai-coach@example.com';
+    if(!publicKey||!privateKey) throw new Error('Configure WEB_PUSH_VAPID_PUBLIC_KEY e WEB_PUSH_VAPID_PRIVATE_KEY no Vercel.');
 
-  return admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-  });
-}
+    webpush.setVapidDetails(subject,publicKey,privateKey);
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
+    const delay=Math.max(0,Math.min(20,Number(delaySeconds)||0));
+    if(delay) await sleep(delay*1000);
 
-module.exports = async function handler(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Use POST.' });
-  }
+    const payload=JSON.stringify({
+      title:'🤖 OSM AI Coach',
+      body:delay?'Push com o app fechado funcionando.':'Push configurado corretamente.',
+      url:'/',
+      tag:'osm-webpush-test'
+    });
 
-  try {
-    const { token, delaySeconds = 0 } = req.body || {};
-    if (!token || typeof token !== 'string') {
-      return res.status(400).json({ error: 'Token FCM ausente.' });
-    }
-
-    const delay = Math.max(0, Math.min(20, Number(delaySeconds) || 0));
-    if (delay) await sleep(delay * 1000);
-
-    getAdminApp();
-
-    const message = {
-      token,
-      data: {
-        title: '🤖 OSM AI Coach',
-        body: delay ? 'Push com o app fechado funcionando.' : 'Push configurado corretamente.',
-        url: '/',
-        tag: 'osm-push-test'
-      },
-      android: {
-        priority: 'high'
-      },
-      webpush: {
-        headers: { Urgency: 'high' }
-      }
-    };
-
-    const id = await admin.messaging().send(message);
-    return res.status(200).json({ ok: true, id });
-  } catch (e) {
-    console.error('push-test', e);
-    return res.status(500).json({ error: e?.message || 'Falha ao enviar push.' });
+    await webpush.sendNotification(subscription,payload,{TTL:60,urgency:'high'});
+    return res.status(200).json({ok:true});
+  }catch(e){
+    console.error(e);
+    return res.status(500).json({error:e?.body||e?.message||'Falha no Web Push.'});
   }
 };
-
-module.exports.config = { maxDuration: 30 };
+module.exports.config={maxDuration:30};
