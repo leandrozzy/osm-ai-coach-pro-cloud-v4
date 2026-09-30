@@ -12,7 +12,7 @@
   Não carrega os hotfixes 2.4.x anteriores.
 */
 (function(){
-  const CLEAN_VERSION='2.6.3';
+  const CLEAN_VERSION='2.6.4';
 
   function e(v){
     return String(v ?? 'NI').replace(/[&<>"']/g,m=>({
@@ -2315,6 +2315,290 @@ Porém, se realmente não estiver visível, mantenha null — nunca invente.`;
       calcQuality(s);
     }
   };
+
+
+  // ------------------------------------------------------------
+  // 2.6.4 — CONTINGÊNCIA: ERRO DA IA NÃO CANCELA A ANÁLISE
+  // ------------------------------------------------------------
+  let lastFailedTacticAnalysis=null;
+
+  function localOcrText(ocr){
+    return String(ocr?.joined||'');
+  }
+
+  function detectRefereeFromOcr(text){
+    const t=n(text);
+    for(const color of ['vermelho','laranja','amarelo','azul','verde']){
+      if(t.includes(color))return color.charAt(0).toUpperCase()+color.slice(1);
+    }
+    return null;
+  }
+
+  function detectVenueFromOcr(text){
+    const t=n(text);
+    if(/\bcasa\b/.test(t))return 'Casa';
+    if(/\bfora\b/.test(t))return 'Fora';
+    return null;
+  }
+
+  function detectFormationFromOcr(text){
+    const raw=String(text||'');
+    const found=FORMATIONS.find(f=>raw.includes(f));
+    return found||null;
+  }
+
+  function detectMarkingFromOcr(text){
+    const t=n(text);
+    if(t.includes('marcacao a zona') || t.includes('a zona') || t.includes('zona'))return 'À zona';
+    if(t.includes('individual'))return 'Individual';
+    return null;
+  }
+
+  function detectOffsideFromOcr(text){
+    const t=n(text);
+    if(t.includes('fora de jogo') || t.includes('impedimento')){
+      if(/\bnao\b|\bnão\b/.test(t))return false;
+      if(/\bsim\b/.test(t))return true;
+    }
+    return null;
+  }
+
+  function applyLocalFallbackFromOcr(s,ocr){
+    const text=localOcrText(ocr);
+    const detected=[];
+
+    const setIfEmpty=(path,value)=>{
+      if(value===null||value===undefined||value==='')return;
+      const current=getPath(s,path);
+      if(hasValue(current)||typeof current==='boolean')return;
+      setField(s,path,value,'local_ocr',.55);
+      detected.push(path);
+    };
+
+    setIfEmpty('match.refereeColor',detectRefereeFromOcr(text));
+    setIfEmpty('match.venue',detectVenueFromOcr(text));
+    setIfEmpty('opponent.formation',detectFormationFromOcr(text));
+    setIfEmpty('opponent.marking',detectMarkingFromOcr(text));
+
+    const off=detectOffsideFromOcr(text);
+    if(off!==null && !(typeof getPath(s,'opponent.offside')==='boolean')){
+      setField(s,'opponent.offside',off,'local_ocr',.55);
+      detected.push('opponent.offside');
+    }
+
+    calcQuality(s);
+    return detected;
+  }
+
+  function localTacticFromRules(s){
+    const d=strengthDiff(s);
+    const ref=s?.match?.refereeColor;
+    const tackling=refereeTackling(ref)||'Normal';
+
+    if(d!==null && d>=13){
+      return {
+        formation:'4-3-3 A',
+        gamePlan:'Jogar pelas alas',
+        pressure:78,
+        mentality:82,
+        tempo:84,
+        marking:'À zona',
+        offside:'Sim',
+        tackling,
+        attackInstruction:'Atacar apenas',
+        midfieldInstruction:'Pressionar na frente',
+        defenceInstruction:'Apoiar o meio-campo',
+        reason:'Gerada pelo modo de contingência local porque a IA estava indisponível.',
+        confidenceScore:.58,
+        generatedAt:new Date().toISOString(),
+        engine:'Fallback local 4-3-3',
+        fallback:true
+      };
+    }
+
+    // Para cenários não dominantes, só gera se houver força dos dois times e formação rival.
+    if(d!==null && filled(s?.opponent?.formation)){
+      if(d<=-8){
+        return {
+          formation:'4-5-1',
+          gamePlan:'Contra-ataque',
+          pressure:38,
+          mentality:34,
+          tempo:68,
+          marking:'À zona',
+          offside:'Não',
+          tackling,
+          attackInstruction:'Atacar apenas',
+          midfieldInstruction:'Manter posição',
+          defenceInstruction:'Defender atrás',
+          reason:'Fallback local conservador: time mais fraco e IA indisponível.',
+          confidenceScore:.48,
+          generatedAt:new Date().toISOString(),
+          engine:'Fallback local defensivo',
+          fallback:true
+        };
+      }
+      return {
+        formation:'4-2-3-1',
+        gamePlan:'Jogo de passes',
+        pressure:58,
+        mentality:55,
+        tempo:65,
+        marking:'À zona',
+        offside:'Não',
+        tackling,
+        attackInstruction:'Atacar apenas',
+        midfieldInstruction:'Manter posição',
+        defenceInstruction:'Defender atrás',
+        reason:'Fallback local equilibrado: IA indisponível.',
+        confidenceScore:.46,
+        generatedAt:new Date().toISOString(),
+        engine:'Fallback local equilibrado',
+        fallback:true
+      };
+    }
+    return null;
+  }
+
+  function renderAiFallbackNotice(s,detected){
+    const target=document.getElementById('analysisContent');
+    if(!target)return;
+    const missing=missingRequired(s);
+    target.innerHTML=`
+      <div class="card ai-fallback-card">
+        <span class="eyebrow">MODO DE CONTINGÊNCIA</span>
+        <h3>A IA falhou, mas a análise local foi mantida</h3>
+        <p class="small muted">O vídeo não foi perdido. O OCR local terminou e os dados válidos foram preservados.</p>
+        <div class="fallback-kpis">
+          <div><span>Campos locais</span><b>${detected.length}</b></div>
+          <div><span>Pendentes</span><b>${missing.length}</b></div>
+          <div><span>Tática local</span><b>${s.tactic?.fallback?'Sim':'Não'}</b></div>
+        </div>
+        <div class="actions">
+          <button class="btn" onclick="retryLastTacticAI()">Tentar IA novamente</button>
+          ${missing.length?`<button class="btn ghost" onclick="editAllFields(${s.slotNumber},true)">Completar campos</button>`:''}
+          <button class="btn ghost" onclick="showView('pregame')">Ir para Preparar</button>
+        </div>
+      </div>`;
+  }
+
+  window.retryLastTacticAI=async function(){
+    if(!lastFailedTacticAnalysis){
+      toast('Não há análise pendente para tentar novamente.');
+      return;
+    }
+    const {slotNo,ocr,evidence}=lastFailedTacticAnalysis;
+    state.selectedSlot=slotNo;
+    try{
+      job('Tentando a IA novamente…');
+      const result=await v21AnalyzePackage(ocr,evidence,'tactic');
+      v21ApplyCapture(result.capture||result.captures?.[0]||result);
+      localStorage.setItem(STATE_KEY,JSON.stringify(state));
+      lastFailedTacticAnalysis=null;
+      renderAll();
+      renderPregame();
+      renderAnalysisSummary(selectedSlot());
+      job('Análise concluída.','done');
+      toast('IA respondeu e a análise foi atualizada.');
+    }catch(err){
+      const b=document.getElementById('jobBanner');
+      if(b){
+        b.className='job-banner error';
+        b.textContent='IA ainda indisponível. A análise local continua salva.';
+      }
+      toast('IA ainda indisponível; dados locais mantidos.');
+    }
+  };
+
+  // Override somente do modo Partida para capturar a falha da IA e continuar.
+  const _v21Analyze264=v21Analyze;
+  v21Analyze=async function(files){
+    if(analysisMode!=='tactic')return _v21Analyze264(files);
+
+    const slotNo=Number(document.getElementById('analysisSlot')?.value)||state.selectedSlot;
+    state.selectedSlot=slotNo;
+    const video=files.find(f=>String(f.type||'').startsWith('video/'));
+    const images=files.filter(f=>String(f.type||'').startsWith('image/'));
+    let frames=[];
+
+    setProgress(5,'Capturando telas da partida…');
+    if(video)frames=await v21ExtractVideoFrames(video,32);
+    else if(images.length){
+      for(const f of images)frames.push(await v21ImageToFrame(f));
+    }else throw new Error('Selecione um vídeo ou imagens do OSM.');
+
+    v21RenderEvidence(frames);
+    setProgress(18,'OCR local em toda a análise…');
+    const ocr=await v21RunLocalOcr(frames);
+
+    const required=v21SelectRequiredTacticFrames(frames,ocr);
+    let evidence=required.filter(x=>x.frame).map(x=>x.frame);
+
+    const sorted=[...frames].sort((a,b)=>(a.time||0)-(b.time||0));
+    const extra=[];
+    const want=Math.min(12,sorted.length);
+    for(let i=0;i<want;i++){
+      const idx=Math.round(i*(sorted.length-1)/Math.max(1,want-1));
+      if(sorted[idx]&&!extra.includes(sorted[idx]))extra.push(sorted[idx]);
+    }
+    for(const f of extra){
+      if(!evidence.includes(f))evidence.push(f);
+      if(evidence.length>=14)break;
+    }
+
+    const s=selectedSlot();
+    const locallyDetected=applyLocalFallbackFromOcr(s,ocr);
+    localStorage.setItem(STATE_KEY,JSON.stringify(state));
+
+    try{
+      setProgress(58,'Consultando a IA…');
+      const result=await v21AnalyzePackage(ocr,evidence,'tactic');
+      v21ApplyCapture(result.capture||result.captures?.[0]||result);
+      lastFailedTacticAnalysis=null;
+
+      localStorage.setItem(STATE_KEY,JSON.stringify(state));
+      calcQuality(s);
+      renderCoverage(s);
+      renderAnalysisSummary(s);
+      renderPregame();
+
+      setProgress(100,'Análise concluída');
+      setAnalysisRun(s,'tactic','success',`Cobertura ${s.analysisQuality}%`,{quality:s.analysisQuality});
+      job('Partida analisada.','done');
+      return;
+    }catch(err){
+      // NÃO cancela. Mantém OCR, tenta tática local e apresenta o que já foi obtido.
+      lastFailedTacticAnalysis={slotNo,ocr,evidence};
+
+      if(!s.tactic){
+        const fallback=localTacticFromRules(s);
+        if(fallback)s.tactic=fallback;
+      }
+
+      localStorage.setItem(STATE_KEY,JSON.stringify(state));
+      calcQuality(s);
+      renderCoverage(s);
+      renderPregame();
+      renderAiFallbackNotice(s,locallyDetected);
+
+      setProgress(100,'Análise local concluída · IA indisponível');
+      setAnalysisRun(
+        s,
+        'tactic',
+        'warning',
+        `IA indisponível. ${locallyDetected.length} campo(s) aproveitado(s) localmente; ${missingRequired(s).length} pendente(s).`,
+        {quality:s.analysisQuality,localFallback:true,missing:missingRequired(s)}
+      );
+
+      const b=document.getElementById('jobBanner');
+      if(b){
+        b.className='job-banner warn';
+        b.textContent='IA indisponível · análise local salva';
+        setTimeout(()=>b.classList.add('hidden'),2500);
+      }
+    }
+  };
+  window.v21Analyze=v21Analyze;
 
   // ------------------------------------------------------------
   // INICIALIZAÇÃO — NÃO altera adversário/rodada/calendário

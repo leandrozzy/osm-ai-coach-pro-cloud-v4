@@ -383,3 +383,23 @@
   background:linear-gradient(180deg,#0e2b25,#091827)!important;
 }
 .strong433-hidden-audit{display:none!important}
+
+
+/* 2.6.4 — contingência IA */
+.ai-fallback-card{
+  margin-top:12px;
+  border-color:#82672c!important;
+  background:linear-gradient(180deg,#2b2411,#0b1925)!important;
+}
+.ai-fallback-card h3{margin:5px 0 7px}
+.fallback-kpis{
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:7px;
+  margin:10px 0 12px;
+}
+.fallback-kpis>div{
+  padding:9px;border-radius:9px;background:#081723;border:1px solid #29445b
+}
+.fallback-kpis span{display:block;font-size:9px;color:var(--muted)}
+.fallback-kpis b{display:block;margin-top:3px;font-size:16px}
