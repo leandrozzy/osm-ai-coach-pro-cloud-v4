@@ -1,0 +1,22 @@
+OSM AI Coach Pro — Hotfix 3.5.0
+
+Corrige leitura do vídeo de Elenco usando o próprio vídeo como fonte completa:
+- lê automaticamente dinheiro em caixa no topo do OSM;
+- lê valor total do elenco;
+- lê força geral e GOL/DEF/MEI/ATA;
+- lê jogadores por recortes da tabela em pequenos lotes visuais;
+- só aceita jogador com nome, posição, força e valor, com evidência também no OCR local;
+- impede que a IA crie nome sem evidência textual;
+- Diretor recebe automaticamente o caixa lido no vídeo;
+- mostra valores reais de jogadores validados e capacidade financeira;
+- não inventa jogador disponível para compra sem a lista de transferências.
+
+Para o vídeo de teste enviado em 01/10/2026, os dados visíveis incluem:
+Caixa: 9,3M
+Valor do elenco: 168M
+Força: 84
+GOL/DEF/MEI/ATA: 85/85/84/86
+Formação: 4-2-3-1
+
+Substitua todos os arquivos do ZIP na raiz e aguarde o deploy Ready.
+Feche completamente o PWA no Android e abra novamente para atualizar o cache.
