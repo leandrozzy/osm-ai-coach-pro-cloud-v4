@@ -1,0 +1,16 @@
+OSM AI Coach Pro 4.2 — correção do leitor de elenco
+
+1. Substitua TODOS estes arquivos na raiz da main.
+2. Não carregue market-engine-v41.js no index; o novo index usa apenas market-engine-v42.js.
+3. Aguarde o deploy Ready.
+4. Feche completamente o PWA/app no Android e abra novamente.
+5. Reanalise o MESMO vídeo do elenco.
+
+Mudanças principais:
+- descobre os modelos realmente disponíveis para a chave Gemini;
+- vídeo inline com 4 FPS para capturar rolagem da tabela;
+- timeout de até 150 s por tentativa de vídeo, com retry apenas em erros transitórios;
+- fallback visual com painéis se o vídeo não fechar;
+- erro técnico real aparece em Diagnóstico/Validação se a API falhar;
+- Diretor continua bloqueado se o elenco não for validado;
+- remove selo "Dados suficientes" do Diretor quando o elenco está inválido.
