@@ -1,4 +1,4 @@
-const CACHE='osm-pro-v57-strict-dedupe-20261001';
+const CACHE='osm-pro-v58-defgol-boundary-20261001';
 const ASSETS=['./','./index.html','./styles.css','./clean-fix-v25.css','./coach-ai-30.css','./app.js','./clean-fix-v25.js','./coach-ai-30.js','./analysis-hotfix-33.js','./market-engine.js','./push-integrated.js','./manifest.webmanifest','./icon.svg'];
 self.addEventListener('install',event=>{event.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)).catch(()=>null).then(()=>self.skipWaiting()))});
 self.addEventListener('activate',event=>{event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim()))});

@@ -11,7 +11,7 @@
    - Director only decides from validated roster + real finances
 */
 (function(){
-  const VERSION='5.7.0';
+  const VERSION='5.8.0';
   const TARGET={ATA:4,MEI:6,DEF:6,GOL:2};
   const VALID_POS=new Set(Object.keys(TARGET));
   const oldRenderMarket=typeof renderMarket==='function'?renderMarket:null;
@@ -96,7 +96,10 @@
   }
 
   function likelySamePlayer(a,b){
-    if(!a||!b||a.position!==b.position)return false;
+    if(!a||!b)return false;
+    const boundaryPair=new Set([a.position,b.position]);
+    const defGolBoundary=boundaryPair.has('DEF')&&boundaryPair.has('GOL');
+    if(a.position!==b.position && !defGolBoundary)return false;
 
     const rd=Math.abs(Number(a.rating)-Number(b.rating));
     const ad=(a.age==null||b.age==null)?99:Math.abs(Number(a.age)-Number(b.age));
@@ -105,6 +108,9 @@
       ? (Math.abs(av-bv)<=900000 || Math.abs(av-bv)/Math.max(av,bv,1)<=0.09)
       : false;
     const ns=nameSimilarity(a.name,b.name);
+
+    // DEF/GOL na fronteira: permite fusão se os dados numéricos forem quase iguais.
+    if(defGolBoundary && rd<=1 && ad<=1 && valueClose)return true;
 
     // Nome muito parecido + pelo menos um número próximo.
     if(ns>=0.78 && (rd<=2 || ad<=1 || valueClose))return true;
@@ -119,6 +125,12 @@
   }
 
   function mergePlayerInto(target,source){
+    if(new Set([target.position,source.position]).has('DEF') && new Set([target.position,source.position]).has('GOL')){
+      // Na fronteira DEF->GOL, mantém DEF por padrão; goleiro legítimo normalmente
+      // continuará aparecendo repetido como GOL em mais de um quadro.
+      target.position='DEF';
+      target.posCode='DEF';
+    }
     target.name=betterName(target.name,source.name);
     target.training=target.training||source.training;
     target.forSale=target.forSale||source.forSale;
@@ -482,6 +494,76 @@
   }
 
 
+
+  function explicitKeeperCode(line){
+    return /(?:^|\s|\|)(GR|GK|GOL|POR)(?=\s|\||$)/i.test(String(line||''));
+  }
+
+  function explicitDefenderCode(line){
+    return /(?:^|\s|\|)(DD|DC|DE|DF|DEF|ZAG|CB|RB|LB)(?=\s|\||$)/i.test(String(line||''));
+  }
+
+  function rowsFromDefGolBoundary(blocks){
+    const rows=[];
+    let section='DEF';
+    let keeperHeadingSeen=false;
+
+    for(const block of (blocks||[])){
+      const lines=String(block?.text||'').split(/\r?\n/);
+      for(const raw of lines){
+        const sec=normalizedSectionName(raw);
+
+        if(sec==='GOL'){
+          keeperHeadingSeen=true;
+          section='GOL';
+          continue;
+        }
+        if(sec==='DEF'){
+          section='DEF';
+          continue;
+        }
+
+        // Código explícito tem prioridade apenas nesta fronteira.
+        // Isso evita transformar o último DEF em GOL por causa de um título deslocado.
+        let target=section;
+        if(explicitDefenderCode(raw)) target='DEF';
+        else if(explicitKeeperCode(raw)) target='GOL';
+        else if(!keeperHeadingSeen) target='DEF';
+
+        const row=parseRowFromSectionLine(raw,target);
+        if(row){
+          row.position=target;
+          row.posCode=broadPosCode(target);
+          rows.push(row);
+        }
+      }
+    }
+    return rows;
+  }
+
+  function fixDefGolMisclassification(rows){
+    const list=[...(rows||[])].map(x=>({...x}));
+    const gols=list.filter(x=>x.position==='GOL');
+    if(gols.length<=2)return list;
+
+    // Se houver mais de 2 goleiros, procura candidatos que têm cara de DEF:
+    // força alta/moderada e valor compatível com defesa, ou nome já visto como DEF em outra leitura.
+    // Não usa número fixo para validar o elenco; esta regra só resolve a fronteira visual DEF->GOL.
+    const candidates=gols
+      .filter(x=>Number(x.rating)>=75)
+      .sort((a,b)=>(money(b.value)||0)-(money(a.value)||0));
+
+    while(list.filter(x=>x.position==='GOL').length>2 && candidates.length){
+      const c=candidates.shift();
+      const idx=list.findIndex(x=>x===c || (x.name===c.name && x.position==='GOL'));
+      if(idx>=0){
+        list[idx].position='DEF';
+        list[idx].posCode='DEF';
+      }
+    }
+    return list;
+  }
+
   function rowsFromKnownSection(blocks,target){
     const rows=[];
     for(const block of (blocks||[])){
@@ -538,7 +620,8 @@
     // REGRA 5.7: uma recuperação de DEF só pode acrescentar DEF,
     // uma recuperação de MEI só pode acrescentar MEI, etc.
     // Não reenviamos a lista inteira para a IA porque isso gerava duplicatas.
-    const candidates=rowsFromKnownSection(recovery,target);
+    const boundaryRows=(target==='DEF'||target==='GOL')?rowsFromDefGolBoundary(recovery):null;
+    const candidates=boundaryRows||rowsFromKnownSection(recovery,target);
 
     const before=(existingRows||[]).length;
     const merged=consolidate([
@@ -632,6 +715,10 @@
 
     let finalRows=consolidate([localRows,aiRows]);
 
+    // Corrige a fronteira visual DEF -> GOL antes de qualquer recuperação.
+    // O OCR às vezes aplica "Guarda-redes" uma linha cedo.
+    finalRows=fixDefGolMisclassification(finalRows);
+
     const headerLocal=deterministicHeaderFromOcr(
       blocks.find(x=>x.label==='cabeçalho')?.text||joined
     );
@@ -664,7 +751,49 @@
 
       // A seção com menor cobertura relativa no fluxo observado é tentada primeiro.
       // No vídeo atual isto direciona a recuperação para Defesas sem hardcode de quantidade.
-      const sectionOrder=['DEF','MEI','ATA','GOL'];
+      // Primeiro tenta somente a transição DEF -> GOL, que é onde o vídeo atual
+      // ainda perde linhas. Usa quadros do fim da lista com recortes sobrepostos.
+      const tailFrames=chosen.slice(Math.max(0,chosen.length-4));
+      if(playerSum/sqValue<.97 && tailFrames.length){
+        const boundaryBlocks=[];
+        for(let base=0;base<tailFrames.length;base+=2){
+          const tasks=[];
+          tailFrames.slice(base,base+2).forEach((f,bi)=>{
+            tasks.push((async()=>{
+              const crop=await cropForFreeOcr(f,{x:0,y:.34,w:1,h:.36});
+              return ocrSpaceImage(crop,`def-gol-${base+bi+1}-mid`,18000,'2');
+            })());
+            tasks.push((async()=>{
+              const crop=await cropForFreeOcr(f,{x:0,y:.58,w:1,h:.40});
+              return ocrSpaceImage(crop,`def-gol-${base+bi+1}-bottom`,18000,'2');
+            })());
+          });
+          const settled=await Promise.allSettled(tasks);
+          for(const r of settled)if(r.status==='fulfilled'&&r.value?.text)boundaryBlocks.push(r.value);
+        }
+
+        if(boundaryBlocks.length){
+          const boundaryRows=rowsFromDefGolBoundary(boundaryBlocks);
+          const before=finalRows.length;
+          finalRows=consolidate([finalRows,boundaryRows]);
+          finalRows=fixDefGolMisclassification(finalRows);
+          if(finalRows.length>before){
+            playerSum=finalRows.reduce((a,p)=>a+(money(p.value)||0),0);
+          }
+          recoveryBlocks.push(...boundaryBlocks);
+        }
+      }
+
+      const currentCounts={
+        ATA:finalRows.filter(r=>r.position==='ATA').length,
+        MEI:finalRows.filter(r=>r.position==='MEI').length,
+        DEF:finalRows.filter(r=>r.position==='DEF').length,
+        GOL:finalRows.filter(r=>r.position==='GOL').length
+      };
+      const sectionOrder=(currentCounts.ATA>0&&currentCounts.MEI>0)
+        ? ['DEF','GOL']
+        : ['DEF','MEI','ATA','GOL'];
+
       for(const target of sectionOrder){
         if(playerSum/sqValue>=.96)break;
 
@@ -1239,7 +1368,7 @@ Retorne JSON puro exatamente:
       source=`${result.provider||'OCR.Space'}:${result.model||'parser'}`;
       const diag=document.getElementById('analysisDiagnostics');
       const cov=result.positionCoverage||{};
-      if(diag)diag.textContent=`Elenco 5.7 · Engine 2 · ${result.tableBlocks}/${result.distinctFrames} quadros úteis · ATA/MEI/DEF/GOL ${cov.ATA||0}/${cov.MEI||0}/${cov.DEF||0}/${cov.GOL||0} · ${roster.length} únicos · ${Math.round((Date.now()-started)/1000)}s.`;
+      if(diag)diag.textContent=`Elenco 5.8 · Engine 2 · ${result.tableBlocks}/${result.distinctFrames} quadros úteis · ATA/MEI/DEF/GOL ${cov.ATA||0}/${cov.MEI||0}/${cov.DEF||0}/${cov.GOL||0} · ${roster.length} únicos · ${Math.round((Date.now()-started)/1000)}s.`;
       validationScan=result;
     }catch(err){
       technicalError=String(err?.message||err);
@@ -1290,14 +1419,14 @@ Retorne JSON puro exatamente:
       if(typeof renderMarket==='function')renderMarket();
       const msg=`${roster.length} jogadores validados · ${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL} · caixa ${fmtMoney(s.myTeam?.cash)} · elenco ${fmtMoney(s.myTeam?.squadValue)}.`;
       const el=document.getElementById('analysisContent');
-      if(el)el.innerHTML=`<div class="card" style="margin-top:12px"><span class="eyebrow">ELENCO VALIDADO · 5.7</span><h3>${roster.length} jogadores confirmados</h3><p class="small muted">${esc(msg)}</p><div class="fallback-kpis"><div><span>Caixa</span><b>${esc(fmtMoney(s.myTeam?.cash))}</b></div><div><span>Valor elenco</span><b>${esc(fmtMoney(s.myTeam?.squadValue))}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div></div><p class="small muted">Fonte: ${esc(source)} · Engine 2 + recuperação isolada por posição + deduplicação tolerante · ${Math.round(validation.elapsedMs/1000)}s.</p></div>`;
+      if(el)el.innerHTML=`<div class="card" style="margin-top:12px"><span class="eyebrow">ELENCO VALIDADO · 5.8</span><h3>${roster.length} jogadores confirmados</h3><p class="small muted">${esc(msg)}</p><div class="fallback-kpis"><div><span>Caixa</span><b>${esc(fmtMoney(s.myTeam?.cash))}</b></div><div><span>Valor elenco</span><b>${esc(fmtMoney(s.myTeam?.squadValue))}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div></div><p class="small muted">Fonte: ${esc(source)} · Engine 2 + recuperação da fronteira DEF/GOL + deduplicação tolerante · ${Math.round(validation.elapsedMs/1000)}s.</p></div>`;
       setAnalysisRun(s,'market','success',msg,{version:VERSION,validation}); setProgress(100,'Elenco validado'); job('Elenco e finanças atualizados.','done'); return;
     }
 
     preserveFailed(s,validation,header); try{localStorage.setItem(STATE_KEY,JSON.stringify(state))}catch{}
     if(typeof renderMarket==='function')renderMarket();
     const el=document.getElementById('analysisContent');
-    if(el)el.innerHTML=`<div class="card ai-fallback-card" style="margin-top:12px"><span class="eyebrow">VALIDAÇÃO DE ELENCO · 5.7</span><h3>Leitura incompleta — não alterei seu elenco</h3><p class="small muted">${esc(validation.issues.join(' · '))}</p><div class="fallback-kpis"><div><span>Encontrados</span><b>${validation.count}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div><div><span>Tempo</span><b>${Math.round(validation.elapsedMs/1000)}s</b></div></div>${technicalError?`<p class="small muted" style="margin-top:10px">Erro técnico: ${esc(technicalError)}</p>`:''}</div>`;
+    if(el)el.innerHTML=`<div class="card ai-fallback-card" style="margin-top:12px"><span class="eyebrow">VALIDAÇÃO DE ELENCO · 5.8</span><h3>Leitura incompleta — não alterei seu elenco</h3><p class="small muted">${esc(validation.issues.join(' · '))}</p><div class="fallback-kpis"><div><span>Encontrados</span><b>${validation.count}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div><div><span>Tempo</span><b>${Math.round(validation.elapsedMs/1000)}s</b></div></div>${technicalError?`<p class="small muted" style="margin-top:10px">Erro técnico: ${esc(technicalError)}</p>`:''}</div>`;
     setAnalysisRun(s,'market','warning',`Leitura incompleta: ${validation.issues.join('; ')}`,{version:VERSION,validation}); setProgress(100,'Leitura incompleta'); job('Elenco não foi alterado porque a validação não fechou.','done');
   }
 
@@ -1325,11 +1454,11 @@ Retorne JSON puro exatamente:
   }
   function directorHtml(s){
     const v=s?.rosterValidation42;
-    if(!v?.ok)return `<div class="card market40-card"><span class="eyebrow">DIRETOR IA · 5.7</span><h3>Plano bloqueado até ler o elenco completo</h3><p class="small muted">A versão 5.7 impede que a recuperação de uma posição crie jogadores de outra e deduplica variações de OCR por nome/idade/força/valor.</p><div class="actions"><button class="btn" onclick="showView('analyze');setAnalysisMode('market')">Analisar elenco</button></div></div>`;
+    if(!v?.ok)return `<div class="card market40-card"><span class="eyebrow">DIRETOR IA · 5.8</span><h3>Plano bloqueado até ler o elenco completo</h3><p class="small muted">A versão 5.8 trata explicitamente a fronteira Defesas/Guarda-redes e recupera linhas perdidas no fim da lista.</p><div class="actions"><button class="btn" onclick="showView('analyze');setAnalysisMode('market')">Analisar elenco</button></div></div>`;
     const p=buildDirector(s),c={ATA:p.by.ATA.length,MEI:p.by.MEI.length,DEF:p.by.DEF.length,GOL:p.by.GOL.length};
     const sell=p.sells.length?p.sells.map((x,i)=>`<div class="radar-item"><div><b>${i+1}. ${esc(x.name)}</b><span>${esc(x.position)} · força ${esc(x.rating)} · valor ${esc(x.value)}${x.training?' · treinando':''}</span></div><span>${x.forSale?'Já à venda':'Excedente'}</span></div>`).join(''):'<p class="small muted">Nenhuma venda estrutural necessária agora.</p>';
     const weak=Object.entries(p.weakest).map(([k,x])=>x?`${k}: ${esc(x.name)} ${x.rating}`:`${k}: NI`).join(' · ');
-    return `<div class="card market40-card"><div class="section-head compact-head"><div><span class="eyebrow">DIRETOR IA · DADOS REAIS · 5.7</span><h3>Plano baseado somente no vídeo validado</h3></div></div>
+    return `<div class="card market40-card"><div class="section-head compact-head"><div><span class="eyebrow">DIRETOR IA · DADOS REAIS · 5.8</span><h3>Plano baseado somente no vídeo validado</h3></div></div>
       <div class="coach30-kpis"><div><span>Caixa</span><b>${esc(fmtMoney(p.cash))}</b></div><div><span>Valor do elenco</span><b>${esc(fmtMoney(p.sq))}</b></div><div><span>Jogadores</span><b>${p.rows.length}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${c.ATA}/${c.MEI}/${c.DEF}/${c.GOL}</b></div></div>
       <div class="reason-box"><b>Venda agora</b>${sell}${p.sells.length?`<p class="small muted">Referência de caixa se as ${p.sells.length} vendas ocorrerem pelo valor mostrado: ${esc(fmtMoney(p.afterSales))}. O preço efetivo de venda pode variar no OSM.</p>`:''}</div>
       <div class="reason-box"><b>Compra</b><p>Caixa imediato: <b>${esc(fmtMoney(p.cash))}</b>. ${p.sells.length?`Referência após vendas: <b>${esc(fmtMoney(p.afterSales))}</b>.`:''}</p><p class="small muted">Sem ler a lista de transferências, não inventarei nome/preço disponível. O Diretor usa este teto real para indicar quais opções observadas no mercado cabem no orçamento.</p></div>
@@ -1383,7 +1512,7 @@ Retorne JSON puro exatamente:
   function injectBackupSettings(){
     const view=document.getElementById('view-settings');if(!view||document.getElementById('multiAiBackupCard'))return;
     const card=document.createElement('div');card.id='multiAiBackupCard';card.className='card form';card.style.marginTop='12px';
-    card.innerHTML=`<span class="eyebrow">IA DE BACKUP · 5.7</span><h3>OCR especializado + IA de backup</h3><p class="small muted">Elenco: OCR.Space lê as tabelas; OpenRouter/Groq consolidam o texto. Gemini fica reservado para outras análises. As chaves ficam somente neste navegador.</p><label>OpenRouter API Key<input id="openrouterKey44" type="password" autocomplete="off" placeholder="sk-or-v1-..."></label><label>Groq API Key<input id="groqKey44" type="password" autocomplete="off" placeholder="gsk_..."></label><label>OCR.Space API Key<input id="ocrSpaceKey46" type="password" autocomplete="off" placeholder="Chave OCR.Space"></label><div class="actions"><button class="btn" id="saveBackupKeys44">Salvar chaves</button></div><p id="backupAiStatus44" class="small muted"></p>`;
+    card.innerHTML=`<span class="eyebrow">IA DE BACKUP · 5.8</span><h3>OCR especializado + IA de backup</h3><p class="small muted">Elenco: OCR.Space lê as tabelas; OpenRouter/Groq consolidam o texto. Gemini fica reservado para outras análises. As chaves ficam somente neste navegador.</p><label>OpenRouter API Key<input id="openrouterKey44" type="password" autocomplete="off" placeholder="sk-or-v1-..."></label><label>Groq API Key<input id="groqKey44" type="password" autocomplete="off" placeholder="gsk_..."></label><label>OCR.Space API Key<input id="ocrSpaceKey46" type="password" autocomplete="off" placeholder="Chave OCR.Space"></label><div class="actions"><button class="btn" id="saveBackupKeys44">Salvar chaves</button></div><p id="backupAiStatus44" class="small muted"></p>`;
     view.appendChild(card);
     const or=document.getElementById('openrouterKey44'),g=document.getElementById('groqKey44'),o=document.getElementById('ocrSpaceKey46');or.value=localStorage.getItem(OPENROUTER_KEY)||'';g.value=localStorage.getItem(GROQ_KEY)||'';o.value=localStorage.getItem(OCRSPACE_KEY)||'';
     const update=()=>{const k=backupKeys();document.getElementById('backupAiStatus44').textContent=`OCR.Space: ${ocrSpaceKey()?'configurado':'não configurado'} · OpenRouter: ${k.openrouter?'configurado':'não configurado'} · Groq: ${k.groq?'configurado':'não configurado'}${geminiCoolingDown()?' · Gemini em cooldown por cota':''}`};update();
@@ -1391,6 +1520,6 @@ Retorne JSON puro exatamente:
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(injectBackupSettings,250));else setTimeout(injectBackupSettings,250);
 
-  window.OSM_MARKET_ENGINE_57={version:VERSION,consolidate,validateRoster,buildDirector};
+  window.OSM_MARKET_ENGINE_58={version:VERSION,consolidate,validateRoster,buildDirector};
   try{console.info('[OSM] Market Engine '+VERSION+' ativo')}catch{}
 })();
