@@ -1,0 +1,22 @@
+OSM AI Coach Pro — 4.1 VIDEO-FIRST
+
+CORREÇÃO PRINCIPAL
+- Elenco por vídeo inteiro: a IA recebe o MP4 completo em uma única chamada multimodal.
+- O vídeo inteiro é a fonte principal para cabeçalho financeiro + todos os jogadores.
+- Não divide mais o elenco em 9 chamadas independentes.
+- Se a leitura direta do vídeo falhar, usa fallback com apenas 2 painéis compostos da rolagem.
+- Só grava o elenco se quantidade/composição/valores forem coerentes.
+- Director continua bloqueado se a validação não fechar.
+
+IMPORTANTE
+Substitua TODOS os arquivos deste ZIP na raiz da main. Os arquivos antigos podem continuar no repositório, mas o novo index.html não carrega market-engine-v40.js.
+
+TESTE DE REGRESSÃO DO VÍDEO FORNECIDO
+O algoritmo NÃO tem estes números fixos; eles servem apenas para conferir o mesmo vídeo enviado:
+- Caixa: 9,3M
+- Valor do elenco: 168M
+- Força: 84
+- Jogadores: 19
+- Composição: 4 ATA / 6 MEI / 7 DEF / 2 GOL
+
+Após o deploy Ready, feche completamente o PWA/app e abra novamente para carregar o cache 4.1.
