@@ -3928,3 +3928,187 @@ REGRAS:
   window.OSM_USABLE_CORE_VERSION=V76;
   try{console.info('[OSM] V7.6 Usable Core ativo')}catch(_){}
 })();
+/* =========================================================
+   V7.7 DETERMINISTIC MATCH READER
+   Recovery layer for the OSM matchup screen.
+   Reads force values from OCR.Space word coordinates and the
+   referee colour directly from pixels. No generative AI is
+   required for these three critical fields.
+   ========================================================= */
+(function(){
+  'use strict';
+  const V77='7.7.0';
+  const OCR_KEY='osm_ai_coach_ocrspace_key';
+  const prevAnalyze77=typeof v21Analyze==='function'?v21Analyze:null;
+
+  function norm77(v){return String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]/g,'')}
+  function valid77(v){return !(v===null||v===undefined||v===''||v==='NI')}
+  function get77(o,p){return String(p).split('.').reduce(function(a,k){return a?a[k]:undefined},o)}
+  function set77(o,p,v){const a=String(p).split('.');let q=o;for(let i=0;i<a.length-1;i++){if(!q[a[i]]||typeof q[a[i]]!=='object')q[a[i]]={};q=q[a[i]]}q[a[a.length-1]]=v}
+  function safe77(e){return String((e&&e.message)||e||'erro').slice(0,220)}
+  function spread77(a,n){a=(a||[]).filter(Boolean);if(a.length<=n)return a;const out=[];for(let i=0;i<n;i++){const k=Math.round(i*(a.length-1)/Math.max(1,n-1));if(a[k]&&!out.includes(a[k]))out.push(a[k])}return out}
+
+  async function cropOverview77(frame){
+    const img=await v21LoadImage(frame.dataUrl),W=img.naturalWidth,H=img.naturalHeight;
+    const sx=Math.round(W*.15),sy=Math.round(H*.10),sw=Math.round(W*.70),sh=Math.round(H*.35);
+    const outW=1500,outH=Math.round(sh*(outW/sw));
+    const c=document.createElement('canvas');c.width=outW;c.height=outH;
+    c.getContext('2d').drawImage(img,sx,sy,sw,sh,0,0,outW,outH);
+    const dataUrl=c.toDataURL('image/jpeg',.90);
+    return {dataUrl:dataUrl,base64:dataUrl.split(',')[1],mimeType:'image/jpeg',width:outW,height:outH};
+  }
+
+  async function ocrOverview77(panel){
+    const key=String(localStorage.getItem(OCR_KEY)||'').trim();
+    if(!key)throw new Error('OCR.Space não configurado');
+    const fd=new FormData();
+    fd.append('base64Image','data:image/jpeg;base64,'+panel.base64);
+    fd.append('language','auto');
+    fd.append('OCREngine','2');
+    fd.append('isTable','false');
+    fd.append('isOverlayRequired','true');
+    fd.append('scale','true');
+    const ctl=new AbortController(),tm=setTimeout(function(){ctl.abort()},10000);
+    try{
+      const r=await fetch('https://api.ocr.space/parse/image',{method:'POST',signal:ctl.signal,headers:{apikey:key},body:fd});
+      const raw=await r.text();if(!r.ok)throw new Error('OCR.Space HTTP '+r.status);
+      const j=JSON.parse(raw);if(j&&j.IsErroredOnProcessing)throw new Error('OCR.Space falhou');
+      const words=[];
+      for(const p of (j.ParsedResults||[]))for(const line of ((p.TextOverlay&&p.TextOverlay.Lines)||[]))for(const w of (line.Words||[])){
+        const t=String(w.WordText||'').trim();if(!t)continue;
+        words.push({text:t,left:Number(w.Left||0),top:Number(w.Top||0),width:Number(w.Width||0),height:Number(w.Height||0)});
+      }
+      return words;
+    }catch(e){if(e&&e.name==='AbortError')throw new Error('OCR.Space timeout');throw e}finally{clearTimeout(tm)}
+  }
+
+  function nearestNumber77(words,panel,rx,ry){
+    let best=null;
+    for(const w of words){
+      const m=String(w.text).replace(/[^0-9]/g,'');
+      if(!/^\d{2,3}$/.test(m))continue;
+      const n=Number(m);if(n<20||n>200)continue;
+      const cx=(w.left+w.width/2)/panel.width,cy=(w.top+w.height/2)/panel.height;
+      const d=Math.hypot((cx-rx)*1.25,(cy-ry)*1.6);
+      if(d>.23)continue;
+      if(!best||d<best.d)best={n:n,d:d,cx:cx,cy:cy,text:w.text};
+    }
+    return best;
+  }
+
+  function ownSide77(words,panel){
+    const nick=norm77((typeof settings!=='undefined'&&settings&&settings.userNick)||'leandrozzy');
+    let hit=null;
+    for(const w of words){
+      const t=norm77(w.text);
+      if(!t)continue;
+      if(t===nick || (nick.length>=6&&t.includes(nick.slice(0,6))) || (t.length>=6&&nick.includes(t.slice(0,6)))){
+        const cx=(w.left+w.width/2)/panel.width;hit=cx<.5?'left':'right';break;
+      }
+    }
+    return hit;
+  }
+
+  function referee77(frame){
+    return v21LoadImage(frame.dataUrl).then(function(img){
+      const W=img.naturalWidth,H=img.naturalHeight;
+      const c=document.createElement('canvas');
+      c.width=Math.max(12,Math.round(W*.014));c.height=Math.max(30,Math.round(H*.07));
+      const x=c.getContext('2d',{willReadFrequently:true});
+      x.drawImage(img,Math.round(W*.494),Math.round(H*.44),Math.round(W*.014),Math.round(H*.065),0,0,c.width,c.height);
+      const d=x.getImageData(0,0,c.width,c.height).data;
+      const bins={Vermelho:0,Laranja:0,Amarelo:0,Verde:0,Azul:0};let vivid=0;
+      for(let i=0;i<d.length;i+=4){
+        const r=d[i]/255,g=d[i+1]/255,b=d[i+2]/255,max=Math.max(r,g,b),min=Math.min(r,g,b),delta=max-min;
+        if(max<.48||delta<.24)continue;
+        let h=0;if(delta){if(max===r)h=60*(((g-b)/delta)%6);else if(max===g)h=60*((b-r)/delta+2);else h=60*((r-g)/delta+4)}if(h<0)h+=360;
+        vivid++;
+        if(h<15||h>=345)bins.Vermelho++;
+        else if(h<45)bins.Laranja++;
+        else if(h<78)bins.Amarelo++;
+        else if(h<165)bins.Verde++;
+        else if(h<270)bins.Azul++;
+      }
+      let best=null,count=0;for(const k of Object.keys(bins))if(bins[k]>count){best=k;count=bins[k]}
+      if(vivid<80||count/vivid<.42)return null;
+      return {color:best,count:count,vivid:vivid,ratio:count/vivid};
+    });
+  }
+
+  async function recoverMatch77(files){
+    const s=selectedSlot();
+    const needForce=!valid77(s&&s.myTeam&&s.myTeam.overall)||!valid77(s&&s.opponent&&s.opponent.overall);
+    const needRef=!valid77(s&&s.match&&s.match.refereeColor);
+    if(!needForce&&!needRef)return {changed:false};
+
+    const video=(files||[]).find(function(f){return String(f.type||'').startsWith('video/')});
+    const images=(files||[]).filter(function(f){return String(f.type||'').startsWith('image/')});
+    let frames=[];
+    if(video)frames=await v21ExtractVideoFrames(video,18);
+    else for(const f of images)frames.push(await v21ImageToFrame(f));
+    frames=spread77(frames,9);
+    if(!frames.length)return {changed:false};
+
+    let my=null,opp=null,side=null,ref=null,used=null,errors=[];
+    for(let i=0;i<Math.min(6,frames.length);i++){
+      const f=frames[i];
+      if(!ref&&needRef){try{const rr=await referee77(f);if(rr)ref=rr.color}catch(e){errors.push(safe77(e))}}
+      if(needForce&&(!my||!opp)){
+        try{
+          const panel=await cropOverview77(f),words=await ocrOverview77(panel);
+          const L=nearestNumber77(words,panel,.255,.31),R=nearestNumber77(words,panel,.745,.31);
+          if(L&&R){
+            side=ownSide77(words,panel);
+            if(!side){
+              // The app already knows the own team; use the OCR side containing its name.
+              const ownName=norm77(s&&s.teamName);let leftScore=0,rightScore=0;
+              for(const w of words){const t=norm77(w.text);if(!t||!ownName)continue;const hit=(ownName.includes(t)||t.includes(ownName));if(hit){const cx=(w.left+w.width/2)/panel.width;if(cx<.5)leftScore++;else rightScore++;}}
+              if(leftScore||rightScore)side=leftScore>=rightScore?'left':'right';
+            }
+            if(side==='right'){my=R.n;opp=L.n}else{my=L.n;opp=R.n}
+            used=i+1;break;
+          }
+        }catch(e){errors.push(safe77(e))}
+      }
+    }
+
+    let changed=false,runAt=new Date().toISOString();s.fieldMeta=s.fieldMeta||{};
+    if(needForce&&Number.isFinite(my)&&Number.isFinite(opp)){
+      s.myTeam=s.myTeam||{};s.opponent=s.opponent||{};
+      s.myTeam.overall=my;s.opponent.overall=opp;
+      s.fieldMeta['myTeam.overall']={source:'detected',confidence:.99,updatedAt:runAt};
+      s.fieldMeta['opponent.overall']={source:'detected',confidence:.99,updatedAt:runAt};
+      changed=true;
+    }
+    if(needRef&&ref){
+      s.match=s.match||{};s.match.refereeColor=ref;
+      s.fieldMeta['match.refereeColor']={source:'detected',confidence:.98,updatedAt:runAt};changed=true;
+    }
+    if(changed){
+      calcQuality(s);saveState();renderCoverage(s);renderAnalysisSummary(s);renderPregame();
+      const miss=missingRequired(s);
+      setAnalysisRun(s,'tactic',miss.length?'warning':'success','V7.7: leitura determinística recuperou '+(Number.isFinite(my)?('força '+my+' × '+opp):'')+(ref?(' · árbitro '+ref):'')+(miss.length?(' · '+miss.length+' básico(s) ainda NI'):' · pronto para tática'),{quality:s.analysisQuality,currentRunValidated:true});
+      if(!miss.length&&document.getElementById('autoTactic')&&document.getElementById('autoTactic').checked){
+        try{await generateTactic(state.selectedSlot)}catch(e){errors.push(safe77(e))}
+      }
+    }
+    return {changed:changed,my:my,opp:opp,ref:ref,side:side,frame:used,errors:errors};
+  }
+
+  v21Analyze=async function(files){
+    if(!prevAnalyze77)throw new Error('analisador anterior indisponível');
+    await prevAnalyze77(files);
+    if(analysisMode!=='tactic')return;
+    try{
+      const r=await recoverMatch77(files);
+      const d=document.getElementById('analysisDiagnostics');
+      if(d&&r.changed)d.textContent='V7.7 determinístico · força '+(r.my||'NI')+' × '+(r.opp||'NI')+' · árbitro '+(r.ref||'NI')+' · lado '+(r.side||'NI');
+      if(r.changed)job('V7.7 recuperou força/árbitro diretamente da tela da partida.','done');
+    }catch(e){
+      const d=document.getElementById('analysisDiagnostics');if(d)d.textContent='V7.7 recovery: '+safe77(e);
+    }
+  };
+  window.v21Analyze=v21Analyze;
+  window.OSM_DETERMINISTIC_MATCH_VERSION=V77;
+  try{console.info('[OSM] V7.7 Deterministic Match Reader ativo')}catch(_){ }
+})();
