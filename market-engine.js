@@ -2423,3 +2423,415 @@ Retorne JSON puro exatamente:
     console.info('[OSM] Stable AI Router 7.2 ativo');
   }catch(_){}
 })();
+
+/* =========================================================
+   V7.3 STABLE ANALYSIS
+   Fixes:
+   - Partida no longer reports old 100% as if the current run succeeded.
+   - Gemini failure falls back to OpenRouter vision.
+   - If vision fails, OCR.Space extracts text and OpenRouter/Groq structure it.
+   - Provider errors are preserved for diagnostics.
+   ========================================================= */
+(function(){
+  'use strict';
+
+  const V73='7.3.0';
+  const OR_KEY='osm_ai_coach_openrouter_key';
+  const GROQ_KEY='osm_ai_coach_groq_key';
+  const OCR_KEY='osm_ai_coach_ocrspace_key';
+  const previousAnalyze=typeof v21Analyze==='function'?v21Analyze:null;
+  const previousPackage=typeof v21AnalyzePackage==='function'?v21AnalyzePackage:null;
+
+  const wait=(ms)=>new Promise(r=>setTimeout(r,ms));
+
+  function safeErr(e){
+    return String(e?.message||e||'erro')
+      .replace(/sk-or-v1-[A-Za-z0-9_-]+/g,'[OpenRouter oculto]')
+      .replace(/gsk_[A-Za-z0-9_-]+/g,'[Groq oculto]')
+      .replace(/AIza[A-Za-z0-9_-]+/g,'[Gemini oculto]')
+      .slice(0,320);
+  }
+
+  function parseJsonLoose(txt){
+    txt=String(txt||'').trim()
+      .replace(/^```(?:json)?/i,'')
+      .replace(/```$/,'')
+      .trim();
+    if(!txt)throw new Error('resposta vazia');
+    try{return JSON.parse(txt)}catch(_){}
+    const a=txt.indexOf('{'),b=txt.lastIndexOf('}');
+    if(a>=0&&b>a)return JSON.parse(txt.slice(a,b+1));
+    throw new Error('JSON inválido');
+  }
+
+  function timeout(p,ms,label){
+    let timer;
+    return Promise.race([
+      Promise.resolve(p).finally(()=>clearTimeout(timer)),
+      new Promise((_,rej)=>{timer=setTimeout(()=>rej(new Error(`${label}: tempo excedido (${Math.round(ms/1000)}s)`)),ms)})
+    ]);
+  }
+
+  function has(v){return v!==null&&v!==undefined&&v!==''&&v!=='NI';}
+
+  function useful(mode,data){
+    if(!data||typeof data!=='object')return 0;
+    if(mode==='calendar')return Array.isArray(data.matches)?data.matches.length:0;
+    if(mode==='result')return Number.isFinite(Number(data.gf))&&Number.isFinite(Number(data.ga))?2:0;
+    const c=data.capture||data.captures?.[0]||data;
+    return [
+      c?.teamName,c?.opponent?.teamName,c?.match?.venue,c?.match?.refereeColor,
+      c?.myTeam?.overall,c?.opponent?.overall,
+      c?.opponent?.formation,c?.opponent?.style,c?.opponent?.marking,c?.opponent?.offside
+    ].filter(v=>has(v)||typeof v==='boolean').length;
+  }
+
+  function providerDiag(msg){
+    const el=document.getElementById('analysisDiagnostics');
+    if(el)el.textContent=msg;
+  }
+
+  function pickFrames(evidence,limit=4){
+    const arr=(evidence||[]).filter(x=>x?.base64);
+    if(arr.length<=limit)return arr;
+    const out=[];
+    for(let i=0;i<limit;i++){
+      const idx=Math.round(i*(arr.length-1)/Math.max(1,limit-1));
+      if(arr[idx]&&!out.includes(arr[idx]))out.push(arr[idx]);
+    }
+    return out;
+  }
+
+  async function openRouterRequest(prompt,frames,mode,attempt=1){
+    const key=String(localStorage.getItem(OR_KEY)||'').trim();
+    if(!key)throw new Error('OpenRouter: chave não configurada');
+
+    const controller=new AbortController();
+    const timer=setTimeout(()=>controller.abort(),attempt===1?22000:18000);
+    try{
+      const content=[{type:'text',text:prompt}];
+      for(const f of frames){
+        content.push({
+          type:'image_url',
+          image_url:{url:`data:${f.mimeType||'image/jpeg'};base64,${f.base64}`}
+        });
+      }
+
+      const body={
+        model:'openrouter/free',
+        messages:[{role:'user',content}],
+        temperature:0,
+        max_tokens:mode==='tactic'?5000:3500
+      };
+
+      const res=await fetch('https://openrouter.ai/api/v1/chat/completions',{
+        method:'POST',
+        signal:controller.signal,
+        headers:{
+          'Content-Type':'application/json',
+          'Authorization':`Bearer ${key}`,
+          'HTTP-Referer':location.origin,
+          'X-Title':'OSM AI Coach Pro'
+        },
+        body:JSON.stringify(body)
+      });
+
+      const raw=await res.text();
+      if(!res.ok)throw new Error(`OpenRouter HTTP ${res.status}: ${raw.slice(0,180)}`);
+      const j=JSON.parse(raw);
+      const txt=String(j?.choices?.[0]?.message?.content||'').trim();
+      const data=parseJsonLoose(txt);
+      if(useful(mode,data)===0)throw new Error('OpenRouter: resposta sem campos úteis');
+      return {data,provider:`OpenRouter/${j?.model||'free-router'}`};
+    }catch(e){
+      if(e?.name==='AbortError')throw new Error(`OpenRouter: tempo excedido`);
+      throw e;
+    }finally{clearTimeout(timer)}
+  }
+
+  async function ocrSpaceFrame(frame,label){
+    const key=String(localStorage.getItem(OCR_KEY)||'').trim();
+    if(!key)throw new Error('OCR.Space: chave não configurada');
+
+    const controller=new AbortController();
+    const timer=setTimeout(()=>controller.abort(),14000);
+    try{
+      const fd=new FormData();
+      fd.append('base64Image',`data:${frame.mimeType||'image/jpeg'};base64,${frame.base64}`);
+      fd.append('language','auto');
+      fd.append('OCREngine','2');
+      fd.append('isTable','false');
+      fd.append('isOverlayRequired','false');
+      fd.append('scale','true');
+
+      const res=await fetch('https://api.ocr.space/parse/image',{
+        method:'POST',
+        signal:controller.signal,
+        headers:{apikey:key},
+        body:fd
+      });
+
+      const raw=await res.text();
+      if(!res.ok)throw new Error(`OCR.Space HTTP ${res.status}`);
+      const j=JSON.parse(raw);
+      if(j?.IsErroredOnProcessing){
+        const msg=Array.isArray(j.ErrorMessage)?j.ErrorMessage.join(' | '):(j.ErrorMessage||j.ErrorDetails||'erro');
+        throw new Error(`OCR.Space: ${msg}`);
+      }
+      const txt=(j?.ParsedResults||[]).map(x=>String(x?.ParsedText||'')).join('\n').trim();
+      if(!txt)throw new Error(`OCR.Space ${label}: sem texto`);
+      return `### ${label}\n${txt}`;
+    }catch(e){
+      if(e?.name==='AbortError')throw new Error(`OCR.Space ${label}: tempo excedido`);
+      throw e;
+    }finally{clearTimeout(timer)}
+  }
+
+  async function textAiRequest(prompt,mode){
+    const errors=[];
+    const orKey=String(localStorage.getItem(OR_KEY)||'').trim();
+
+    if(orKey){
+      try{
+        const controller=new AbortController();
+        const timer=setTimeout(()=>controller.abort(),18000);
+        try{
+          const res=await fetch('https://openrouter.ai/api/v1/chat/completions',{
+            method:'POST',
+            signal:controller.signal,
+            headers:{
+              'Content-Type':'application/json',
+              'Authorization':`Bearer ${orKey}`,
+              'HTTP-Referer':location.origin,
+              'X-Title':'OSM AI Coach Pro'
+            },
+            body:JSON.stringify({
+              model:'openrouter/free',
+              messages:[{role:'user',content:prompt}],
+              temperature:0,
+              max_tokens:mode==='tactic'?5000:3500
+            })
+          });
+          const raw=await res.text();
+          if(!res.ok)throw new Error(`OpenRouter-texto HTTP ${res.status}: ${raw.slice(0,150)}`);
+          const j=JSON.parse(raw);
+          const data=parseJsonLoose(String(j?.choices?.[0]?.message?.content||''));
+          if(useful(mode,data)>0)return {data,provider:`OpenRouter-texto/${j?.model||'free-router'}`};
+          throw new Error('OpenRouter-texto: sem dados úteis');
+        }finally{clearTimeout(timer)}
+      }catch(e){errors.push(safeErr(e))}
+    }
+
+    const groq=String(localStorage.getItem(GROQ_KEY)||'').trim();
+    if(groq){
+      const models=['openai/gpt-oss-20b','qwen/qwen3.8-27b'];
+      for(const model of models){
+        try{
+          const controller=new AbortController();
+          const timer=setTimeout(()=>controller.abort(),13000);
+          try{
+            const res=await fetch('https://api.groq.com/openai/v1/chat/completions',{
+              method:'POST',
+              signal:controller.signal,
+              headers:{'Content-Type':'application/json','Authorization':`Bearer ${groq}`},
+              body:JSON.stringify({
+                model,
+                messages:[{role:'user',content:prompt}],
+                temperature:0,
+                max_completion_tokens:mode==='tactic'?4000:2800
+              })
+            });
+            const raw=await res.text();
+            if(!res.ok)throw new Error(`Groq ${model} HTTP ${res.status}: ${raw.slice(0,150)}`);
+            const j=JSON.parse(raw);
+            const data=parseJsonLoose(String(j?.choices?.[0]?.message?.content||''));
+            if(useful(mode,data)>0)return {data,provider:`Groq/${model}`};
+            throw new Error(`Groq ${model}: sem dados úteis`);
+          }finally{clearTimeout(timer)}
+        }catch(e){errors.push(safeErr(e))}
+      }
+    }
+
+    throw new Error(errors.join(' | ')||'Nenhuma IA textual disponível');
+  }
+
+  async function stablePackage73(ocr,evidence,mode){
+    const errors=[];
+    const prompt=typeof v21Prompt==='function'?v21Prompt(ocr,mode):'';
+
+    // 1. Gemini, short attempt only.
+    if(previousPackage){
+      try{
+        providerDiag(`V7.3 · ${mode} · Gemini…`);
+        const r=await timeout(previousPackage(ocr,evidence,mode),9000,'Gemini');
+        if(useful(mode,r)>0)return r;
+        errors.push('Gemini: sem campos úteis');
+      }catch(e){errors.push(safeErr(e))}
+    }
+
+    // 2. OpenRouter vision. Fewer frames, two attempts.
+    const f4=pickFrames(evidence,4);
+    if(f4.length){
+      try{
+        providerDiag('V7.3 · Gemini falhou · OpenRouter visão 1/2…');
+        const r=await openRouterRequest(prompt,f4,mode,1);
+        providerDiag(`V7.3 · concluído com ${r.provider}`);
+        return r.data;
+      }catch(e){errors.push(safeErr(e))}
+    }
+
+    const f2=pickFrames(evidence,2);
+    if(f2.length){
+      try{
+        providerDiag('V7.3 · OpenRouter visão 2/2…');
+        const r=await openRouterRequest(prompt,f2,mode,2);
+        providerDiag(`V7.3 · concluído com ${r.provider}`);
+        return r.data;
+      }catch(e){errors.push(safeErr(e))}
+    }
+
+    // 3. OCR.Space over 3 representative frames, then cheap text AI.
+    const ocrFrames=pickFrames(evidence,3);
+    if(ocrFrames.length && localStorage.getItem(OCR_KEY)){
+      providerDiag('V7.3 · visão indisponível · OCR.Space…');
+      const settled=await Promise.all(
+        ocrFrames.map((f,i)=>ocrSpaceFrame(f,`quadro ${i+1}`)
+          .then(text=>({ok:true,text}))
+          .catch(error=>({ok:false,error})))
+      );
+      const texts=settled.filter(x=>x.ok).map(x=>x.text);
+      for(const x of settled)if(!x.ok)errors.push(safeErr(x.error));
+
+      if(texts.length){
+        try{
+          const textPrompt=
+            prompt+
+            '\n\nOCR.SPACE ADICIONAL DOS QUADROS REAIS. Use apenas dados realmente visíveis; não invente:\n\n'+
+            texts.join('\n\n');
+          const r=await textAiRequest(textPrompt,mode);
+          providerDiag(`V7.3 · concluído com OCR.Space + ${r.provider}`);
+          return r.data;
+        }catch(e){errors.push(safeErr(e))}
+      }
+    }
+
+    const err=new Error(errors.join(' | ')||'Todos os provedores falharam');
+    err.v73Errors=errors;
+    throw err;
+  }
+
+  // Replace the shared package function so Calendar/Result also get the new router.
+  try{v21AnalyzePackage=stablePackage73}catch(_){}
+  window.v21AnalyzePackage=stablePackage73;
+
+  function currentRunFailureCard(s,msg){
+    const coverage=document.getElementById('coverageContent');
+    if(coverage){
+      coverage.innerHTML=`
+        <div class="audit-card" style="border-color:#8e6b21">
+          <div class="audit-top">
+            <div><span class="eyebrow">LEITURA ATUAL · V7.3</span><h3>Análise não validada</h3></div>
+            <div class="quality-score">—</div>
+          </div>
+          <p class="small muted">Os dados anteriores do slot foram preservados, mas NÃO contam como resultado desta nova análise.</p>
+        </div>`;
+    }
+
+    const target=document.getElementById('analysisContent');
+    if(target){
+      target.innerHTML=`
+        <div class="card ai-fallback-card">
+          <span class="eyebrow">DIAGNÓSTICO · V7.3</span>
+          <h3>A leitura nova falhou</h3>
+          <p class="small muted">${String(msg||'Falha sem detalhe').replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]))}</p>
+          <p class="small muted">Nenhuma qualidade 100% será mostrada para esta tentativa. Os dados antigos permanecem salvos apenas para não perder o que já estava correto.</p>
+        </div>`;
+    }
+  }
+
+  // Override tactic analysis AFTER all legacy hotfixes.
+  v21Analyze=async function(files){
+    if(analysisMode!=='tactic'){
+      if(previousAnalyze)return previousAnalyze(files);
+      throw new Error('Analisador anterior indisponível');
+    }
+
+    const slotNo=Number(document.getElementById('analysisSlot')?.value)||state.selectedSlot;
+    state.selectedSlot=slotNo;
+    const video=(files||[]).find(f=>String(f.type||'').startsWith('video/'));
+    const images=(files||[]).filter(f=>String(f.type||'').startsWith('image/'));
+    let frames=[];
+
+    setProgress(5,'V7.3 · capturando quadros da partida…');
+    if(video)frames=await v21ExtractVideoFrames(video,32);
+    else if(images.length){
+      for(const f of images)frames.push(await v21ImageToFrame(f));
+    }else{
+      throw new Error('Selecione um vídeo ou imagens da partida.');
+    }
+
+    v21RenderEvidence(frames);
+    setProgress(18,'V7.3 · OCR local…');
+    const ocr=await v21RunLocalOcr(frames);
+
+    let evidence=[];
+    try{
+      const required=v21SelectRequiredTacticFrames(frames,ocr);
+      evidence=required.filter(x=>x?.frame).map(x=>x.frame);
+    }catch(_){}
+
+    const extras=v21SelectVisualEvidence(frames,8);
+    for(const f of extras){
+      if(!evidence.includes(f))evidence.push(f);
+      if(evidence.length>=8)break;
+    }
+
+    if(!evidence.length)evidence=pickFrames(frames,6);
+
+    try{
+      setProgress(55,'V7.3 · IA redundante…');
+      const result=await stablePackage73(ocr,evidence,'tactic');
+      const capture=result?.capture||result?.captures?.[0]||result;
+
+      if(useful('tactic',capture)<4){
+        throw new Error(`Leitura insuficiente: só ${useful('tactic',capture)} campos principais confirmados.`);
+      }
+
+      v21ApplyCapture(capture);
+      saveState();
+      calcQuality(selectedSlot());
+      renderCoverage(selectedSlot());
+      renderAnalysisSummary(selectedSlot());
+      renderPregame();
+
+      if(document.getElementById('autoTactic')?.checked && !selectedSlot().tactic){
+        try{await generateTactic(slotNo)}catch(_){}
+      }
+
+      setAnalysisRun(
+        selectedSlot(),'tactic','success',
+        `V7.3: nova análise validada · ${useful('tactic',capture)} campos principais confirmados.`,
+        {quality:selectedSlot().analysisQuality,currentRunValidated:true}
+      );
+      setProgress(100,'Partida analisada e validada');
+      providerDiag('V7.3 · análise nova validada');
+      job('Partida analisada e validada.','done');
+    }catch(e){
+      const msg=safeErr(e);
+      setAnalysisRun(
+        selectedSlot(),'tactic','error',
+        `V7.3: ${msg}`,
+        {currentRunValidated:false}
+      );
+      currentRunFailureCard(selectedSlot(),msg);
+      setProgress(100,'Nova análise não validada');
+      providerDiag(`V7.3 · falha: ${msg}`);
+      job('A nova análise falhou; dados antigos preservados.','error');
+    }
+  };
+
+  window.v21Analyze=v21Analyze;
+  window.OSM_STABLE_ANALYSIS_VERSION=V73;
+
+  try{console.info('[OSM] V7.3 Stable Analysis ativo')}catch(_){}
+})();
