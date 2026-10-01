@@ -3218,3 +3218,519 @@ ${extraText?`\nOCR auxiliar:\n${extraText}`:''}`;
   window.OSM_FAST_TACTIC_VERSION=V74;
   try{console.info('[OSM] V7.4 Fast Tactic ativo')}catch(_){}
 })();
+
+/* =========================================================
+   V7.5 TRUTH GUARD
+   Corrige falso-positivo da V7.4: uma IA podia devolver JSON válido,
+   porém com valores inventados, e o app mesclava isso com dados antigos.
+   Regras novas:
+   - nova leitura = snapshot novo; dados detectados antigos são limpos;
+   - números vêm de OCR (OCR.Space/local), não da visão generativa;
+   - OpenRouter visão só completa campos visuais/textuais permitidos;
+   - venue só Casa/Fora; estádio só nível numérico; bônus só 0..3;
+   - força/setores precisam estar ancorados no OCR;
+   - qualidade só sobe com campos da leitura atual ou manuais;
+   - tática antiga é apagada ao iniciar uma nova análise.
+   ========================================================= */
+(function(){
+  'use strict';
+
+  const V75='7.5.0';
+  const OR_KEY='osm_ai_coach_openrouter_key';
+  const GROQ_KEY='osm_ai_coach_groq_key';
+  const OCR_KEY='osm_ai_coach_ocrspace_key';
+
+  const previousAnalyze75 = typeof v21Analyze==='function' ? v21Analyze : null;
+  const previousPackage75 = typeof v21AnalyzePackage==='function' ? v21AnalyzePackage : null;
+
+  const ALLOWED_REF=['Verde','Azul','Amarelo','Laranja','Vermelho'];
+  const ALLOWED_VENUE=['Casa','Fora'];
+  const ALLOWED_STYLE=['Jogar pelas alas','Jogo de passes','Bola longa','Contra-ataque','Remate à vista'];
+  const ALLOWED_MARK=['À zona','Individual'];
+  const NUMERIC_PATHS=[
+    'myTeam.overall','opponent.overall',
+    'myTeam.goalkeeper','myTeam.defence','myTeam.midfield','myTeam.attack',
+    'opponent.goalkeeper','opponent.defence','opponent.midfield','opponent.attack'
+  ];
+  const DETECTED_PATHS=[
+    'teamName','opponent.teamName','match.venue','match.refereeColor',
+    ...NUMERIC_PATHS,
+    'opponent.human','opponent.manager','opponent.loginBonus','opponent.stadium',
+    'opponent.trainingCamp','opponent.secretTraining','opponent.formation',
+    'opponent.style','opponent.marking','opponent.offside'
+  ];
+
+  function esc75(v){
+    return String(v??'').replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
+  }
+  function safeErr75(e){
+    return String(e?.message||e||'erro')
+      .replace(/sk-or-v1-[A-Za-z0-9_-]+/g,'[OpenRouter oculto]')
+      .replace(/gsk_[A-Za-z0-9_-]+/g,'[Groq oculto]')
+      .replace(/AIza[A-Za-z0-9_-]+/g,'[Gemini oculto]')
+      .slice(0,420);
+  }
+  function diag75(msg){
+    const el=document.getElementById('analysisDiagnostics');
+    if(el)el.textContent=msg;
+  }
+  function get75(obj,path){
+    return String(path).split('.').reduce((a,k)=>a?.[k],obj);
+  }
+  function set75(obj,path,val){
+    const parts=String(path).split('.');
+    let cur=obj;
+    for(let i=0;i<parts.length-1;i++){
+      if(!cur[parts[i]]||typeof cur[parts[i]]!=='object')cur[parts[i]]={};
+      cur=cur[parts[i]];
+    }
+    cur[parts.at(-1)]=val;
+  }
+  function parseJson75(txt){
+    let s=String(txt||'').trim()
+      .replace(/^```(?:json)?\s*/i,'')
+      .replace(/\s*```$/,'').trim();
+    if(!s)throw new Error('resposta vazia');
+    try{return JSON.parse(s)}catch(_){}
+    const a=s.indexOf('{'),b=s.lastIndexOf('}');
+    if(a>=0&&b>a){
+      s=s.slice(a,b+1).replace(/,\s*([}\]])/g,'$1').replace(/[\u201C\u201D]/g,'"');
+      try{return JSON.parse(s)}catch(_){}
+    }
+    throw new Error('JSON inválido');
+  }
+  function spread75(arr,limit){
+    const a=(arr||[]).filter(Boolean);
+    if(a.length<=limit)return a;
+    const out=[];
+    for(let i=0;i<limit;i++){
+      const idx=Math.round(i*(a.length-1)/Math.max(1,limit-1));
+      if(a[idx]&&!out.includes(a[idx]))out.push(a[idx]);
+    }
+    return out;
+  }
+  async function slim75(frame,maxW=1150,q=.82){
+    if(!frame?.dataUrl)return frame;
+    try{
+      const img=await v21LoadImage(frame.dataUrl);
+      const scale=Math.min(1,maxW/img.naturalWidth);
+      const w=Math.max(1,Math.round(img.naturalWidth*scale));
+      const h=Math.max(1,Math.round(img.naturalHeight*scale));
+      const c=document.createElement('canvas');
+      c.width=w;c.height=h;c.getContext('2d').drawImage(img,0,0,w,h);
+      const dataUrl=c.toDataURL('image/jpeg',q);
+      return {dataUrl,base64:dataUrl.split(',')[1],mimeType:'image/jpeg',time:frame.time||0};
+    }catch(_){return frame}
+  }
+
+  async function ocrSpace75(frame,label){
+    const key=String(localStorage.getItem(OCR_KEY)||'').trim();
+    if(!key)throw new Error('OCR.Space não configurado');
+    const f=await slim75(frame,1350,.86);
+    const fd=new FormData();
+    fd.append('base64Image',`data:image/jpeg;base64,${f.base64}`);
+    fd.append('language','auto');
+    fd.append('OCREngine','2');
+    fd.append('isTable','false');
+    fd.append('isOverlayRequired','false');
+    fd.append('scale','true');
+
+    const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(),14000);
+    try{
+      const res=await fetch('https://api.ocr.space/parse/image',{
+        method:'POST',signal:ctl.signal,headers:{apikey:key},body:fd
+      });
+      const raw=await res.text();
+      if(!res.ok)throw new Error(`OCR.Space HTTP ${res.status}`);
+      const j=JSON.parse(raw);
+      if(j?.IsErroredOnProcessing)throw new Error(`OCR.Space ${label}: falhou`);
+      const txt=(j?.ParsedResults||[]).map(x=>String(x?.ParsedText||'')).join('\n').trim();
+      if(!txt)throw new Error(`OCR.Space ${label}: sem texto`);
+      return `### ${label}\n${txt.slice(0,6500)}`;
+    }catch(e){
+      if(e?.name==='AbortError')throw new Error(`OCR.Space ${label}: timeout`);
+      throw e;
+    }finally{clearTimeout(timer)}
+  }
+
+  function textPrompt75(text){
+    return `Você vai EXTRAIR, não adivinhar, dados de OCR de uma partida do OSM 26.
+Use SOMENTE valores explicitamente presentes no texto abaixo.
+
+REGRAS CRÍTICAS:
+- teamName/opponent.teamName: nomes de times vistos no OCR.
+- match.venue: somente "Casa" ou "Fora". Nunca use nome de cidade.
+- opponent.stadium: somente NÍVEL numérico do estádio (0 a 3). Nunca cidade/time.
+- opponent.loginBonus: somente 0,1,2 ou 3 (%).
+- forças e setores: use somente números lidos no OCR. Não use valor de jogador como força do time.
+- formação: uma formação OSM válida, ex. "4-3-3 A".
+- style: Jogar pelas alas | Jogo de passes | Bola longa | Contra-ataque | Remate à vista.
+- marking: À zona | Individual.
+- offside/trainingCamp/secretTraining/human: true/false apenas se explícito; senão null.
+- campo não encontrado = null.
+
+Retorne SOMENTE JSON:
+{"capture":{
+ "teamName":null,
+ "opponent":{"teamName":null,"manager":null,"human":null,"loginBonus":null,"stadium":null,"trainingCamp":null,"secretTraining":null,"overall":null,"goalkeeper":null,"defence":null,"midfield":null,"attack":null,"formation":null,"style":null,"marking":null,"offside":null},
+ "myTeam":{"overall":null,"goalkeeper":null,"defence":null,"midfield":null,"attack":null},
+ "match":{"venue":null,"refereeColor":null}
+}}
+
+OCR:
+${String(text||'').slice(0,18000)}`;
+  }
+
+  async function groqExtract75(text){
+    const key=String(localStorage.getItem(GROQ_KEY)||'').trim();
+    if(!key)throw new Error('Groq não configurado');
+
+    const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(),16000);
+    try{
+      const res=await fetch('https://api.groq.com/openai/v1/chat/completions',{
+        method:'POST',signal:ctl.signal,
+        headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},
+        body:JSON.stringify({
+          model:'openai/gpt-oss-20b',
+          messages:[{role:'user',content:textPrompt75(text)}],
+          temperature:0,
+          max_completion_tokens:2200
+        })
+      });
+      const raw=await res.text();
+      if(!res.ok)throw new Error(`Groq HTTP ${res.status}: ${raw.slice(0,180)}`);
+      const j=JSON.parse(raw);
+      return parseJson75(String(j?.choices?.[0]?.message?.content||''));
+    }catch(e){
+      if(e?.name==='AbortError')throw new Error('Groq timeout');
+      throw e;
+    }finally{clearTimeout(timer)}
+  }
+
+  function visionPrompt75(){
+    return `Analise telas reais do OSM 26. NÃO estime números.
+Retorne SOMENTE JSON e use null quando não tiver certeza:
+{"capture":{
+ "teamName":null,
+ "opponent":{"teamName":null,"manager":null,"human":null,"trainingCamp":null,"secretTraining":null,"formation":null,"style":null,"marking":null,"offside":null},
+ "match":{"venue":null,"refereeColor":null}
+}}
+REGRAS:
+- venue somente Casa/Fora, nunca cidade.
+- refereeColor somente Verde/Azul/Amarelo/Laranja/Vermelho.
+- formação/plano/marcação/impedimento somente se visíveis.
+- não retorne força, setores, bônus ou estádio: esses campos serão lidos por OCR.`;
+  }
+
+  async function vision75(frames){
+    const key=String(localStorage.getItem(OR_KEY)||'').trim();
+    if(!key)throw new Error('OpenRouter não configurado');
+    const chosen=spread75(frames,2);
+    const content=[{type:'text',text:visionPrompt75()}];
+    for(const f0 of chosen){
+      const f=await slim75(f0,900,.72);
+      content.push({type:'image_url',image_url:{url:`data:image/jpeg;base64,${f.base64}`}});
+    }
+
+    const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(),22000);
+    try{
+      const res=await fetch('https://openrouter.ai/api/v1/chat/completions',{
+        method:'POST',signal:ctl.signal,
+        headers:{
+          'Content-Type':'application/json',
+          'Authorization':`Bearer ${key}`,
+          'HTTP-Referer':location.origin,
+          'X-Title':'OSM AI Coach Pro'
+        },
+        body:JSON.stringify({
+          model:'openrouter/free',
+          messages:[{role:'user',content}],
+          temperature:0,
+          max_tokens:1400
+        })
+      });
+      const raw=await res.text();
+      if(!res.ok)throw new Error(`OpenRouter HTTP ${res.status}`);
+      const j=JSON.parse(raw);
+      return parseJson75(String(j?.choices?.[0]?.message?.content||''));
+    }catch(e){
+      if(e?.name==='AbortError')throw new Error('OpenRouter timeout');
+      throw e;
+    }finally{clearTimeout(timer)}
+  }
+
+  function normStr75(v){return String(v??'').trim()}
+  function num75(v){
+    const n=Number(String(v??'').replace(',','.').replace(/[^\d.-]/g,''));
+    return Number.isFinite(n)?n:null;
+  }
+  function bool75(v){
+    if(v===true||v===false)return v;
+    const x=normStr75(v).toLowerCase();
+    if(['sim','yes','true'].includes(x))return true;
+    if(['não','nao','no','false'].includes(x))return false;
+    return null;
+  }
+  function literalNumber75(source,n){
+    if(n===null)return false;
+    const txt=' '+String(source||'').replace(/,/g,'.')+' ';
+    const re=new RegExp(`(^|[^0-9])${String(n).replace('.','\\.')}(?=[^0-9]|$)`);
+    return re.test(txt);
+  }
+  function validFormation75(v){
+    const x=normStr75(v).toUpperCase().replace(/\s+/g,' ');
+    if(!x)return null;
+    const list=Array.isArray(window.FORMATIONS)?window.FORMATIONS:
+      ['4-3-3 A','4-3-3 B','4-5-1','4-2-3-1','4-4-2 A','4-4-2 B','3-2-5','3-2-3-2','3-3-4 A','3-3-4 B','3-4-3 A','3-4-3 B','3-5-2','5-3-2','5-3-1-1','5-4-1 A','5-4-1 B'];
+    return list.find(f=>String(f).toUpperCase()===x)||null;
+  }
+  function normalizeCapture75(textData,visionData,sourceText){
+    const t=textData?.capture||textData?.captures?.[0]||textData||{};
+    const v=visionData?.capture||visionData?.captures?.[0]||visionData||{};
+
+    const out={
+      teamName:normStr75(t.teamName||v.teamName)||null,
+      myTeam:{},
+      opponent:{},
+      match:{}
+    };
+
+    out.opponent.teamName=normStr75(t?.opponent?.teamName||v?.opponent?.teamName)||null;
+
+    // Números: somente se literalmente ancorados no OCR.
+    for(const [group,key] of [
+      ['myTeam','overall'],['myTeam','goalkeeper'],['myTeam','defence'],['myTeam','midfield'],['myTeam','attack'],
+      ['opponent','overall'],['opponent','goalkeeper'],['opponent','defence'],['opponent','midfield'],['opponent','attack']
+    ]){
+      const raw=get75(t,`${group}.${key}`);
+      const n=num75(raw);
+      if(n!==null && n>=1 && n<=250 && literalNumber75(sourceText,n))out[group][key]=n;
+      else out[group][key]=null;
+    }
+
+    const venue=normStr75(t?.match?.venue||v?.match?.venue);
+    out.match.venue=ALLOWED_VENUE.find(x=>x.toLowerCase()===venue.toLowerCase())||null;
+
+    const ref=normStr75(v?.match?.refereeColor||t?.match?.refereeColor);
+    out.match.refereeColor=ALLOWED_REF.find(x=>x.toLowerCase()===ref.toLowerCase())||null;
+
+    const login=num75(t?.opponent?.loginBonus);
+    out.opponent.loginBonus=(login!==null&&login>=0&&login<=3&&literalNumber75(sourceText,login))?login:null;
+
+    const stadium=num75(t?.opponent?.stadium);
+    out.opponent.stadium=(stadium!==null&&stadium>=0&&stadium<=3&&literalNumber75(sourceText,stadium))?stadium:null;
+
+    out.opponent.manager=normStr75(t?.opponent?.manager||v?.opponent?.manager)||null;
+
+    // Humano só é verdadeiro com manager visível ou explícito na leitura.
+    const human=bool75(t?.opponent?.human ?? v?.opponent?.human);
+    out.opponent.human=out.opponent.manager ? true : human;
+
+    out.opponent.trainingCamp=bool75(t?.opponent?.trainingCamp ?? v?.opponent?.trainingCamp);
+    out.opponent.secretTraining=bool75(t?.opponent?.secretTraining ?? v?.opponent?.secretTraining);
+
+    out.opponent.formation=validFormation75(t?.opponent?.formation||v?.opponent?.formation);
+
+    const style=normStr75(t?.opponent?.style||v?.opponent?.style);
+    out.opponent.style=ALLOWED_STYLE.find(x=>x.toLowerCase()===style.toLowerCase())||null;
+
+    const mark=normStr75(t?.opponent?.marking||v?.opponent?.marking);
+    out.opponent.marking=ALLOWED_MARK.find(x=>x.toLowerCase()===mark.toLowerCase())||null;
+
+    out.opponent.offside=bool75(t?.opponent?.offside ?? v?.opponent?.offside);
+
+    // Sanidade: overall deve ser compatível com setores quando os setores existirem.
+    for(const side of ['myTeam','opponent']){
+      const sec=['goalkeeper','defence','midfield','attack'].map(k=>num75(out[side][k])).filter(Number.isFinite);
+      const ov=num75(out[side].overall);
+      if(ov!==null && sec.length>=3){
+        const avg=sec.reduce((a,b)=>a+b,0)/sec.length;
+        if(Math.abs(ov-avg)>28)out[side].overall=null;
+      }
+    }
+
+    return out;
+  }
+
+  function clearDetected75(s){
+    const keepManual=new Set();
+    for(const path of DETECTED_PATHS){
+      const meta=s.fieldMeta?.[path];
+      if(meta?.source==='manual'){
+        keepManual.add(path);
+        continue;
+      }
+      set75(s,path,null);
+      if(s.fieldMeta?.[path])s.fieldMeta[path]={source:'unknown',confidence:0,updatedAt:null};
+    }
+    // Uma leitura nova invalida qualquer tática gerada sobre dados antigos.
+    s.tactic=null;
+    s.tacticCandidates=[];
+    s.analysisQuality=0;
+    s.detectionConfidence=null;
+    return keepManual;
+  }
+
+  function applyFresh75(c,runAt){
+    const s=selectedSlot();
+    const manual=clearDetected75(s);
+
+    for(const path of DETECTED_PATHS){
+      if(manual.has(path))continue;
+      const val=get75(c,path);
+      if(val!==null&&val!==undefined&&val!==''){
+        set75(s,path,val);
+        if(!s.fieldMeta)s.fieldMeta={};
+        s.fieldMeta[path]={source:'detected',confidence:.94,updatedAt:runAt};
+      }
+    }
+
+    s.status='active';
+    s.lastAnalysisAt=runAt;
+    s._lastValidatedTacticAt=runAt;
+
+    // Qualidade da leitura atual: manual + detectado nesta execução.
+    let filled=0;
+    for(const path of FIELD_DEFS.map(x=>x[0])){
+      const meta=s.fieldMeta?.[path];
+      const val=get75(s,path);
+      if(meta?.source==='manual' && (val!==null&&val!==undefined&&val!==''&&val!=='NI'))filled++;
+      else if(meta?.source==='detected' && meta?.updatedAt===runAt && (val!==null&&val!==undefined&&val!==''&&val!=='NI'))filled++;
+      else if(typeof val==='boolean' && ((meta?.source==='manual')||(meta?.source==='detected'&&meta?.updatedAt===runAt)))filled++;
+    }
+    s.analysisQuality=Math.round((filled/FIELD_DEFS.length)*100);
+    s.detectionConfidence=94;
+    return s;
+  }
+
+  async function analyzeTactic75(files){
+    const slotNo=Number(document.getElementById('analysisSlot')?.value)||state.selectedSlot;
+    state.selectedSlot=slotNo;
+    const s=selectedSlot();
+    const runAt=new Date().toISOString();
+
+    // Apaga tática anterior já no início para ela nunca aparecer com leitura nova inválida.
+    s.tactic=null;s.tacticCandidates=[];
+    saveState();
+
+    const video=(files||[]).find(f=>String(f.type||'').startsWith('video/'));
+    const images=(files||[]).filter(f=>String(f.type||'').startsWith('image/'));
+    let frames=[];
+
+    setProgress(5,'V7.5 · capturando telas da partida…');
+    if(video)frames=await v21ExtractVideoFrames(video,30);
+    else if(images.length){for(const f of images)frames.push(await v21ImageToFrame(f))}
+    else throw new Error('Selecione o vídeo da partida.');
+
+    v21RenderEvidence(frames);
+
+    setProgress(16,'V7.5 · OCR local…');
+    const localOcr=await v21RunLocalOcr(frames);
+    let evidence=[];
+    try{
+      const req=v21SelectRequiredTacticFrames(frames,localOcr);
+      evidence=req.filter(x=>x?.frame).map(x=>x.frame);
+    }catch(_){}
+    const extras=v21SelectVisualEvidence(frames,8);
+    for(const f of extras){
+      if(!evidence.includes(f))evidence.push(f);
+      if(evidence.length>=8)break;
+    }
+    if(!evidence.length)evidence=spread75(frames,8);
+
+    setProgress(35,'V7.5 · OCR.Space conferindo números…');
+    const ocrFrames=spread75(evidence,5);
+    const settled=await Promise.all(
+      ocrFrames.map((f,i)=>ocrSpace75(f,`quadro ${i+1}`)
+        .then(text=>({ok:true,text}))
+        .catch(error=>({ok:false,error})))
+    );
+    const remoteText=settled.filter(x=>x.ok).map(x=>x.text).join('\n\n');
+    const localText=String(localOcr?.joined||'').slice(0,9000);
+    const groundedText=[remoteText,localText].filter(Boolean).join('\n\n');
+    if(!groundedText.trim())throw new Error('OCR não conseguiu produzir texto para validar os dados.');
+
+    setProgress(52,'V7.5 · estruturando OCR…');
+    const textData=await groqExtract75(groundedText);
+
+    setProgress(68,'V7.5 · conferindo campos visuais…');
+    let visualData={};
+    try{visualData=await vision75(evidence)}catch(e){console.warn('[V7.5 vision]',e)}
+
+    const capture=normalizeCapture75(textData,visualData,groundedText);
+    const confirmed=[
+      capture.teamName,capture?.opponent?.teamName,capture?.match?.venue,capture?.match?.refereeColor,
+      capture?.myTeam?.overall,capture?.opponent?.overall,capture?.opponent?.formation,
+      capture?.opponent?.style,capture?.opponent?.marking,
+      capture?.opponent?.offside
+    ].filter(v=>v!==null&&v!==undefined&&v!=='').length;
+
+    if(confirmed<6){
+      throw new Error(`Leitura insuficiente: ${confirmed}/10 campos principais foram validados contra o OCR.`);
+    }
+
+    applyFresh75(capture,runAt);
+    saveState();
+
+    // Re-renderiza somente depois de limpar os campos antigos.
+    renderCoverage(selectedSlot());
+    renderAnalysisSummary(selectedSlot());
+    renderPregame();
+
+    const missing=missingRequired(selectedSlot());
+    setAnalysisRun(
+      selectedSlot(),'tactic',
+      missing.length?'warning':'success',
+      `V7.5: leitura atual validada pelo OCR; ${confirmed}/10 campos principais confirmados${missing.length?`; ${missing.length} essencial(is) ainda NI`:''}.`,
+      {quality:selectedSlot().analysisQuality,currentRunValidated:true,runAt}
+    );
+
+    if(!missing.length && document.getElementById('autoTactic')?.checked){
+      setProgress(88,'V7.5 · gerando tática com dados validados…');
+      await generateTactic(slotNo);
+    }
+
+    setProgress(100,missing.length?'Leitura validada com pendências':'Partida pronta');
+    diag75(`V7.5 · OCR validado · ${confirmed}/10 principais`);
+    job(missing.length?'Partida lida; confira apenas os campos NI.':'Partida analisada com dados validados.','done');
+  }
+
+  v21Analyze=async function(files){
+    if(analysisMode==='tactic'){
+      try{
+        await analyzeTactic75(files);
+      }catch(e){
+        const msg=safeErr75(e);
+        const s=selectedSlot();
+        // Limpa qualquer dado detectado velho para não gerar tática falsa.
+        clearDetected75(s);
+        saveState();
+        setAnalysisRun(s,'tactic','error',`V7.5: ${msg}`,{currentRunValidated:false});
+        const coverage=document.getElementById('coverageContent');
+        if(coverage)coverage.innerHTML=`
+          <div class="audit-card" style="border-color:#8e6b21">
+            <div class="audit-top"><div><span class="eyebrow">LEITURA ATUAL · V7.5</span><h3>Não validada</h3></div><div class="quality-score">—</div></div>
+            <p class="small muted">A tática anterior foi removida porque pertencia a dados antigos.</p>
+          </div>`;
+        const target=document.getElementById('analysisContent');
+        if(target)target.innerHTML=`
+          <div class="card ai-fallback-card">
+            <span class="eyebrow">V7.5 · TRUTH GUARD</span>
+            <h3>Não aceitei dados duvidosos</h3>
+            <p class="small muted">${esc75(msg)}</p>
+            <p class="small muted">O app não vai transformar cidade em local/estádio, nem aceitar força sem aparecer no OCR.</p>
+          </div>`;
+        renderPregame();
+        setProgress(100,'Leitura rejeitada');
+        job('A leitura foi rejeitada para evitar tática baseada em dados falsos.','error');
+      }
+      return;
+    }
+    if(previousAnalyze75)return previousAnalyze75(files);
+    throw new Error('Analisador anterior indisponível');
+  };
+
+  window.v21Analyze=v21Analyze;
+  window.OSM_TRUTH_GUARD_VERSION=V75;
+  try{console.info('[OSM] V7.5 Truth Guard ativo')}catch(_){}
+})();
