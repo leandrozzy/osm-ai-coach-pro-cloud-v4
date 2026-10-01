@@ -1,0 +1,21 @@
+OSM AI Coach Pro — Hotfix de análise 3.1.0
+
+CORREÇÃO
+- O pré-jogo estava enviando até 14 imagens para uma única chamada multimodal.
+- O timeout anterior era de aproximadamente 6,5 a 7 segundos.
+- Em vídeos válidos, a IA podia estourar o tempo e o app caía no OCR local, gerando poucos campos.
+
+AGORA
+- usa até 8 telas essenciais na chamada principal;
+- usa 6 telas essenciais nos fallbacks;
+- timeout controlado de 15 s na principal e 13 s nas alternativas;
+- tenta modelos Flash atuais sem travar indefinidamente;
+- mostra no diagnóstico o motivo real se todas as tentativas falharem;
+- NÃO altera o Coach IA 3.0, OCR, calendário, Diretor, aprendizado ou push.
+
+ARQUIVOS PARA SUBIR
+- analysis-hotfix-31.js (novo)
+- index.html (atualizado)
+- sw.js (cache atualizado)
+
+Se você ainda não tiver os arquivos Coach IA 3.0 na main, o ZIP também inclui coach-ai-30.js e coach-ai-30.css.
