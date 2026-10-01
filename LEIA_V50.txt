@@ -1,0 +1,21 @@
+OSM AI Coach Pro 5.0 CLEAN
+
+Arquivos a substituir/adicionar na raiz da main:
+- index.html
+- market-engine.js
+- sw.js
+
+Depois de subir estes 3 arquivos, apague market-engine-v47.js.
+
+Mudanças:
+- único motor ativo: market-engine.js
+- primeira passagem: quadros visualmente diferentes
+- se faltar jogador/posição, segunda passagem automática nos intervalos da rolagem
+- validação não libera mais com 17 jogadores / 4-4-7-2
+- mínimo estrutural para validar: 4 ATA / 6 MEI / 6 DEF / 2 GOL
+- cache PWA 5.0
+
+Após o deploy Ready:
+1. feche totalmente o PWA
+2. abra novamente
+3. teste o mesmo vídeo
