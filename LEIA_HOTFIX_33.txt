@@ -1,0 +1,24 @@
+OSM AI COACH PRO — HOTFIX 3.3.0
+
+CORREÇÃO PRINCIPAL
+A análise de Elenco não depende mais de enviar muitas imagens para o Gemini.
+
+NOVO FLUXO
+1. O vídeo continua sendo capturado em toda a rolagem.
+2. Tesseract/OCR local lê os quadros.
+3. Um parser local monta e deduplica o elenco imediatamente.
+4. Gemini 3.8 Flash e 3.7 Flash recebem apenas TEXTO OCR para corrigir/consolidar nomes e posições.
+5. Se a IA estiver lenta ou indisponível, o elenco local continua salvo e o Diretor é recalculado.
+
+Também corrige o modelo que ficava memorizado em 3.5 Flash Lite depois de um fallback.
+O fluxo novo migra automaticamente para gemini-3.8-flash para novas análises.
+
+INSTALAÇÃO
+Substitua todos os arquivos deste ZIP na raiz da main.
+Feche completamente o PWA/app no Android e abra novamente para o service worker atualizar o cache.
+
+ARQUIVO NOVO PRINCIPAL
+analysis-hotfix-33.js
+
+VERSÃO
+3.3.0
