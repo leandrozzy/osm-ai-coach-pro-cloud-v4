@@ -1,5 +1,5 @@
-const CACHE='osm-pro-v4-analysis-hotfix-32-20261001-v1';
-const ASSETS=['./','./index.html','./styles.css','./clean-fix-v25.css','./coach-ai-30.css','./app.js','./clean-fix-v25.js','./coach-ai-30.js','./analysis-hotfix-32.js','./push-integrated.js','./manifest.webmanifest','./icon.svg'];
+const CACHE='osm-pro-v4-analysis-hotfix-33-20261001-v1';
+const ASSETS=['./','./index.html','./styles.css','./clean-fix-v25.css','./coach-ai-30.css','./app.js','./clean-fix-v25.js','./coach-ai-30.js','./analysis-hotfix-33.js','./push-integrated.js','./manifest.webmanifest','./icon.svg'];
 
 self.addEventListener('install',event=>{
   event.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)).catch(()=>null).then(()=>self.skipWaiting()));
