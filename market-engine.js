@@ -2098,3 +2098,328 @@ Retorne JSON puro exatamente:
   window.OSM_MARKET_ENGINE_70={version:VERSION,consolidate,validateRoster,buildDirector,extractNativeRosterFrames,stableFindFixture};
   try{console.info('[OSM] Market Engine '+VERSION+' ativo')}catch{}
 })();
+
+/* =========================================================
+   V7.2 STABLE AI ROUTER
+   Partida / Calendário / Resultado:
+   Gemini -> OpenRouter FREE vision -> Groq OCR text.
+   This patch is intentionally appended AFTER the V7 market engine
+   so every pre-game analysis uses the redundant provider chain.
+   ========================================================= */
+(function(){
+  'use strict';
+
+  const V72='7.2.0';
+  const OR_KEY='osm_ai_coach_openrouter_key';
+  const GROQ_KEY='osm_ai_coach_groq_key';
+  const originalPackage=typeof v21AnalyzePackage==='function'?v21AnalyzePackage:null;
+
+  function v72Diag(msg){
+    const el=document.getElementById('analysisDiagnostics');
+    if(el)el.textContent=msg;
+  }
+
+  function v72SafeErr(e){
+    return String(e?.message||e||'erro')
+      .replace(/sk-or-v1-[A-Za-z0-9_-]+/g,'[chave OpenRouter oculta]')
+      .replace(/gsk_[A-Za-z0-9_-]+/g,'[chave Groq oculta]')
+      .replace(/AIza[A-Za-z0-9_-]+/g,'[chave Gemini oculta]')
+      .slice(0,260);
+  }
+
+  function v72Timeout(p,ms,label){
+    let timer;
+    return Promise.race([
+      Promise.resolve(p).finally(()=>clearTimeout(timer)),
+      new Promise((_,reject)=>{
+        timer=setTimeout(()=>reject(new Error(`${label}: tempo excedido (${Math.round(ms/1000)}s)`)),ms);
+      })
+    ]);
+  }
+
+  function v72ParseJson(txt){
+    txt=String(txt||'').trim();
+    if(!txt)throw new Error('resposta vazia');
+    try{return JSON.parse(txt)}catch(_){}
+    const a=txt.indexOf('{'), b=txt.lastIndexOf('}');
+    if(a>=0 && b>a)return JSON.parse(txt.slice(a,b+1));
+    throw new Error('JSON inválido');
+  }
+
+  function v72Has(v){
+    return v!==null && v!==undefined && v!=='' && !(Array.isArray(v)&&v.length===0);
+  }
+
+  // Primary wins. Secondary only fills null/empty fields.
+  function v72DeepFill(primary,secondary){
+    if(Array.isArray(primary)){
+      return primary.length?primary:(Array.isArray(secondary)?secondary:primary);
+    }
+    if(!primary || typeof primary!=='object'){
+      return v72Has(primary)?primary:secondary;
+    }
+    const out={...primary};
+    if(secondary && typeof secondary==='object' && !Array.isArray(secondary)){
+      for(const [k,v] of Object.entries(secondary)){
+        if(!v72Has(out[k])) out[k]=v;
+        else if(out[k] && v && typeof out[k]==='object' && typeof v==='object'
+                && !Array.isArray(out[k]) && !Array.isArray(v)){
+          out[k]=v72DeepFill(out[k],v);
+        }
+      }
+    }
+    return out;
+  }
+
+  function v72Text(parts){
+    return (parts||[]).filter(p=>p?.text).map(p=>p.text).join('\n\n');
+  }
+
+  function v72Images(parts,limit){
+    return (parts||[])
+      .filter(p=>p?.inlineData?.data)
+      .slice(0,limit)
+      .map(p=>({
+        type:'image_url',
+        image_url:{url:`data:${p.inlineData.mimeType||'image/jpeg'};base64,${p.inlineData.data}`}
+      }));
+  }
+
+  function v72UsefulCount(mode,data){
+    if(!data || typeof data!=='object')return 0;
+
+    if(mode==='tactic'){
+      const c=data.capture||data.captures?.[0]||data;
+      const values=[
+        c?.teamName,
+        c?.opponent?.teamName,
+        c?.match?.venue,
+        c?.match?.refereeColor,
+        c?.myTeam?.overall,
+        c?.opponent?.overall,
+        c?.opponent?.formation,
+        c?.opponent?.style,
+        c?.opponent?.marking,
+        c?.opponent?.offside,
+        c?.opponent?.human,
+        c?.opponent?.manager
+      ];
+      return values.filter(v72Has).length;
+    }
+
+    if(mode==='calendar'){
+      return Array.isArray(data.matches)?data.matches.length:0;
+    }
+
+    if(mode==='result'){
+      return Number.isFinite(Number(data.gf)) && Number.isFinite(Number(data.ga)) ? 2 : 0;
+    }
+
+    return Object.keys(data).length;
+  }
+
+  async function v72OpenRouter(parts,mode){
+    const key=String(localStorage.getItem(OR_KEY)||'').trim();
+    if(!key)throw new Error('OpenRouter: chave não configurada');
+
+    const controller=new AbortController();
+    const timer=setTimeout(()=>controller.abort(),22000);
+
+    try{
+      const content=[
+        {type:'text',text:v72Text(parts)},
+        ...v72Images(parts,mode==='tactic'?8:6)
+      ];
+
+      const res=await fetch('https://openrouter.ai/api/v1/chat/completions',{
+        method:'POST',
+        signal:controller.signal,
+        headers:{
+          'Content-Type':'application/json',
+          'Authorization':`Bearer ${key}`,
+          'HTTP-Referer':location.origin,
+          'X-Title':'OSM AI Coach Pro'
+        },
+        body:JSON.stringify({
+          // OpenRouter selects a currently available FREE model that supports the request.
+          model:'openrouter/free',
+          messages:[{role:'user',content}],
+          temperature:0,
+          max_tokens:mode==='tactic'?5000:3500,
+          response_format:{type:'json_object'}
+        })
+      });
+
+      const raw=await res.text();
+      if(!res.ok)throw new Error(`OpenRouter HTTP ${res.status}: ${raw.slice(0,180)}`);
+
+      const json=JSON.parse(raw);
+      const txt=String(json?.choices?.[0]?.message?.content||'').trim();
+      const data=v72ParseJson(txt);
+
+      if(v72UsefulCount(mode,data)===0){
+        throw new Error('OpenRouter: resposta sem dados úteis');
+      }
+
+      return {
+        provider:'OpenRouter',
+        model:json?.model||'openrouter/free',
+        data
+      };
+    }catch(e){
+      if(e?.name==='AbortError')throw new Error('OpenRouter: tempo excedido (22s)');
+      throw e;
+    }finally{
+      clearTimeout(timer);
+    }
+  }
+
+  async function v72GroqText(parts,mode){
+    const key=String(localStorage.getItem(GROQ_KEY)||'').trim();
+    if(!key)throw new Error('Groq: chave não configurada');
+
+    const controller=new AbortController();
+    const timer=setTimeout(()=>controller.abort(),15000);
+
+    try{
+      const prompt=v72Text(parts)+
+        '\n\nIMPORTANTE: use somente o OCR/texto acima. '+
+        'Não invente informação que dependa exclusivamente de cor/imagem.';
+
+      const res=await fetch('https://api.groq.com/openai/v1/chat/completions',{
+        method:'POST',
+        signal:controller.signal,
+        headers:{
+          'Content-Type':'application/json',
+          'Authorization':`Bearer ${key}`
+        },
+        body:JSON.stringify({
+          model:'qwen/qwen3.8-27b',
+          messages:[{role:'user',content:prompt}],
+          temperature:0,
+          max_completion_tokens:mode==='tactic'?3500:2500,
+          response_format:{type:'json_object'},
+          reasoning_effort:'none'
+        })
+      });
+
+      const raw=await res.text();
+      if(!res.ok)throw new Error(`Groq HTTP ${res.status}: ${raw.slice(0,180)}`);
+
+      const json=JSON.parse(raw);
+      const txt=String(json?.choices?.[0]?.message?.content||'').trim();
+      const data=v72ParseJson(txt);
+
+      if(v72UsefulCount(mode,data)===0){
+        throw new Error('Groq: resposta sem dados úteis');
+      }
+
+      return {
+        provider:'Groq',
+        model:json?.model||'qwen/qwen3.8-27b',
+        data
+      };
+    }catch(e){
+      if(e?.name==='AbortError')throw new Error('Groq: tempo excedido (15s)');
+      throw e;
+    }finally{
+      clearTimeout(timer);
+    }
+  }
+
+  async function v72Package(ocr,evidence,mode){
+    // Elenco remains entirely under V7 native-resolution market engine.
+    if(mode==='market' && originalPackage){
+      return originalPackage(ocr,evidence,mode);
+    }
+
+    const prompt=typeof v21Prompt==='function'?v21Prompt(ocr,mode):'';
+    const parts=[{text:prompt}];
+    for(const f of (evidence||[])){
+      if(f?.base64)parts.push({inlineData:{mimeType:f.mimeType||'image/jpeg',data:f.base64}});
+    }
+
+    const errors=[];
+    const label=mode==='tactic'?'Partida':mode==='calendar'?'Calendário':'Resultado';
+
+    v72Diag(`V7.2 · ${label} · tentando Gemini…`);
+
+    if(originalPackage){
+      try{
+        const gemini=await v72Timeout(originalPackage(ocr,evidence,mode),11000,'Gemini');
+        if(v72UsefulCount(mode,gemini)>0){
+          v72Diag(`V7.2 · ${label} concluído com Gemini`);
+          return gemini;
+        }
+        errors.push('Gemini: resposta sem dados úteis');
+      }catch(e){
+        errors.push(`Gemini: ${v72SafeErr(e)}`);
+      }
+    }
+
+    v72Diag(`V7.2 · ${label} · Gemini indisponível; usando IA de backup…`);
+    try{
+      if(typeof job==='function')job(`${label}: Gemini indisponível · usando OpenRouter/Groq…`);
+    }catch(_){}
+
+    const attempts=[];
+    if(localStorage.getItem(OR_KEY)){
+      attempts.push(v72OpenRouter(parts,mode)
+        .then(x=>({ok:true,x}))
+        .catch(e=>({ok:false,e})));
+    }
+    if(localStorage.getItem(GROQ_KEY)){
+      attempts.push(v72GroqText(parts,mode)
+        .then(x=>({ok:true,x}))
+        .catch(e=>({ok:false,e})));
+    }
+
+    if(!attempts.length){
+      throw new Error(errors.concat([
+        'Configure ao menos OpenRouter ou Groq; as chaves de backup não foram encontradas.'
+      ]).join(' | '));
+    }
+
+    const settled=await Promise.all(attempts);
+
+    const vision=settled.find(r=>r.ok && r.x.provider==='OpenRouter')?.x;
+    const text=settled.find(r=>r.ok && r.x.provider==='Groq')?.x;
+
+    for(const r of settled){
+      if(!r.ok)errors.push(v72SafeErr(r.e));
+    }
+
+    let data=null;
+    const providers=[];
+
+    // Vision is authoritative for colors/layout and fills first.
+    if(vision){
+      data=vision.data;
+      providers.push(`OpenRouter (${vision.model})`);
+    }
+
+    // Groq sees OCR text only and may fill blanks, never overwrite vision.
+    if(text){
+      data=data?v72DeepFill(data,text.data):text.data;
+      providers.push(`Groq (${text.model})`);
+    }
+
+    if(!data || v72UsefulCount(mode,data)===0){
+      throw new Error(
+        errors.join(' | ') ||
+        `${label}: nenhuma IA retornou dados úteis.`
+      );
+    }
+
+    v72Diag(`V7.2 · ${label} concluído com ${providers.join(' + ')}`);
+    return data;
+  }
+
+  try{v21AnalyzePackage=v72Package}catch(_){}
+  window.v21AnalyzePackage=v72Package;
+  window.OSM_STABLE_AI_VERSION=V72;
+
+  try{
+    console.info('[OSM] Stable AI Router 7.2 ativo');
+  }catch(_){}
+})();
