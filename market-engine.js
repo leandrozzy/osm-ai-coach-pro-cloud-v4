@@ -11,7 +11,7 @@
    - Director only decides from validated roster + real finances
 */
 (function(){
-  const VERSION='6.0.0';
+  const VERSION='7.0.0';
   const TARGET={ATA:4,MEI:6,DEF:6,GOL:2};
   const VALID_POS=new Set(Object.keys(TARGET));
   const oldRenderMarket=typeof renderMarket==='function'?renderMarket:null;
@@ -297,6 +297,133 @@
     }
     for(const x of settled)if(!x.ok)errors.push(String(x.error?.message||x.error));
     throw new Error(errors.join(' | ')||'Todas as IAs falharam.');
+  }
+
+
+  /* =========================================================
+     V7 STABLE CORE — roster video stays at native resolution.
+     Partida/Calendário continue using the old lightweight extractor.
+     ========================================================= */
+  async function stableSeekVideo(v,t){
+    return new Promise(resolve=>{
+      let done=false;
+      const finish=()=>{if(done)return;done=true;v.removeEventListener('seeked',finish);resolve();};
+      v.addEventListener('seeked',finish,{once:true});
+      try{v.currentTime=t;}catch(_){finish();}
+      setTimeout(finish,1200);
+    });
+  }
+
+  function stableThumbFromCanvas(canvas){
+    const tw=96,th=42,c=document.createElement('canvas');c.width=tw;c.height=th;
+    const x=c.getContext('2d',{willReadFrequently:true});x.drawImage(canvas,0,0,tw,th);
+    const d=x.getImageData(0,0,tw,th).data,thumb=new Uint8Array(tw*th);let k=0;
+    for(let i=0;i<d.length;i+=4)thumb[k++]=Math.round(.299*d[i]+.587*d[i+1]+.114*d[i+2]);
+    return thumb;
+  }
+
+  function stableThumbDiff(a,b){
+    if(!a||!b||a.length!==b.length)return 999;
+    let sum=0;for(let i=0;i<a.length;i++)sum+=Math.abs(a[i]-b[i]);
+    return sum/a.length;
+  }
+
+  async function stableCaptureNativeFrame(v,t,name){
+    const maxW=2560;
+    const nativeW=v.videoWidth||1920,nativeH=v.videoHeight||1080;
+    const scale=Math.min(1,maxW/nativeW);
+    const W=Math.max(640,Math.round(nativeW*scale)),H=Math.max(360,Math.round(nativeH*scale));
+    const c=document.createElement('canvas');c.width=W;c.height=H;
+    const x=c.getContext('2d');x.drawImage(v,0,0,W,H);
+    const thumb=stableThumbFromCanvas(c);
+    let dataUrl=c.toDataURL('image/jpeg',.91);
+    return {dataUrl,base64:dataUrl.split(',')[1],mimeType:'image/jpeg',time:t,name,thumb,nativeWidth:W,nativeHeight:H,score:0};
+  }
+
+  async function extractNativeRosterFrames(file,maxFrames=34){
+    const url=URL.createObjectURL(file),v=document.createElement('video');
+    v.src=url;v.muted=true;v.playsInline=true;v.preload='metadata';
+    try{
+      await new Promise((res,rej)=>{v.onloadedmetadata=res;v.onerror=()=>rej(new Error('Não consegui abrir o vídeo do elenco.'));});
+      const dur=Math.max(.25,v.duration||1);
+      const sampleCount=Math.max(24,Math.min(42,maxFrames+8));
+      const frames=[];let prev=null;
+      for(let i=0;i<sampleCount;i++){
+        const t=Math.min(dur-.05,Math.max(.05,dur*(i+.35)/sampleCount));
+        await stableSeekVideo(v,t);
+        const f=await stableCaptureNativeFrame(v,t,file.name);
+        const diff=prev?stableThumbDiff(prev,f.thumb):999;f.score=diff;prev=f.thumb;
+        // Keep first frames and any meaningful scroll change. Tiny changes are redundant.
+        if(frames.length<4||diff>=2.25)frames.push(f);
+      }
+      if(frames.length<=maxFrames)return frames;
+      // Even temporal coverage; do not keep dozens of near-identical thumbnails.
+      const out=[];
+      for(let i=0;i<maxFrames;i++){
+        const idx=Math.round(i*(frames.length-1)/Math.max(1,maxFrames-1));
+        if(frames[idx]&&!out.includes(frames[idx]))out.push(frames[idx]);
+      }
+      return out;
+    } finally {URL.revokeObjectURL(url);}
+  }
+
+  async function buildSingleRowImageV7(rep,enhanced=false){
+    const img=await v21LoadImage(rep.frame.dataUrl),W=rep.W||img.naturalWidth,H=rep.H||img.naturalHeight;
+    // Remove only the extreme left margin; retain name, age, position, 3 attributes and value.
+    const sx=Math.round(W*.018),sw=Math.round(W*.972);
+    const sy=Math.max(0,Math.round(rep.cy-H*.036));
+    const sh=Math.min(Math.round(H*.072),H-sy);
+    const targetW=2200,targetH=150;
+    const c=document.createElement('canvas');c.width=targetW;c.height=targetH;
+    const x=c.getContext('2d',{willReadFrequently:enhanced});
+    x.fillStyle='#fff';x.fillRect(0,0,targetW,targetH);
+    x.drawImage(img,sx,sy,sw,sh,0,0,targetW,targetH);
+    if(enhanced){
+      const id=x.getImageData(0,0,targetW,targetH),d=id.data;
+      for(let i=0;i<d.length;i+=4){
+        const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+        // High contrast but preserve antialiasing around text.
+        const y=g<125?20:g>225?250:Math.max(35,Math.min(245,(g-125)*2.3+20));
+        d[i]=d[i+1]=d[i+2]=y;
+      }
+      x.putImageData(id,0,0);
+    }
+    const dataUrl=c.toDataURL('image/jpeg',enhanced?.94:.92),b64=dataUrl.split(',')[1];
+    return {dataUrl,base64:b64,mimeType:'image/jpeg',approxBytes:Math.round(b64.length*.75)};
+  }
+
+  async function readRowsLocalTesseract(reps){
+    if(!window.Tesseract)return [];
+    let worker=null;const out=[];
+    try{
+      try{worker=await Tesseract.createWorker('eng',1);}catch(_){return [];}
+      try{await worker.setParameters({tessedit_pageseg_mode:'7',preserve_interword_spaces:'1'});}catch(_){}
+      for(let i=0;i<reps.length;i++){
+        setProgress(33+Math.round((i/Math.max(1,reps.length))*28),`Leitura local em alta resolução ${i+1}/${reps.length}…`);
+        try{
+          const img=await buildSingleRowImageV7(reps[i],false);
+          const r=await worker.recognize(img.dataUrl),text=String(r?.data?.text||'').replace(/\s+/g,' ').trim();
+          const row=parseSingleRowText(text,i+1);
+          if(row){row.training=reps[i]?.training===true;row._ocrConfidence=Number(r?.data?.confidence)||0;row._rawText=text;out.push(row);}
+        }catch(_){}
+      }
+    } finally {try{if(worker)await worker.terminate();}catch(_){}}
+    return out;
+  }
+
+  async function remoteReadDetectedRowV7(rep,rowId,engine='2',enhanced=false){
+    const img=await buildSingleRowImageV7(rep,enhanced);
+    const block=await ocrSpaceImage(img,`V7 jogador ${rowId}`,engine==='3'?17000:14000,engine);
+    let row=parseSingleRowText(block.text,rowId);
+    if(!row)row=await structureSingleRow(block.text,rowId);
+    if(row){row.training=rep.training===true;row._ocrConfidence=engine==='3'?88:84;row._rawText=block.text;row.source=`v7_row_e${engine}`;}
+    return {row,text:block.text};
+  }
+
+  function rosterValueTolerance(squadValue,rowCount){
+    // OSM shows player values rounded; allow rounding, not a missing real player.
+    // At ~18-25 rows, max expected rounding drift is around 1M.
+    return Math.max(900000,Math.min(1600000,(rowCount||18)*65000),Math.abs(squadValue||0)*.006);
   }
 
   function chooseFrames(frames,max=9){
@@ -718,7 +845,7 @@
   }
 
   async function collectUniqueVisualRows(frames){
-    const sampled=chooseFrames(frames,16);
+    const sampled=chooseFrames(frames,24);
     const candidates=[];
     for(let i=0;i<sampled.length;i++){
       const rows=await detectRowsInFrame(sampled[i],i);
@@ -754,6 +881,178 @@
     if(reps.length<8)throw new Error(`Só ${reps.length} linhas visuais únicas foram detectadas.`);
     if(reps.length>35)throw new Error(`Detecção gerou ${reps.length} linhas candidatas; vídeo/rolagem instável.`);
     return {sampled,candidates,clusters,reps};
+  }
+
+
+  async function buildSingleRowImage(rep){
+    const img=await v21LoadImage(rep.frame.dataUrl);
+    const W=rep.W,H=rep.H;
+
+    // A tabela útil começa após a camisa e termina no valor.
+    // Mantemos idade, posição, Ata/Def/Med e valor.
+    const sx=Math.round(W*.025);
+    const sw=Math.round(W*.955);
+    const sy=Math.max(0,Math.round(rep.cy-H*.040));
+    const sh=Math.min(Math.round(H*.080),H-sy);
+
+    const c=document.createElement('canvas');
+    c.width=1850;c.height=125;
+    const x=c.getContext('2d');
+    x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);
+    x.drawImage(img,sx,sy,sw,sh,0,0,c.width,c.height);
+
+    let dataUrl=c.toDataURL('image/jpeg',.92);
+    let b64=dataUrl.split(',')[1];
+    if(b64.length*.75>700000){
+      dataUrl=c.toDataURL('image/jpeg',.80);
+      b64=dataUrl.split(',')[1];
+    }
+    return {
+      dataUrl,
+      base64:b64,
+      mimeType:'image/jpeg',
+      approxBytes:Math.round(b64.length*.75)
+    };
+  }
+
+  function parseSingleRowText(text,rowId){
+    const raw=String(text||'').replace(/[|]+/g,' ').replace(/\s+/g,' ').trim();
+    if(!raw)return null;
+
+    const moneyMatch=raw.match(/(\d+(?:[.,]\d+)?)\s*([MK])\b/i);
+    if(!moneyMatch)return null;
+
+    const posMatch=raw.match(/(?:^|\s)(GR|GK|GOL|POR|DD|DC|DE|DF|DEF|ZAG|CB|RB|LB|MDC|MC|MCO|MD|ME|MF|MID|VOL|CM|CDM|CAM|LM|RM|PL|ED|EE|ATA|ATT|FW|FWD|ST|CA|PE|PD|LW|RW|CF)(?=\s|$)/i);
+    if(!posMatch)return null;
+
+    const position=positionFromCode(posMatch[1]);
+    if(!position)return null;
+
+    const beforePos=raw.slice(0,posMatch.index).trim();
+
+    // Idade é o último número 15-45 antes da posição.
+    const ageMatches=[...beforePos.matchAll(/\b(\d{2})\b/g)]
+      .map(m=>({n:Number(m[1]),i:m.index}))
+      .filter(x=>x.n>=15&&x.n<=45);
+    const ageObj=ageMatches.length?ageMatches[ageMatches.length-1]:null;
+    const age=ageObj?.n??null;
+
+    let name=ageObj?beforePos.slice(0,ageObj.i):beforePos;
+    name=name.replace(/^[^A-Za-zÀ-ÿ]+/,'').trim();
+    name=cleanName(name);
+    if(!name)return null;
+
+    const statText=raw.slice(posMatch.index+posMatch[0].length,moneyMatch.index);
+    const nums=[...statText.matchAll(/\b(\d{1,3})\b/g)]
+      .map(m=>Number(m[1]))
+      .filter(n=>n>=0&&n<=200);
+
+    if(nums.length<2)return null;
+
+    const attack=nums[0]??null;
+    const defence=nums[1]??null;
+    const midfield=nums[2]??null;
+
+    let rating=null;
+    if(position==='ATA')rating=attack;
+    else if(position==='DEF')rating=defence;
+    else if(position==='MEI')rating=midfield;
+    else if(position==='GOL')rating=defence;
+
+    if(rating==null||rating<40||rating>200)return null;
+
+    return {
+      rowId,
+      name,
+      age,
+      position,
+      posCode:String(posMatch[1]).toUpperCase(),
+      rating,
+      attack,
+      defence,
+      midfield,
+      value:moneyMatch[1].replace('.',',')+moneyMatch[2].toUpperCase(),
+      training:false,
+      forSale:false,
+      source:'single_row_ocr'
+    };
+  }
+
+  async function structureSingleRow(text,rowId){
+    const prompt=`Uma única linha de jogador do elenco OSM 26 foi lida por OCR.
+Não invente. Extraia somente o que estiver presente.
+
+Retorne JSON puro:
+{"name":null,"age":null,"posCode":null,"attack":null,"defence":null,"midfield":null,"value":null}
+
+Regras:
+- posCode: GR/DD/DC/DE/MDC/MC/MCO/MD/ME/PL/ED/EE ou equivalente realmente presente.
+- attack, defence, midfield são as colunas Ata/Def/Med.
+- value é o valor monetário final.
+- se um campo não estiver legível, null.
+
+OCR:
+${text}`;
+
+    const attempts=[];
+    if(backupKeys().groq)attempts.push(groqTextJson(prompt));
+    if(backupKeys().openrouter)attempts.push(openRouterTextJson(prompt));
+    if(!attempts.length)return null;
+
+    try{
+      const r=await Promise.any(attempts);
+      const v=r?.data||{};
+      const position=positionFromCode(v.posCode);
+      if(!position)return null;
+      const attack=num(v.attack),defence=num(v.defence),midfield=num(v.midfield);
+      let rating=position==='ATA'?attack:position==='DEF'?defence:position==='MEI'?midfield:defence;
+      if(!v.name||rating==null||!v.value)return null;
+      return {
+        rowId,
+        name:v.name,
+        age:num(v.age),
+        position,
+        posCode:v.posCode,
+        rating,
+        attack,
+        defence,
+        midfield,
+        value:v.value,
+        training:false,
+        forSale:false,
+        source:'single_row_ai'
+      };
+    }catch{
+      return null;
+    }
+  }
+
+  async function readSingleDetectedRow(rep,rowId){
+    const img=await buildSingleRowImage(rep);
+
+    // E2 primeiro. Como é uma faixa de uma linha só, tende a ser muito mais estável.
+    let block;
+    try{
+      block=await ocrSpaceImage(img,`jogador ${rowId}`,14000,'2');
+    }catch(e2){
+      try{
+        block=await ocrSpaceImage(img,`jogador ${rowId} fallback`,16000,'3');
+      }catch(_){
+        throw e2;
+      }
+    }
+
+    let row=parseSingleRowText(block.text,rowId);
+
+    // IA textual só tenta completar esta linha se o parser local não fechar.
+    if(!row){
+      row=await structureSingleRow(block.text,rowId);
+    }
+
+    if(!row)return {row:null,text:block.text};
+
+    row.training=rep.training===true;
+    return {row,text:block.text};
   }
 
   async function buildRowSheet(rows,startIndex){
@@ -923,98 +1222,66 @@ ${joined}`;
   }
 
   async function fullRosterScan(frames){
-    setProgress(22,'Detectando cada linha de jogador…');
-    const visual=await collectUniqueVisualRows(frames);
-    const reps=visual.reps;
+    setProgress(22,'Rastreando jogadores na rolagem em resolução nativa…');
+    const visual=await collectUniqueVisualRows(frames),reps=visual.reps;
+    if(!reps.length)throw new Error('Nenhuma linha de jogador foi detectada.');
 
-    setProgress(30,`${reps.length} linhas visuais únicas · preparando leitura…`);
+    setProgress(31,`${reps.length} linhas candidatas · OCR local primeiro…`);
+    const localRows=await readRowsLocalTesseract(reps);
+    const byId=new Map(localRows.map(r=>[r.rowId,r]));
 
-    const sheets=[];
-    for(let i=0;i<reps.length;i+=5){
-      sheets.push(await buildRowSheet(reps.slice(i,i+5),i));
+    // Remote OCR only for a missing/low-confidence line. This keeps quota/time under control.
+    const firstRemote=[];
+    for(let id=1;id<=reps.length;id++){
+      const r=byId.get(id);
+      if(!r || Number(r._ocrConfidence||0)<78)firstRemote.push(id);
     }
-
-    const blocks=[];
-    const failures=[];
-    for(let base=0;base<sheets.length;base+=2){
-      setProgress(
-        38+Math.round((base/Math.max(1,sheets.length))*34),
-        `Lendo fichas de jogadores ${Math.min((base+2)*5,reps.length)}/${reps.length}…`
-      );
-      const batch=sheets.slice(base,base+2);
-      const settled=await Promise.allSettled(
-        batch.map((sheet,i)=>ocrSpaceImage(sheet,`fichas ${base+i+1}`,18000,'2'))
-      );
-      for(const r of settled){
-        if(r.status==='fulfilled'&&r.value?.text)blocks.push(r.value);
-        else if(r.status==='rejected')failures.push(String(r.reason?.message||r.reason));
-      }
-    }
-
-    if(!blocks.length)throw new Error('OCR.Space não conseguiu ler nenhuma ficha de jogador.');
-
-    setProgress(76,'Consolidando fichas individuais…');
-    const localRows=deterministicMarkedRows(blocks);
-    const aiRows=await structureMarkedRows(blocks,reps.length);
-
-    // Aplica status visual (camisa laranja) pelo rowId.
-    const byId=new Map();
-    for(const r of [...localRows,...aiRows]){
-      if(!r?.rowId)continue;
-      const prev=byId.get(r.rowId);
-      if(!prev)byId.set(r.rowId,r);
-      else{
-        // Prefere o registro mais completo.
-        const score=x=>(x.name?2:0)+(x.age!=null?1:0)+(x.posCode?2:0)+(x.rating!=null?2:0)+(x.value?2:0);
-        if(score(r)>score(prev))byId.set(r.rowId,r);
-      }
-    }
-
-    const parsed=[];
-    for(const [rowId,r] of byId.entries()){
-      const rep=reps[rowId-1];
-      parsed.push({
-        ...r,
-        training:rep?.training===true,
-        forSale:false
+    for(let base=0;base<firstRemote.length;base+=4){
+      const ids=firstRemote.slice(base,base+4);
+      setProgress(62+Math.round((base/Math.max(1,firstRemote.length))*16),`Confirmando linhas difíceis ${Math.min(base+4,firstRemote.length)}/${firstRemote.length}…`);
+      const settled=await Promise.allSettled(ids.map(id=>remoteReadDetectedRowV7(reps[id-1],id,'2',false)));
+      settled.forEach((x,i)=>{
+        if(x.status!=='fulfilled'||!x.value?.row)return;
+        const row=x.value.row,old=byId.get(row.rowId);
+        // Remote wins when local was absent or clearly low confidence.
+        if(!old||Number(old._ocrConfidence||0)<84)byId.set(row.rowId,row);
       });
     }
 
-    let finalRows=consolidate([parsed]);
-
-    // Se alguma ficha visual não gerou jogador, relê SOMENTE aquela ficha individual com Engine 3.
-    const knownIds=new Set([...byId.keys()]);
-    const missingIds=[];
-    for(let id=1;id<=reps.length;id++)if(!knownIds.has(id))missingIds.push(id);
-
-    if(missingIds.length && missingIds.length<=8){
-      const recovered=[];
-      for(let base=0;base<missingIds.length;base+=2){
-        const ids=missingIds.slice(base,base+2);
-        setProgress(82+Math.round((base/Math.max(1,missingIds.length))*8),
-          `Recuperando fichas ${Math.min(base+2,missingIds.length)}/${missingIds.length}…`);
-        const jobs=ids.map(async id=>{
-          const sheet=await buildRowSheet([reps[id-1]],id-1);
-          const b=await ocrSpaceImage(sheet,`ficha ROW${String(id).padStart(2,'0')}`,18000,'3');
-          return b;
-        });
-        const settled=await Promise.allSettled(jobs);
-        for(const r of settled)if(r.status==='fulfilled'&&r.value?.text)recovered.push(r.value);
-      }
-      if(recovered.length){
-        const local2=deterministicMarkedRows(recovered);
-        const ai2=await structureMarkedRows(recovered,reps.length);
-        const extra=[...local2,...ai2].map(r=>({
-          ...r,
-          training:reps[(r.rowId||1)-1]?.training===true
-        }));
-        finalRows=consolidate([finalRows,extra]);
-        blocks.push(...recovered);
-      }
-    }
-
-    setProgress(91,'Conferindo valor total do elenco…');
+    let rows=[...byId.values()].sort((a,b)=>(a.rowId||0)-(b.rowId||0));
+    let finalRows=consolidate([rows]);
+    setProgress(80,'Lendo caixa e valor total do elenco…');
     const header=await readHeaderByOcr(frames[0]);
+    const sq=money(header?.squadValue);
+
+    // Financial checksum decides whether a second pass is needed.
+    let sum=finalRows.reduce((a,p)=>a+(money(p.value)||0),0);
+    let tol=rosterValueTolerance(sq,finalRows.length);
+    const needFinancialRetry=sq!==null && Math.abs(sum-sq)>tol;
+
+    if(needFinancialRetry){
+      // Re-read unresolved AND suspicious/low-confidence rows with a different engine/preprocessing.
+      const retry=[];
+      for(let id=1;id<=reps.length;id++){
+        const r=byId.get(id);
+        if(!r || Number(r._ocrConfidence||0)<94)retry.push(id);
+      }
+      for(let base=0;base<retry.length;base+=3){
+        const ids=retry.slice(base,base+3);
+        setProgress(82+Math.round((base/Math.max(1,retry.length))*9),`Conferência financeira ${Math.min(base+3,retry.length)}/${retry.length}…`);
+        const settled=await Promise.allSettled(ids.map(id=>remoteReadDetectedRowV7(reps[id-1],id,'3',true)));
+        settled.forEach((x,i)=>{
+          if(x.status!=='fulfilled'||!x.value?.row)return;
+          const row=x.value.row,old=byId.get(row.rowId);
+          // Prefer second pass if it resolves a missing row or carries a complete money/position tuple.
+          if(!old || (money(row.value)!=null&&VALID_POS.has(row.position)))byId.set(row.rowId,row);
+        });
+      }
+      rows=[...byId.values()].sort((a,b)=>(a.rowId||0)-(b.rowId||0));
+      finalRows=consolidate([rows]);
+      sum=finalRows.reduce((a,p)=>a+(money(p.value)||0),0);
+      tol=rosterValueTolerance(sq,finalRows.length);
+    }
 
     const positionCoverage={
       ATA:finalRows.filter(r=>r.position==='ATA').length,
@@ -1022,30 +1289,18 @@ ${joined}`;
       DEF:finalRows.filter(r=>r.position==='DEF').length,
       GOL:finalRows.filter(r=>r.position==='GOL').length
     };
-
     const coverageComplete=Object.values(positionCoverage).every(v=>v>0);
+    const parsedIds=new Set(rows.map(r=>r.rowId).filter(Boolean));
+    const unresolved=[];for(let id=1;id<=reps.length;id++)if(!parsedIds.has(id))unresolved.push(id);
 
     return {
-      header,
-      rows:finalRows,
-      chosenFrames:visual.sampled,
-      distinctFrames:visual.sampled.length,
-      tableBlocks:blocks.length,
-      visualRows:reps.length,
-      positionCoverage,
-      coverage:{seen:{
-        ATA:positionCoverage.ATA>0?1:0,
-        MEI:positionCoverage.MEI>0?1:0,
-        DEF:positionCoverage.DEF>0?1:0,
-        GOL:positionCoverage.GOL>0?1:0
-      }},
-      coverageComplete,
-      provider:'OCR.Space E2/E3 + leitor por linha',
-      model:'row-fingerprint + marked sheets',
-      failures
+      header,rows:finalRows,chosenFrames:visual.sampled,distinctFrames:visual.sampled.length,
+      tableBlocks:reps.length,visualRows:reps.length,parsedRows:rows.length,unresolved,
+      positionCoverage,coverage:{seen:{ATA:positionCoverage.ATA?1:0,MEI:positionCoverage.MEI?1:0,DEF:positionCoverage.DEF?1:0,GOL:positionCoverage.GOL?1:0}},
+      coverageComplete,provider:'V7 nativo + Tesseract + OCR.Space seletivo',model:'multi-pass row consensus',
+      financial:{sum,squadValue:sq,tolerance:tol,ok:sq===null?null:Math.abs(sum-sq)<=tol},failures:[]
     };
   }
-
 
   async function readHeader(frame){
     // Dedicated regions prevent 168M squad value from being mistaken for 9.3M cash.
@@ -1103,7 +1358,7 @@ ${joined}`;
     return merged.map(({_bestHits,...r})=>({
       ...r,
       verifiedRoster:true,
-      source:'market_engine_60'
+      source:'market_engine_61'
     }));
   }
 
@@ -1541,7 +1796,7 @@ Retorne JSON puro exatamente:
     try{
       if(video){
         setProgress(8,'Extraindo quadros da rolagem…');
-        frames=await v21ExtractVideoFrames(video,30);
+        frames=await extractNativeRosterFrames(video,34);
       }else if(images.length){
         setProgress(8,'Preparando imagens do elenco…');
         for(const f of images)frames.push(await v21ImageToFrame(f));
@@ -1557,12 +1812,12 @@ Retorne JSON puro exatamente:
       source=`${result.provider||'OCR.Space'}:${result.model||'parser'}`;
       const diag=document.getElementById('analysisDiagnostics');
       const cov=result.positionCoverage||{};
-      if(diag)diag.textContent=`Elenco 6.0 · ${result.visualRows||0} linhas visuais · ${result.tableBlocks||0} folhas OCR · ATA/MEI/DEF/GOL ${cov.ATA||0}/${cov.MEI||0}/${cov.DEF||0}/${cov.GOL||0} · ${roster.length} jogadores · ${Math.round((Date.now()-started)/1000)}s.`;
+      if(diag)diag.textContent=`Elenco 7.0 · ${result.visualRows||0} linhas rastreadas · ${result.parsedRows||0} estruturadas · revisão visual ${(result.unresolved||[]).length} · ATA/MEI/DEF/GOL ${(result.positionCoverage?.ATA)||0}/${(result.positionCoverage?.MEI)||0}/${(result.positionCoverage?.DEF)||0}/${(result.positionCoverage?.GOL)||0} · ${Math.round((Date.now()-started)/1000)}s.`;
       validationScan=result;
     }catch(err){
       technicalError=String(err?.message||err);
       const diag=document.getElementById('analysisDiagnostics');
-      if(diag)diag.textContent=`Elenco 4.6 falhou: ${technicalError}`;
+      if(diag)diag.textContent=`Elenco 7.0 falhou: ${technicalError}`;
     }
 
     const comp=composition(roster), sum=roster.reduce((a,p)=>a+(money(p.value)||0),0), sq=money(header?.squadValue), issues=[];
@@ -1587,14 +1842,15 @@ Retorne JSON puro exatamente:
     }
 
     if(sq!==null&&roster.length>0){
-      const ratio=sum/sq;
-      if(ratio<.97||ratio>1.03){
-        const missing=Math.max(0,sq-sum);
-        const excess=Math.max(0,sum-sq);
+      const tolerance=rosterValueTolerance(sq,roster.length);
+      const delta=Math.abs(sum-sq);
+      if(delta>tolerance){
+        const missing=Math.max(0,sq-sum),excess=Math.max(0,sum-sq);
         issues.push(
-          `valores lidos somam ${fmtMoney(sum)} de ${fmtMoney(sq)}`+
-          (missing>0?` · ainda faltam cerca de ${fmtMoney(missing)} em jogadores`:'')+
-          (excess>0?` · há cerca de ${fmtMoney(excess)} duplicados/inconsistentes`:'')
+          `conferência financeira não fechou: ${fmtMoney(sum)} lidos de ${fmtMoney(sq)}`+
+          (missing>0?` · faltam ${fmtMoney(missing)}`:'')+
+          (excess>0?` · excesso ${fmtMoney(excess)}`:'')+
+          ` · tolerância de arredondamento ${fmtMoney(tolerance)}`
         );
       }
     }
@@ -1608,14 +1864,14 @@ Retorne JSON puro exatamente:
       if(typeof renderMarket==='function')renderMarket();
       const msg=`${roster.length} jogadores validados · ${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL} · caixa ${fmtMoney(s.myTeam?.cash)} · elenco ${fmtMoney(s.myTeam?.squadValue)}.`;
       const el=document.getElementById('analysisContent');
-      if(el)el.innerHTML=`<div class="card" style="margin-top:12px"><span class="eyebrow">ELENCO VALIDADO · 6.0</span><h3>${roster.length} jogadores confirmados</h3><p class="small muted">${esc(msg)}</p><div class="fallback-kpis"><div><span>Caixa</span><b>${esc(fmtMoney(s.myTeam?.cash))}</b></div><div><span>Valor elenco</span><b>${esc(fmtMoney(s.myTeam?.squadValue))}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div></div><p class="small muted">Fonte: ${esc(source)} · leitura linha a linha + deduplicação visual antes do OCR · ${Math.round(validation.elapsedMs/1000)}s.</p></div>`;
+      if(el)el.innerHTML=`<div class="card" style="margin-top:12px"><span class="eyebrow">ELENCO VALIDADO · 7.0</span><h3>${roster.length} jogadores confirmados</h3><p class="small muted">${esc(msg)}</p><div class="fallback-kpis"><div><span>Caixa</span><b>${esc(fmtMoney(s.myTeam?.cash))}</b></div><div><span>Valor elenco</span><b>${esc(fmtMoney(s.myTeam?.squadValue))}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div></div><p class="small muted">Fonte: ${esc(source)} · resolução nativa + consenso local/remoto · ${Math.round(validation.elapsedMs/1000)}s.</p></div>`;
       setAnalysisRun(s,'market','success',msg,{version:VERSION,validation}); setProgress(100,'Elenco validado'); job('Elenco e finanças atualizados.','done'); return;
     }
 
     preserveFailed(s,validation,header); try{localStorage.setItem(STATE_KEY,JSON.stringify(state))}catch{}
     if(typeof renderMarket==='function')renderMarket();
     const el=document.getElementById('analysisContent');
-    if(el)el.innerHTML=`<div class="card ai-fallback-card" style="margin-top:12px"><span class="eyebrow">VALIDAÇÃO DE ELENCO · 6.0</span><h3>Leitura incompleta — não alterei seu elenco</h3><p class="small muted">${esc(validation.issues.join(' · '))}</p><div class="fallback-kpis"><div><span>Encontrados</span><b>${validation.count}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div><div><span>Tempo</span><b>${Math.round(validation.elapsedMs/1000)}s</b></div></div>${technicalError?`<p class="small muted" style="margin-top:10px">Erro técnico: ${esc(technicalError)}</p>`:''}</div>`;
+    if(el)el.innerHTML=`<div class="card ai-fallback-card" style="margin-top:12px"><span class="eyebrow">VALIDAÇÃO DE ELENCO · 7.0</span><h3>Leitura incompleta — não alterei seu elenco</h3><p class="small muted">${esc(validation.issues.join(' · '))}</p><div class="fallback-kpis"><div><span>Encontrados</span><b>${validation.count}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div><div><span>Tempo</span><b>${Math.round(validation.elapsedMs/1000)}s</b></div></div>${technicalError?`<p class="small muted" style="margin-top:10px">Erro técnico: ${esc(technicalError)}</p>`:''}</div>`;
     setAnalysisRun(s,'market','warning',`Leitura incompleta: ${validation.issues.join('; ')}`,{version:VERSION,validation}); setProgress(100,'Leitura incompleta'); job('Elenco não foi alterado porque a validação não fechou.','done');
   }
 
@@ -1643,11 +1899,11 @@ Retorne JSON puro exatamente:
   }
   function directorHtml(s){
     const v=s?.rosterValidation42;
-    if(!v?.ok)return `<div class="card market40-card"><span class="eyebrow">DIRETOR IA · 6.0</span><h3>Plano bloqueado até ler o elenco completo</h3><p class="small muted">A versão 6.0 detecta cada linha de jogador visualmente, elimina repetições antes do OCR e lê fichas individuais.</p><div class="actions"><button class="btn" onclick="showView('analyze');setAnalysisMode('market')">Analisar elenco</button></div></div>`;
+    if(!v?.ok)return `<div class="card market40-card"><span class="eyebrow">DIRETOR IA · 7.0</span><h3>Plano bloqueado até ler o elenco completo</h3><p class="small muted">A V7 mantém o vídeo do elenco em resolução nativa, usa OCR local primeiro, confirma somente linhas difíceis no OCR.Space e só libera o Diretor após conferência financeira.</p><div class="actions"><button class="btn" onclick="showView('analyze');setAnalysisMode('market')">Analisar elenco</button></div></div>`;
     const p=buildDirector(s),c={ATA:p.by.ATA.length,MEI:p.by.MEI.length,DEF:p.by.DEF.length,GOL:p.by.GOL.length};
     const sell=p.sells.length?p.sells.map((x,i)=>`<div class="radar-item"><div><b>${i+1}. ${esc(x.name)}</b><span>${esc(x.position)} · força ${esc(x.rating)} · valor ${esc(x.value)}${x.training?' · treinando':''}</span></div><span>${x.forSale?'Já à venda':'Excedente'}</span></div>`).join(''):'<p class="small muted">Nenhuma venda estrutural necessária agora.</p>';
     const weak=Object.entries(p.weakest).map(([k,x])=>x?`${k}: ${esc(x.name)} ${x.rating}`:`${k}: NI`).join(' · ');
-    return `<div class="card market40-card"><div class="section-head compact-head"><div><span class="eyebrow">DIRETOR IA · DADOS REAIS · 6.0</span><h3>Plano baseado somente no vídeo validado</h3></div></div>
+    return `<div class="card market40-card"><div class="section-head compact-head"><div><span class="eyebrow">DIRETOR IA · DADOS REAIS · 7.0</span><h3>Plano baseado somente no vídeo validado</h3></div></div>
       <div class="coach30-kpis"><div><span>Caixa</span><b>${esc(fmtMoney(p.cash))}</b></div><div><span>Valor do elenco</span><b>${esc(fmtMoney(p.sq))}</b></div><div><span>Jogadores</span><b>${p.rows.length}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${c.ATA}/${c.MEI}/${c.DEF}/${c.GOL}</b></div></div>
       <div class="reason-box"><b>Venda agora</b>${sell}${p.sells.length?`<p class="small muted">Referência de caixa se as ${p.sells.length} vendas ocorrerem pelo valor mostrado: ${esc(fmtMoney(p.afterSales))}. O preço efetivo de venda pode variar no OSM.</p>`:''}</div>
       <div class="reason-box"><b>Compra</b><p>Caixa imediato: <b>${esc(fmtMoney(p.cash))}</b>. ${p.sells.length?`Referência após vendas: <b>${esc(fmtMoney(p.afterSales))}</b>.`:''}</p><p class="small muted">Sem ler a lista de transferências, não inventarei nome/preço disponível. O Diretor usa este teto real para indicar quais opções observadas no mercado cabem no orçamento.</p></div>
@@ -1695,13 +1951,13 @@ Retorne JSON puro exatamente:
       if(legacyBad){s.roster=[];s.rosterValidation42={ok:false,version:VERSION,at:new Date().toISOString(),issues:['dados antigos descartados; reanalise o vídeo'],count:0,composition:{ATA:0,MEI:0,DEF:0,GOL:0},sumValues:0,successfulFrames:0};if(s.myTeam){s.myTeam.playerCount=null;s.myTeam.validatedPlayerCount=0;}}
     }
     localStorage.setItem(STATE_KEY,JSON.stringify(state));
-  }catch(err){console.warn('[Market Engine 5.0 migrate]',err);}
+  }catch(err){console.warn('[Market Engine 7.0 migrate]',err);}
 
 
   function injectBackupSettings(){
     const view=document.getElementById('view-settings');if(!view||document.getElementById('multiAiBackupCard'))return;
     const card=document.createElement('div');card.id='multiAiBackupCard';card.className='card form';card.style.marginTop='12px';
-    card.innerHTML=`<span class="eyebrow">IA DE BACKUP · 6.0</span><h3>OCR especializado + IA de backup</h3><p class="small muted">Elenco: OCR.Space lê as tabelas; OpenRouter/Groq consolidam o texto. Gemini fica reservado para outras análises. As chaves ficam somente neste navegador.</p><label>OpenRouter API Key<input id="openrouterKey44" type="password" autocomplete="off" placeholder="sk-or-v1-..."></label><label>Groq API Key<input id="groqKey44" type="password" autocomplete="off" placeholder="gsk_..."></label><label>OCR.Space API Key<input id="ocrSpaceKey46" type="password" autocomplete="off" placeholder="Chave OCR.Space"></label><div class="actions"><button class="btn" id="saveBackupKeys44">Salvar chaves</button></div><p id="backupAiStatus44" class="small muted"></p>`;
+    card.innerHTML=`<span class="eyebrow">IA DE BACKUP · 7.0</span><h3>OCR especializado + IA de backup</h3><p class="small muted">Elenco: OCR.Space lê as tabelas; OpenRouter/Groq consolidam o texto. Gemini fica reservado para outras análises. As chaves ficam somente neste navegador.</p><label>OpenRouter API Key<input id="openrouterKey44" type="password" autocomplete="off" placeholder="sk-or-v1-..."></label><label>Groq API Key<input id="groqKey44" type="password" autocomplete="off" placeholder="gsk_..."></label><label>OCR.Space API Key<input id="ocrSpaceKey46" type="password" autocomplete="off" placeholder="Chave OCR.Space"></label><div class="actions"><button class="btn" id="saveBackupKeys44">Salvar chaves</button></div><p id="backupAiStatus44" class="small muted"></p>`;
     view.appendChild(card);
     const or=document.getElementById('openrouterKey44'),g=document.getElementById('groqKey44'),o=document.getElementById('ocrSpaceKey46');or.value=localStorage.getItem(OPENROUTER_KEY)||'';g.value=localStorage.getItem(GROQ_KEY)||'';o.value=localStorage.getItem(OCRSPACE_KEY)||'';
     const update=()=>{const k=backupKeys();document.getElementById('backupAiStatus44').textContent=`OCR.Space: ${ocrSpaceKey()?'configurado':'não configurado'} · OpenRouter: ${k.openrouter?'configurado':'não configurado'} · Groq: ${k.groq?'configurado':'não configurado'}${geminiCoolingDown()?' · Gemini em cooldown por cota':''}`};update();
@@ -1709,6 +1965,136 @@ Retorne JSON puro exatamente:
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(injectBackupSettings,250));else setTimeout(injectBackupSettings,250);
 
-  window.OSM_MARKET_ENGINE_57={version:VERSION,consolidate,validateRoster,buildDirector};
+
+  /* =========================================================
+     V7 STABLE CORE — results belong to the match, not to the registration day.
+     ========================================================= */
+  function stableFixtureDate(x){
+    const raw=x?.dateTime||x?.matchAt||x?.kickoff||x?.date||x?.playedAt||null;
+    if(!raw)return null;const d=new Date(raw);return Number.isNaN(d.getTime())?null:d;
+  }
+  function stableFixtureOpponent(x){return String(x?.opponent||x?.opponentName||x?.teamName||'').trim();}
+  function stableFixtureRound(x){return x?.round??x?.rodada??x?.matchday??null;}
+  function stableFixtureId(slot,fixture){
+    const d=stableFixtureDate(fixture),opp=compactName(stableFixtureOpponent(fixture)),r=stableFixtureRound(fixture);
+    return `S${slot.slotNumber}|${r??'R?'}|${opp||'opp'}|${d?d.toISOString():'date?'}`;
+  }
+  function stableUsedFixtureIds(slot){return new Set((slot?.results||[]).map(r=>r?.fixtureId).filter(Boolean));}
+  function stableFindFixture(slot,opponent,preferredAt=null){
+    const rows=Array.isArray(slot?.schedule)?slot.schedule:[],opp=String(opponent||slot?.opponent?.teamName||'');
+    const pref=preferredAt?new Date(preferredAt):new Date();const prefMs=Number.isNaN(pref.getTime())?Date.now():pref.getTime();
+    const used=stableUsedFixtureIds(slot),now=Date.now();
+    const candidates=[];
+    for(const f of rows){
+      if(f?.placeholder)continue;
+      const d=stableFixtureDate(f);if(!d)continue;
+      const fo=stableFixtureOpponent(f),sim=opp&&fo?nameSimilarity(opp,fo):0;
+      // Require strong opponent match unless no opponent was available at all.
+      if(opp&&fo&&sim<.68)continue;
+      const id=stableFixtureId(slot,f),already=used.has(id);
+      const futurePenalty=d.getTime()>now+8*3600000?35:0;
+      const playedBonus=f?.played?22:0;
+      const unusedBonus=already?0:18;
+      const timePenalty=Math.min(80,Math.abs(d.getTime()-prefMs)/86400000*7);
+      const score=sim*100+playedBonus+unusedBonus-futurePenalty-timePenalty;
+      candidates.push({fixture:f,date:d,id,score,already});
+    }
+    candidates.sort((a,b)=>b.score-a.score);
+    return candidates.find(x=>!x.already)||candidates[0]||null;
+  }
+  function stableLocalInputValue(d){
+    if(!d)return '';const x=new Date(d);if(Number.isNaN(x.getTime()))return '';
+    const z=new Date(x.getTime()-x.getTimezoneOffset()*60000);return z.toISOString().slice(0,16);
+  }
+  function stableOutcome(gf,ga){return gf>ga?'V':gf===ga?'E':'D';}
+  function stableAttachResultToFixture(slot,e){
+    const match=stableFindFixture(slot,e.opponent,e.playedAt||e.registeredAt||e.createdAt);
+    if(match){
+      e.fixtureId=match.id;e.playedAt=match.date.toISOString();e.createdAt=e.playedAt;
+      const f=match.fixture;f.played=true;f.placeholder=false;f.outcome=stableOutcome(e.gf,e.ga);f.result=e.score;f.score=e.score;
+      if(!f.opponent)f.opponent=e.opponent;
+    }
+    return match;
+  }
+
+  // Manual result: calendar date is preselected and remains editable.
+  window.resultModal=function(n){
+    const s=state.slots[n-1];if(!s.tactic){toast('Gere uma tática antes de registrar o resultado');return;}
+    const found=stableFindFixture(s,s.opponent?.teamName,s.match?.nextMatchAt||new Date());
+    const d=found?.date || (s.match?.nextMatchAt?new Date(s.match.nextMatchAt):new Date());
+    openModal(`<h2>Resultado · Slot ${n}</h2><div class="field-edit">
+      <label>Adversário<input id="rOpp" value="${esc(s.opponent?.teamName||'')}"></label>
+      <label>Data/hora da partida<input id="rPlayedAt" type="datetime-local" value="${stableLocalInputValue(d)}"></label>
+      <p class="small muted">A data é a da partida no calendário, não o momento em que você registra o resultado.</p>
+      <div class="kpis"><label>Meus gols<input id="rGF" type="number" min="0"></label><label>Gols rival<input id="rGA" type="number" min="0"></label></div>
+      <label>Observação<textarea id="rNote"></textarea></label><button class="btn" onclick="saveResult(${n})">Salvar resultado</button></div>`);
+  };
+
+  window.saveResult=function(n){
+    const s=state.slots[n-1],gf=Number(document.getElementById('rGF')?.value),ga=Number(document.getElementById('rGA')?.value);
+    if(!Number.isFinite(gf)||!Number.isFinite(ga)){toast('Informe o placar');return;}
+    const opp=document.getElementById('rOpp')?.value.trim()||s.opponent?.teamName;
+    const raw=document.getElementById('rPlayedAt')?.value;
+    const chosen=raw?new Date(raw):null;
+    const registeredAt=new Date().toISOString();
+    let playedAt=chosen&&!Number.isNaN(chosen.getTime())?chosen.toISOString():null;
+    const fixture=stableFindFixture(s,opp,playedAt||registeredAt);
+    if(fixture)playedAt=fixture.date.toISOString();
+    if(!playedAt)playedAt=registeredAt;
+    const e={
+      createdAt:playedAt,playedAt,registeredAt,fixtureId:fixture?.id||null,
+      opponent:opp,gf,ga,score:`${gf}-${ga}`,note:document.getElementById('rNote')?.value.trim()||null,
+      tactic:clone(s.tactic),context:{myOverall:s.myTeam.overall,oppOverall:s.opponent.overall,oppFormation:s.opponent.formation,oppStyle:s.opponent.style,venue:s.match.venue,referee:s.match.refereeColor,strengthBucket:strengthBucket(s),round:stableFixtureRound(fixture?.fixture)??s.round}
+    };
+    s.results.push(e);stableAttachResultToFixture(s,e);s.tactic=null;
+    if(Number.isFinite(Number(s.round)))s.round=Number(s.round)+1;
+    saveState();closeModal();toast(`Resultado salvo na data da partida: ${fmtDate(e.playedAt)}`);
+  };
+
+  // Result-video path uses the same linkage.
+  try{
+    v21ApplyResult=function(r){
+      const s=selectedSlot(),gf=Number(r?.gf),ga=Number(r?.ga);
+      if(!Number.isFinite(gf)||!Number.isFinite(ga))throw new Error('Não consegui identificar o placar final.');
+      const registeredAt=new Date().toISOString(),opp=r.opponent||s.opponent.teamName;
+      const fixture=stableFindFixture(s,opp,registeredAt),playedAt=fixture?.date?.toISOString()||registeredAt;
+      const e={createdAt:playedAt,playedAt,registeredAt,fixtureId:fixture?.id||null,opponent:opp,gf,ga,score:r.score||`${gf}-${ga}`,
+        tactic:s.tactic?clone(s.tactic):null,stats:r.stats||{},events:r.events||[],
+        context:{myOverall:s.myTeam.overall,oppOverall:s.opponent.overall,oppFormation:r.oppFormation||s.opponent.formation,myFormation:r.myFormation||s.tactic?.formation||null,oppStyle:s.opponent.style,venue:s.match.venue,referee:s.match.refereeColor,strengthBucket:strengthBucket(s),round:stableFixtureRound(fixture?.fixture)??s.round}};
+      s.results.push(e);stableAttachResultToFixture(s,e);s.tactic=null;if(Number.isFinite(Number(s.round)))s.round=Number(s.round)+1;
+    };
+    window.v21ApplyResult=v21ApplyResult;
+  }catch(_){}
+
+  // One-time repair for old results saved on the registration day (e.g. 29/09 game registered 30/09).
+  try{
+    const MIG='osm_v7_result_date_migrated';
+    if(localStorage.getItem(MIG)!=='1'){
+      let changed=0;
+      for(const slot of (state?.slots||[])){
+        for(const r of (slot?.results||[])){
+          if(r.playedAt&&r.fixtureId)continue;
+          const original=r.createdAt||null,match=stableFindFixture(slot,r.opponent,original||new Date());
+          r.registeredAt=r.registeredAt||original||new Date().toISOString();
+          if(match){r.fixtureId=match.id;r.playedAt=match.date.toISOString();r.createdAt=r.playedAt;const f=match.fixture;f.played=true;f.placeholder=false;f.outcome=stableOutcome(Number(r.gf),Number(r.ga));f.result=r.score||`${r.gf}-${r.ga}`;changed++;}
+          else{r.playedAt=r.playedAt||original;}
+        }
+      }
+      localStorage.setItem(MIG,'1');
+      if(changed)localStorage.setItem(STATE_KEY,JSON.stringify(state));
+    }
+  }catch(err){console.warn('[V7 result date migration]',err);}
+
+  // Remove exact duplicate alert cards left by multiple legacy dashboard layers.
+  const stableOldRenderDashboard=typeof renderDashboard==='function'?renderDashboard:null;
+  if(stableOldRenderDashboard){
+    renderDashboard=function(){
+      const out=stableOldRenderDashboard.apply(this,arguments),root=document.getElementById('view-dashboard');
+      if(root){const seen=new Set();for(const card of [...root.querySelectorAll('.card')]){const k=norm(card.textContent).replace(/\d{1,2}:\d{2}/g,'TIME');if(k.length>40){if(seen.has(k))card.remove();else seen.add(k);}}}
+      return out;
+    };window.renderDashboard=renderDashboard;
+  }
+
+  window.OSM_MARKET_ENGINE_70={version:VERSION,consolidate,validateRoster,buildDirector,extractNativeRosterFrames,stableFindFixture};
   try{console.info('[OSM] Market Engine '+VERSION+' ativo')}catch{}
 })();
