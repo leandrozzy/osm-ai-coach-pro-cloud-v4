@@ -4112,3 +4112,329 @@ REGRAS:
   window.OSM_DETERMINISTIC_MATCH_VERSION=V77;
   try{console.info('[OSM] V7.7 Deterministic Match Reader ativo')}catch(_){ }
 })();
+
+/* =========================================================
+   V7.8 SECRET-AWARE COMPLETE READER
+   - treino secreto deixa de exigir força/tática rival escondida;
+   - força rival e setores são limpos quando TS é confirmado;
+   - campos escondidos não reduzem a cobertura;
+   - uma passagem visual extra tenta recuperar TS/CT/formação/plano/
+     marcação/impedimento e setores antes de gerar a tática.
+   ========================================================= */
+(function(){
+  'use strict';
+  const V78='7.8.0';
+  const GROQ_KEY='osm_ai_coach_groq_key';
+  const prevAnalyze78=typeof v21Analyze==='function'?v21Analyze:null;
+
+  const HIDDEN_BY_TS78 = new Set([
+    'opponent.overall','opponent.goalkeeper','opponent.defence',
+    'opponent.midfield','opponent.attack','opponent.formation',
+    'opponent.style','opponent.marking','opponent.offside'
+  ]);
+
+  function v78has(v){ return !(v===null||v===undefined||v===''||v==='NI'); }
+  function g78(o,p){ return String(p).split('.').reduce(function(a,k){return a?a[k]:undefined},o); }
+  function s78(o,p,v){ const a=String(p).split('.'); let q=o; for(let i=0;i<a.length-1;i++){ if(!q[a[i]]||typeof q[a[i]]!=='object')q[a[i]]={}; q=q[a[i]]; } q[a[a.length-1]]=v; }
+  function b78(v){
+    if(v===true||v===false)return v;
+    const x=String(v??'').trim().toLowerCase();
+    if(['sim','yes','true','ativo','active'].includes(x))return true;
+    if(['não','nao','no','false','inativo','inactive'].includes(x))return false;
+    return null;
+  }
+  function n78(v){
+    const n=Number(String(v??'').replace(',','.').replace(/[^\d.-]/g,''));
+    return Number.isFinite(n)?n:null;
+  }
+  function norm78(v){
+    return String(v??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+      .trim().toLowerCase().replace(/\s+/g,' ');
+  }
+  function form78(v){
+    const x=String(v??'').toUpperCase().replace(/\s+/g,' ').trim();
+    if(!x)return null;
+    return (Array.isArray(FORMATIONS)?FORMATIONS:[]).find(function(f){return String(f).toUpperCase()===x})||null;
+  }
+  function pick78(list,v){
+    const x=norm78(v);
+    return list.find(function(a){return norm78(a)===x})||null;
+  }
+  function safe78(e){ return String((e&&e.message)||e||'erro').slice(0,240); }
+
+  function secretAwareRequired78(slot){
+    if(slot?.opponent?.secretTraining===true){
+      return ['teamName','opponent.teamName','match.venue','match.refereeColor','myTeam.overall']
+        .filter(function(p){ const v=getPath(slot,p); return !(hasValue(v)||typeof v==='boolean'); });
+    }
+    return ['teamName','opponent.teamName','match.venue','match.refereeColor','myTeam.overall',
+      'opponent.overall','opponent.formation','opponent.style','opponent.marking','opponent.offside']
+      .filter(function(p){ const v=getPath(slot,p); return !(hasValue(v)||typeof v==='boolean'); });
+  }
+
+  missingRequired = secretAwareRequired78;
+  window.missingRequired = secretAwareRequired78;
+
+  const baseCalcQuality78 = calcQuality;
+  calcQuality = function(slot){
+    if(slot?.opponent?.secretTraining!==true) return baseCalcQuality78(slot);
+    const applicable = FIELD_DEFS.map(function(x){return x[0]}).filter(function(p){return !HIDDEN_BY_TS78.has(p)});
+    let filled=0;
+    for(const p of applicable){
+      const v=getPath(slot,p);
+      if(hasValue(v)||typeof v==='boolean')filled++;
+    }
+    slot.analysisQuality=applicable.length?Math.round((filled/applicable.length)*100):0;
+    const detected=applicable.map(function(p){return slot.fieldMeta?.[p]})
+      .filter(function(m){return m&&m.source==='detected'&&Number.isFinite(Number(m.confidence))});
+    slot.detectionConfidence=detected.length
+      ?Math.round(detected.reduce(function(a,m){return a+Number(m.confidence||0)},0)/detected.length*100):null;
+    return slot.analysisQuality;
+  };
+  window.calcQuality=calcQuality;
+
+  renderCoverage = function(slot){
+    calcQuality(slot);
+    const missing=FIELD_DEFS.filter(function(def){
+      const p=def[0];
+      if(slot?.opponent?.secretTraining===true && HIDDEN_BY_TS78.has(p))return false;
+      const v=getPath(slot,p);
+      return !(hasValue(v)||typeof v==='boolean');
+    });
+    const hidden = slot?.opponent?.secretTraining===true ? HIDDEN_BY_TS78.size : 0;
+    $('coverageContent').innerHTML=
+      '<div class="audit-card"><div class="audit-top"><div><span class="eyebrow">LEITURA</span><h3>Qualidade '+slot.analysisQuality+
+      '%</h3></div><div class="quality-score">'+slot.analysisQuality+'%</div></div><p class="small muted">'+
+      (slot?.opponent?.secretTraining===true
+        ? 'Treino secreto detectado. '+hidden+' campo(s) ocultos pelo OSM não são exigidos nem contam como erro. '
+        : '')+
+      (missing.length?missing.length+' campo(s) visíveis continuam NI.':'Todos os campos visíveis necessários foram tratados.')+
+      '</p><div class="actions"><button class="btn ghost" onclick="editAllFields('+slot.slotNumber+',true)">Preencher ausentes</button><button class="btn" onclick="showView(\'pregame\')">Abrir pré-jogo</button></div></div>';
+  };
+  window.renderCoverage=renderCoverage;
+
+  function clearHidden78(slot){
+    if(slot?.opponent?.secretTraining!==true)return;
+    slot.opponent.overall=null;
+    slot.opponent.goalkeeper=null;
+    slot.opponent.defence=null;
+    slot.opponent.midfield=null;
+    slot.opponent.attack=null;
+    slot.opponent.formation=null;
+    slot.opponent.style=null;
+    slot.opponent.marking=null;
+    slot.opponent.offside=null;
+    slot.fieldMeta=slot.fieldMeta||{};
+    for(const p of HIDDEN_BY_TS78){
+      slot.fieldMeta[p]={source:'unknown',confidence:0,updatedAt:new Date().toISOString(),hiddenBySecretTraining:true};
+    }
+  }
+
+  async function frameToSmall78(frame,maxW){
+    try{
+      const img=await v21LoadImage(frame.dataUrl);
+      const scale=Math.min(1,(maxW||760)/img.naturalWidth);
+      const w=Math.max(1,Math.round(img.naturalWidth*scale));
+      const h=Math.max(1,Math.round(img.naturalHeight*scale));
+      const c=document.createElement('canvas'); c.width=w; c.height=h;
+      c.getContext('2d').drawImage(img,0,0,w,h);
+      const dataUrl=c.toDataURL('image/jpeg',.72);
+      return {base64:dataUrl.split(',')[1],dataUrl:dataUrl,mimeType:'image/jpeg'};
+    }catch(_){ return frame; }
+  }
+
+  function spread78(arr,n){
+    const a=(arr||[]).filter(Boolean); if(a.length<=n)return a;
+    const out=[]; for(let i=0;i<n;i++){ const k=Math.round(i*(a.length-1)/Math.max(1,n-1)); if(a[k]&&!out.includes(a[k]))out.push(a[k]); }
+    return out;
+  }
+
+  async function visualFields78(files){
+    const key=String(localStorage.getItem(GROQ_KEY)||'').trim();
+    if(!key)throw new Error('Groq não configurado');
+
+    const video=(files||[]).find(function(f){return String(f.type||'').startsWith('video/')});
+    const images=(files||[]).filter(function(f){return String(f.type||'').startsWith('image/')});
+    let frames=[];
+    if(video)frames=await v21ExtractVideoFrames(video,24);
+    else for(const f of images)frames.push(await v21ImageToFrame(f));
+    if(!frames.length)throw new Error('sem quadros');
+
+    // prioriza quadros distribuídos pelo vídeo, inclusive parte final onde normalmente aparece o Data Analyst
+    const chosen=spread78(frames,4);
+    const content=[{type:'text',text:
+`Você está lendo telas do OSM 26. Extraia SOMENTE o que está realmente visível nestes quadros.
+Atenção especial a TREINO SECRETO: se aparecer indicação de treino secreto do rival, retorne secretTraining=true.
+Se treino secreto estiver ativo, NÃO invente força, setores, formação, plano, marcação ou impedimento do rival se estiverem ocultos.
+Também leia: campo de treinamento, formação, plano de jogo, marcação, impedimento, bônus de login, manager/humano e, apenas se visíveis, GOL/DEF/MEI/ATA do rival.
+Valores permitidos:
+- trainingCamp/secretTraining/offside/human: true|false|null
+- formation: uma formação OSM ou null
+- style: Jogar pelas alas|Jogo de passes|Bola longa|Contra-ataque|Remate à vista|null
+- marking: À zona|Individual|null
+Responda SOMENTE JSON:
+{"opponent":{"human":null,"manager":null,"loginBonus":null,"trainingCamp":null,"secretTraining":null,"goalkeeper":null,"defence":null,"midfield":null,"attack":null,"formation":null,"style":null,"marking":null,"offside":null}}`
+    }];
+
+    for(const f0 of chosen){
+      const f=await frameToSmall78(f0,760);
+      content.push({type:'image_url',image_url:{url:'data:image/jpeg;base64,'+f.base64}});
+    }
+
+    const ctl=new AbortController();
+    const tm=setTimeout(function(){ctl.abort()},18000);
+    try{
+      const res=await fetch('https://api.groq.com/openai/v1/chat/completions',{
+        method:'POST',signal:ctl.signal,
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},
+        body:JSON.stringify({
+          model:'qwen/qwen3.8-27b',
+          messages:[{role:'user',content:content}],
+          temperature:0,
+          max_completion_tokens:1600,
+          response_format:{type:'json_object'},
+          reasoning_effort:'none'
+        })
+      });
+      const raw=await res.text();
+      if(!res.ok)throw new Error('Groq HTTP '+res.status);
+      const j=JSON.parse(raw);
+      const txt=String(j?.choices?.[0]?.message?.content||'').trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');
+      return JSON.parse(txt);
+    }catch(e){
+      if(e?.name==='AbortError')throw new Error('conferência visual excedeu o tempo');
+      throw e;
+    }finally{clearTimeout(tm)}
+  }
+
+  function applyVisual78(slot,data){
+    const o=data?.opponent||data||{};
+    slot.fieldMeta=slot.fieldMeta||{};
+    const now=new Date().toISOString();
+
+    const bools=['human','trainingCamp','secretTraining','offside'];
+    for(const k of bools){
+      const v=b78(o[k]);
+      if(v!==null){
+        slot.opponent[k]=v;
+        slot.fieldMeta['opponent.'+k]={source:'detected',confidence:.95,updatedAt:now};
+      }
+    }
+
+    if(v78has(o.manager)){
+      slot.opponent.manager=String(o.manager).trim();
+      slot.fieldMeta['opponent.manager']={source:'detected',confidence:.92,updatedAt:now};
+      slot.opponent.human=true;
+      slot.fieldMeta['opponent.human']={source:'detected',confidence:.95,updatedAt:now};
+    }
+
+    const bonus=n78(o.loginBonus);
+    if(bonus!==null&&bonus>=0&&bonus<=3){
+      slot.opponent.loginBonus=bonus;
+      slot.fieldMeta['opponent.loginBonus']={source:'detected',confidence:.92,updatedAt:now};
+    }
+
+    if(slot.opponent.secretTraining===true){
+      clearHidden78(slot);
+      return;
+    }
+
+    for(const k of ['goalkeeper','defence','midfield','attack']){
+      const v=n78(o[k]);
+      if(v!==null&&v>=20&&v<=200){
+        slot.opponent[k]=v;
+        slot.fieldMeta['opponent.'+k]={source:'detected',confidence:.9,updatedAt:now};
+      }
+    }
+
+    const f=form78(o.formation);
+    if(f){slot.opponent.formation=f;slot.fieldMeta['opponent.formation']={source:'detected',confidence:.93,updatedAt:now};}
+
+    const st=pick78(['Jogar pelas alas','Jogo de passes','Bola longa','Contra-ataque','Remate à vista'],o.style);
+    if(st){slot.opponent.style=st;slot.fieldMeta['opponent.style']={source:'detected',confidence:.93,updatedAt:now};}
+
+    const mk=pick78(['À zona','Individual'],o.marking);
+    if(mk){slot.opponent.marking=mk;slot.fieldMeta['opponent.marking']={source:'detected',confidence:.93,updatedAt:now};}
+  }
+
+  // Corrige o painel de revisão: campos escondidos por TS não aparecem como erro.
+  const oldAudit78=fieldAuditHtml;
+  fieldAuditHtml=function(slot){
+    if(slot?.opponent?.secretTraining!==true)return oldAudit78(slot);
+    const original=FIELD_DEFS.slice();
+    const visible=FIELD_DEFS.filter(function(x){return !HIDDEN_BY_TS78.has(x[0])});
+    const hiddenLabels=FIELD_DEFS.filter(function(x){return HIDDEN_BY_TS78.has(x[0])}).map(function(x){return x[1]}).join(', ');
+    const attention=visible.filter(function(def){
+      const p=def[0],v=getPath(slot,p),m=slot.fieldMeta[p]||{source:'unknown',confidence:0};
+      return !(hasValue(v)||typeof v==='boolean')||m.source==='unknown'||Number(m.confidence||0)<.6;
+    });
+    const row=function(def){
+      const p=def[0],l=def[1],v=getPath(slot,p),m=slot.fieldMeta[p]||{source:'unknown',confidence:0};
+      return '<div class="field-row compact-field"><div><div class="label">'+esc(l)+'</div><div class="value">'+
+        esc(typeof v==='boolean'?boolLabel(v):v)+'</div><div class="meta '+sourceClass(m.source)+'">'+sourceLabel(m.source)+' · '+
+        Math.round((m.confidence||0)*100)+'%</div></div><button class="btn ghost tiny" onclick="editField('+slot.slotNumber+',\''+p+'\')">Editar</button></div>';
+    };
+    return '<div class="audit-card compact-audit"><div class="audit-top"><div><span class="eyebrow">REVISÃO DOS DADOS</span><h3>'+
+      (attention.length?attention.length+' campo(s) visíveis precisam de atenção':'Leitura conferida')+
+      '</h3></div><button class="btn ghost tiny" onclick="editAllFields('+slot.slotNumber+')">Editar todos</button></div>'+
+      '<p class="small muted"><b>Treino secreto detectado.</b> O OSM ocultou: '+esc(hiddenLabels)+'. Esses campos não são obrigatórios e não serão inventados.</p>'+
+      (attention.length?'<div class="field-grid attention-grid">'+attention.map(row).join('')+'</div>':'<p class="small muted">Nenhum campo visível problemático.</p>')+
+      '<details class="all-fields-details"><summary>Ver campos visíveis ('+visible.length+')</summary><div class="field-grid all-fields-grid">'+visible.map(row).join('')+'</div></details></div>';
+  };
+  window.fieldAuditHtml=fieldAuditHtml;
+
+  const oldSummary78=renderAnalysisSummary;
+  renderAnalysisSummary=function(slot){
+    if(slot?.opponent?.secretTraining!==true)return oldSummary78(slot);
+    $('analysisContent').innerHTML='<div class="card" style="margin-top:12px"><h3>Slot '+slot.slotNumber+' atualizado</h3><div class="kpis">'+
+      '<div class="kpi"><span>Meu time</span><b>'+esc(slot.teamName)+'</b></div>'+
+      '<div class="kpi"><span>Rival</span><b>'+esc(slot.opponent.teamName)+'</b></div>'+
+      '<div class="kpi"><span>Força</span><b>'+esc(slot.myTeam.overall)+' × OCULTA</b></div>'+
+      '<div class="kpi"><span>Treino secreto</span><b>Sim</b></div></div></div>';
+  };
+  window.renderAnalysisSummary=renderAnalysisSummary;
+
+  v21Analyze=async function(files){
+    if(!prevAnalyze78)throw new Error('analisador anterior indisponível');
+
+    await prevAnalyze78(files);
+    if(analysisMode!=='tactic')return;
+
+    const slot=selectedSlot();
+    let recovered=false, err=null;
+
+    try{
+      const data=await visualFields78(files);
+      applyVisual78(slot,data);
+      recovered=true;
+    }catch(e){ err=safe78(e); }
+
+    if(slot?.opponent?.secretTraining===true)clearHidden78(slot);
+
+    calcQuality(slot);
+    saveState();
+    renderCoverage(slot);
+    renderAnalysisSummary(slot);
+    renderPregame();
+
+    const missing=missingRequired(slot);
+    setAnalysisRun(slot,'tactic',missing.length?'warning':'success',
+      slot?.opponent?.secretTraining===true
+        ? 'V7.8: treino secreto detectado; dados ocultos do rival não são obrigatórios'+(missing.length?'; faltam '+missing.length+' campo(s) visíveis.':'; pronto para tática.')
+        : 'V7.8: leitura complementar concluída'+(missing.length?'; faltam '+missing.length+' campo(s) essenciais.':'; pronto para tática.'),
+      {quality:slot.analysisQuality,currentRunValidated:true,secretAware:true}
+    );
+
+    if(!missing.length&&document.getElementById('autoTactic')?.checked){
+      try{await generateTactic(state.selectedSlot)}catch(e){err=safe78(e)}
+    }
+
+    const d=document.getElementById('analysisDiagnostics');
+    if(d)d.textContent='V7.8 SECRET-AWARE · '+(slot?.opponent?.secretTraining===true?'treino secreto: SIM · ':'')+
+      (recovered?'campos visuais conferidos':'conferência visual indisponível')+(err?' · '+err:'');
+  };
+
+  window.v21Analyze=v21Analyze;
+  window.OSM_SECRET_AWARE_VERSION=V78;
+  try{console.info('[OSM] V7.8 Secret-Aware ativo')}catch(_){}
+})();
