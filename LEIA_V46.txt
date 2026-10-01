@@ -1,0 +1,12 @@
+OSM AI Coach Pro 4.6 — OCR.Space
+
+1. Substitua TODOS os arquivos na raiz da main.
+2. Aguarde Vercel Ready.
+3. Feche totalmente o PWA e abra novamente.
+4. Vá em Config > OCR especializado + IA de backup.
+5. Cole a chave OCR.Space e mantenha OpenRouter/Groq já configurados.
+6. Salve.
+7. Analise o mesmo vídeo do elenco.
+
+Fluxo: OCR.Space Engine 3 (tabela) -> consolidação por Groq/OpenRouter em TEXTO -> parser local se ambos falharem.
+Gemini não é necessário para ler o elenco.
