@@ -11,7 +11,7 @@
    - Director only decides from validated roster + real finances
 */
 (function(){
-  const VERSION='5.3.0';
+  const VERSION='5.4.0';
   const TARGET={ATA:4,MEI:6,DEF:6,GOL:2};
   const VALID_POS=new Set(Object.keys(TARGET));
   const oldRenderMarket=typeof renderMarket==='function'?renderMarket:null;
@@ -74,6 +74,29 @@
     const dataUrl=c.toDataURL('image/jpeg',quality);
     return {dataUrl,base64:dataUrl.split(',')[1],mimeType:'image/jpeg',time:frame.time||0};
   }
+
+  async function cropForFreeOcr(frame,box){
+    let p=await cropFrame(frame,box,1850,.90);
+    let bytes=Math.round(String(p.base64||'').length*.75);
+    if(bytes>850000){
+      p=await cropFrame(frame,box,1500,.82);
+      bytes=Math.round(String(p.base64||'').length*.75);
+    }
+    p.approxBytes=bytes;
+    return p;
+  }
+
+  function overlayLinesToText(overlay){
+    const lines=overlay?.Lines||overlay?.lines||[];
+    return lines.map(line=>{
+      const words=(line.Words||line.words||[]).map(w=>({
+        t:String(w.WordText||w.wordText||w.Text||w.text||'').trim(),
+        l:Number(w.Left??w.left??0)
+      })).filter(w=>w.t).sort((a,b)=>a.l-b.l);
+      return words.map(w=>w.t).join(' ').trim();
+    }).filter(Boolean).join('\n');
+  }
+
   const OPENROUTER_KEY='osm_ai_coach_openrouter_key';
   const GROQ_KEY='osm_ai_coach_groq_key';
   const OCRSPACE_KEY='osm_ai_coach_ocrspace_key';
@@ -350,72 +373,143 @@
     return {seen,ordered,all:Object.values(seen).every(v=>v>0)};
   }
 
-  async function highResOcrFrame(frame,label){
-    // Não reduz mais 2448px para 1536px: os nomes/posições do OSM são pequenos.
-    const crop=await cropFrame(frame,{x:0,y:.28,w:1,h:.72},2600,.98);
-    return ocrSpaceImage(crop,label,10500);
+  async function rosterOcrFrame(frame,label){
+    const crop=await cropForFreeOcr(frame,{x:0,y:.30,w:1,h:.69});
+    try{
+      return await ocrSpaceImage(crop,label,18000,'2');
+    }catch(engine2Error){
+      // Só usa Engine 3 no quadro específico que falhou.
+      try{
+        return await ocrSpaceImage(crop,label+' fallback',18000,'3');
+      }catch(_){
+        throw engine2Error;
+      }
+    }
   }
 
   async function fullRosterScan(frames){
-    // V5.3: cobertura temporal uniforme, não "quadros visualmente diferentes".
-    // A lista muda pouco entre quadros; justamente por isso precisamos sobreposição.
-    const chosen=chooseFrames(frames,18);
-    if(chosen.length<8)throw new Error(`Poucos quadros extraídos do vídeo (${chosen.length}).`);
+    // 10 pontos uniformes sobre a rolagem inteira: cobertura com sobreposição,
+    // sem bombardear o endpoint gratuito com 18 requisições.
+    const chosen=chooseFrames(frames,10);
+    if(chosen.length<6){
+      throw new Error(`Poucos quadros extraídos do vídeo (${chosen.length}).`);
+    }
 
     const blocks=[];
-    setProgress(22,'Lendo cabeçalho do elenco…');
-    const head=await cropFrame(chosen[0],{x:0,y:0,w:1,h:.46},2200,.98);
-    try{blocks.push(await ocrSpaceImage(head,'cabeçalho',10500));}catch(_){}
+    const failures=[];
 
-    // 18 quadros, em lotes de 4. Não chama IA por quadro.
-    for(let base=0;base<chosen.length;base+=4){
-      const batch=chosen.slice(base,base+4);
-      setProgress(28+Math.round((base/Math.max(1,chosen.length))*48),
-        `Lendo toda a rolagem ${Math.min(base+4,chosen.length)}/${chosen.length}…`);
-      const settled=await Promise.allSettled(batch.map((f,i)=>
-        highResOcrFrame(f,`rolagem ${String(base+i+1).padStart(2,'0')}`)
-      ));
+    setProgress(22,'Lendo cabeçalho do elenco…');
+    const head=await cropForFreeOcr(chosen[0],{x:0,y:0,w:1,h:.46});
+    try{
+      blocks.push(await ocrSpaceImage(head,'cabeçalho',18000,'2'));
+    }catch(err){
+      failures.push('cabeçalho: '+String(err?.message||err));
+    }
+
+    // Máximo de duas chamadas simultâneas.
+    for(let base=0;base<chosen.length;base+=2){
+      const batch=chosen.slice(base,base+2);
+      setProgress(
+        28+Math.round((base/Math.max(1,chosen.length))*46),
+        `Lendo elenco ${Math.min(base+2,chosen.length)}/${chosen.length}…`
+      );
+
+      const settled=await Promise.allSettled(
+        batch.map((f,i)=>rosterOcrFrame(f,`rolagem ${String(base+i+1).padStart(2,'0')}`))
+      );
+
       for(const r of settled){
-        if(r.status==='fulfilled'&&r.value?.text)blocks.push(r.value);
+        if(r.status==='fulfilled'&&r.value?.text){
+          blocks.push(r.value);
+        }else if(r.status==='rejected'){
+          failures.push(String(r.reason?.message||r.reason));
+        }
       }
     }
 
     const tableBlocks=blocks.filter(x=>/^rolagem/.test(x.label));
-    if(tableBlocks.length<8)throw new Error(`OCR.Space retornou apenas ${tableBlocks.length} trechos úteis.`);
+    if(tableBlocks.length<6){
+      throw new Error(
+        `OCR.Space retornou apenas ${tableBlocks.length} de ${chosen.length} quadros úteis`+
+        (failures.length?` · ${failures.slice(0,2).join(' | ')}`:'')
+      );
+    }
 
-    setProgress(80,'Consolidando elenco completo…');
-    const joined=blocks.map((x,i)=>`### BLOCO ${i+1} (${x.label})\n${x.text}`).join('\n\n');
+    setProgress(78,'Reconstruindo todas as linhas do elenco…');
 
-    // Parser local de TODOS os blocos.
+    const joined=blocks.map((x,i)=>
+      `### BLOCO ${i+1} (${x.label})\n${x.text}`
+    ).join('\n\n');
+
+    // Overlay do Engine 2 preserva as linhas; parser local lê primeiro.
     const localRows=deterministicRowsFromOcr(joined);
 
-    // Uma única chamada de IA textual no final, nunca uma por quadro.
+    // IA textual é apenas consolidadora final; não lê a imagem.
     let structured=null;
-    try{structured=await structureOcrText(blocks);}catch(_){structured=null;}
-    const aiRows=Array.isArray(structured?.data?.players)?structured.data.players:[];
+    try{
+      structured=await structureOcrText(blocks);
+    }catch(_){
+      structured=null;
+    }
+
+    const aiRows=Array.isArray(structured?.data?.players)
+      ? structured.data.players
+      : [];
 
     const finalRows=consolidate([localRows,aiRows]);
-    const headerLocal=deterministicHeaderFromOcr(blocks.find(x=>x.label==='cabeçalho')?.text||joined);
+
+    const headerLocal=deterministicHeaderFromOcr(
+      blocks.find(x=>x.label==='cabeçalho')?.text||joined
+    );
     const aiHeader=structured?.data?.header||{};
-    const header={...headerLocal,...Object.fromEntries(Object.entries(aiHeader).filter(([_,v])=>v!==null&&v!==undefined&&v!==''))};
-    if(header.playerCount==null)header.playerCount=expectedPlayerCountFromText(joined);
+    const header={
+      ...headerLocal,
+      ...Object.fromEntries(
+        Object.entries(aiHeader).filter(([_,v])=>v!==null&&v!==undefined&&v!=='')
+      )
+    };
+
+    if(header.playerCount==null){
+      header.playerCount=expectedPlayerCountFromText(joined);
+    }
 
     const coverage=sectionCoverageFromBlocks(tableBlocks);
-    const firstThird=sectionCoverageFromBlocks(tableBlocks.slice(0,Math.max(3,Math.ceil(tableBlocks.length/3))));
-    const lastThird=sectionCoverageFromBlocks(tableBlocks.slice(-Math.max(3,Math.ceil(tableBlocks.length/3))));
+    const first=sectionCoverageFromBlocks(tableBlocks.slice(0,3));
+    const last=sectionCoverageFromBlocks(tableBlocks.slice(-3));
 
-    // A primeira parte precisa provar que passou pelo início (Avançados)
-    // e a última, pelo fim (Guarda-redes). As quatro seções têm de aparecer.
-    const coveredStart=firstThird.seen.ATA>0;
-    const coveredEnd=lastThird.seen.GOL>0;
-    const coverageComplete=coverage.all&&coveredStart&&coveredEnd;
+    const positionCoverage={
+      ATA:finalRows.filter(r=>r.position==='ATA').length,
+      MEI:finalRows.filter(r=>r.position==='MEI').length,
+      DEF:finalRows.filter(r=>r.position==='DEF').length,
+      GOL:finalRows.filter(r=>r.position==='GOL').length
+    };
+
+    const coveredStart=first.seen.ATA>0 || positionCoverage.ATA>0;
+    const coveredEnd=last.seen.GOL>0 || positionCoverage.GOL>0;
+
+    // Não existe "mínimo 18". A validação usa cobertura da rolagem.
+    const coverageComplete=
+      coveredStart &&
+      coveredEnd &&
+      Object.values(positionCoverage).every(v=>v>0);
 
     return {
-      header,rows:finalRows,chosenFrames:chosen,ocrBlocks:blocks,
-      distinctFrames:chosen.length,tableBlocks:tableBlocks.length,
-      coverage,coverageComplete,coveredStart,coveredEnd,
-      provider:structured?.provider?`OCR.Space + ${structured.provider}`:'OCR.Space local',
-      model:structured?.model||'parser determinístico'
+      header,
+      rows:finalRows,
+      chosenFrames:chosen,
+      ocrBlocks:blocks,
+      distinctFrames:chosen.length,
+      tableBlocks:tableBlocks.length,
+      coverage,
+      positionCoverage,
+      coverageComplete,
+      coveredStart,
+      coveredEnd,
+      failures,
+      provider:structured?.provider
+        ? `OCR.Space E2 + ${structured.provider}`
+        : 'OCR.Space Engine 2',
+      model:structured?.model||'overlay + parser determinístico'
     };
   }
 
@@ -588,7 +682,7 @@ Retorne JSON puro EXATAMENTE neste formato:
 
 
   function ocrSpaceKey(){return String(localStorage.getItem(OCRSPACE_KEY)||'').trim();}
-  async function ocrSpaceImage(panel,label,timeoutMs=18000){
+  async function ocrSpaceImage(panel,label,timeoutMs=18000,engine='2'){
     const key=ocrSpaceKey();
     if(!key)throw new Error('OCR.Space: chave não configurada');
     const guard=withAbort(timeoutMs);
@@ -596,26 +690,53 @@ Retorne JSON puro EXATAMENTE neste formato:
       const fd=new FormData();
       fd.append('base64Image',`data:${panel.mimeType||'image/jpeg'};base64,${panel.base64}`);
       fd.append('language','auto');
-      fd.append('OCREngine','3');
+      fd.append('OCREngine',String(engine));
       fd.append('isTable','true');
-      fd.append('isOverlayRequired','false');
+      fd.append('isOverlayRequired','true');
       fd.append('scale','true');
-      const res=await fetch('https://api.ocr.space/parse/image',{method:'POST',headers:{apikey:key},body:fd,signal:guard.controller.signal});
+
+      const res=await fetch('https://api.ocr.space/parse/image',{
+        method:'POST',
+        headers:{apikey:key},
+        body:fd,
+        signal:guard.controller.signal
+      });
+
       const raw=await res.text();
       if(!res.ok)throw new Error(`OCR.Space HTTP ${res.status}: ${raw.slice(0,220)}`);
-      let data;try{data=JSON.parse(raw)}catch{throw new Error('OCR.Space: resposta inválida')}
+
+      let data;
+      try{data=JSON.parse(raw)}catch{throw new Error('OCR.Space: resposta inválida')}
+
       if(data?.IsErroredOnProcessing){
-        const em=Array.isArray(data?.ErrorMessage)?data.ErrorMessage.join(' | '):(data?.ErrorMessage||data?.ErrorDetails||'erro de OCR');
+        const em=Array.isArray(data?.ErrorMessage)
+          ? data.ErrorMessage.join(' | ')
+          : (data?.ErrorMessage||data?.ErrorDetails||'erro de OCR');
         throw new Error(`OCR.Space: ${em}`);
       }
-      const text=(data?.ParsedResults||[]).map(x=>String(x?.ParsedText||'')).join('\n').trim();
+
+      const parsed=data?.ParsedResults||[];
+      const overlayText=parsed.map(x=>overlayLinesToText(x?.TextOverlay)).filter(Boolean).join('\n');
+      const parsedText=parsed.map(x=>String(x?.ParsedText||'')).join('\n').trim();
+      const text=(overlayText||parsedText).trim();
+
       if(!text)throw new Error(`OCR.Space: ${label} sem texto`);
-      return {label,text};
+      return {
+        label,
+        text,
+        engine:String(engine),
+        approxBytes:panel.approxBytes||Math.round(String(panel.base64||'').length*.75)
+      };
     }catch(err){
-      if(err?.name==='AbortError')throw new Error(`OCR.Space: ${label} excedeu ${Math.round(timeoutMs/1000)}s`);
+      if(err?.name==='AbortError'){
+        throw new Error(`OCR.Space: ${label} excedeu ${Math.round(timeoutMs/1000)}s`);
+      }
       throw err;
-    }finally{guard.clear()}
+    }finally{
+      guard.clear();
+    }
   }
+
 
   async function groqTextJson(prompt,timeoutMs=16000){
     const key=backupKeys().groq;if(!key)throw new Error('Groq: chave não configurada');
@@ -774,8 +895,8 @@ Retorne JSON puro exatamente:
       v21RenderEvidence(chooseFrames(result.chosenFrames||frames,8));
       source=`${result.provider||'OCR.Space'}:${result.model||'parser'}`;
       const diag=document.getElementById('analysisDiagnostics');
-      const cov=result.coverage?.seen||{};
-      if(diag)diag.textContent=`Elenco 5.3 · ${result.tableBlocks}/${result.distinctFrames} trechos OCR · seções ATA/MEI/DEF/GOL ${cov.ATA||0}/${cov.MEI||0}/${cov.DEF||0}/${cov.GOL||0} · ${roster.length} jogadores únicos · ${Math.round((Date.now()-started)/1000)}s.`;
+      const cov=result.positionCoverage||{};
+      if(diag)diag.textContent=`Elenco 5.4 · Engine 2 · ${result.tableBlocks}/${result.distinctFrames} quadros úteis · ATA/MEI/DEF/GOL ${cov.ATA||0}/${cov.MEI||0}/${cov.DEF||0}/${cov.GOL||0} · ${roster.length} únicos · ${Math.round((Date.now()-started)/1000)}s.`;
       validationScan=result;
     }catch(err){
       technicalError=String(err?.message||err);
@@ -820,14 +941,14 @@ Retorne JSON puro exatamente:
       if(typeof renderMarket==='function')renderMarket();
       const msg=`${roster.length} jogadores validados · ${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL} · caixa ${fmtMoney(s.myTeam?.cash)} · elenco ${fmtMoney(s.myTeam?.squadValue)}.`;
       const el=document.getElementById('analysisContent');
-      if(el)el.innerHTML=`<div class="card" style="margin-top:12px"><span class="eyebrow">ELENCO VALIDADO · 5.3</span><h3>${roster.length} jogadores confirmados</h3><p class="small muted">${esc(msg)}</p><div class="fallback-kpis"><div><span>Caixa</span><b>${esc(fmtMoney(s.myTeam?.cash))}</b></div><div><span>Valor elenco</span><b>${esc(fmtMoney(s.myTeam?.squadValue))}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div></div><p class="small muted">Fonte: ${esc(source)} · varredura contínua das quatro seções · ${Math.round(validation.elapsedMs/1000)}s.</p></div>`;
+      if(el)el.innerHTML=`<div class="card" style="margin-top:12px"><span class="eyebrow">ELENCO VALIDADO · 5.4</span><h3>${roster.length} jogadores confirmados</h3><p class="small muted">${esc(msg)}</p><div class="fallback-kpis"><div><span>Caixa</span><b>${esc(fmtMoney(s.myTeam?.cash))}</b></div><div><span>Valor elenco</span><b>${esc(fmtMoney(s.myTeam?.squadValue))}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div></div><p class="small muted">Fonte: ${esc(source)} · Engine 2 + overlay de linhas · ${Math.round(validation.elapsedMs/1000)}s.</p></div>`;
       setAnalysisRun(s,'market','success',msg,{version:VERSION,validation}); setProgress(100,'Elenco validado'); job('Elenco e finanças atualizados.','done'); return;
     }
 
     preserveFailed(s,validation,header); try{localStorage.setItem(STATE_KEY,JSON.stringify(state))}catch{}
     if(typeof renderMarket==='function')renderMarket();
     const el=document.getElementById('analysisContent');
-    if(el)el.innerHTML=`<div class="card ai-fallback-card" style="margin-top:12px"><span class="eyebrow">VALIDAÇÃO DE ELENCO · 5.3</span><h3>Leitura incompleta — não alterei seu elenco</h3><p class="small muted">${esc(validation.issues.join(' · '))}</p><div class="fallback-kpis"><div><span>Encontrados</span><b>${validation.count}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div><div><span>Tempo</span><b>${Math.round(validation.elapsedMs/1000)}s</b></div></div>${technicalError?`<p class="small muted" style="margin-top:10px">Erro técnico: ${esc(technicalError)}</p>`:''}</div>`;
+    if(el)el.innerHTML=`<div class="card ai-fallback-card" style="margin-top:12px"><span class="eyebrow">VALIDAÇÃO DE ELENCO · 5.4</span><h3>Leitura incompleta — não alterei seu elenco</h3><p class="small muted">${esc(validation.issues.join(' · '))}</p><div class="fallback-kpis"><div><span>Encontrados</span><b>${validation.count}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div><div><span>Tempo</span><b>${Math.round(validation.elapsedMs/1000)}s</b></div></div>${technicalError?`<p class="small muted" style="margin-top:10px">Erro técnico: ${esc(technicalError)}</p>`:''}</div>`;
     setAnalysisRun(s,'market','warning',`Leitura incompleta: ${validation.issues.join('; ')}`,{version:VERSION,validation}); setProgress(100,'Leitura incompleta'); job('Elenco não foi alterado porque a validação não fechou.','done');
   }
 
@@ -855,11 +976,11 @@ Retorne JSON puro exatamente:
   }
   function directorHtml(s){
     const v=s?.rosterValidation42;
-    if(!v?.ok)return `<div class="card market40-card"><span class="eyebrow">DIRETOR IA · 5.3</span><h3>Plano bloqueado até ler o elenco completo</h3><p class="small muted">A versão 5.3 só libera o Diretor quando a rolagem comprovar cobertura completa do elenco.</p><div class="actions"><button class="btn" onclick="showView('analyze');setAnalysisMode('market')">Analisar elenco</button></div></div>`;
+    if(!v?.ok)return `<div class="card market40-card"><span class="eyebrow">DIRETOR IA · 5.4</span><h3>Plano bloqueado até ler o elenco completo</h3><p class="small muted">A versão 5.4 usa OCR.Space Engine 2, imagens abaixo de 1 MB e overlay de linhas; o Diretor só libera após cobertura completa.</p><div class="actions"><button class="btn" onclick="showView('analyze');setAnalysisMode('market')">Analisar elenco</button></div></div>`;
     const p=buildDirector(s),c={ATA:p.by.ATA.length,MEI:p.by.MEI.length,DEF:p.by.DEF.length,GOL:p.by.GOL.length};
     const sell=p.sells.length?p.sells.map((x,i)=>`<div class="radar-item"><div><b>${i+1}. ${esc(x.name)}</b><span>${esc(x.position)} · força ${esc(x.rating)} · valor ${esc(x.value)}${x.training?' · treinando':''}</span></div><span>${x.forSale?'Já à venda':'Excedente'}</span></div>`).join(''):'<p class="small muted">Nenhuma venda estrutural necessária agora.</p>';
     const weak=Object.entries(p.weakest).map(([k,x])=>x?`${k}: ${esc(x.name)} ${x.rating}`:`${k}: NI`).join(' · ');
-    return `<div class="card market40-card"><div class="section-head compact-head"><div><span class="eyebrow">DIRETOR IA · DADOS REAIS · 5.3</span><h3>Plano baseado somente no vídeo validado</h3></div></div>
+    return `<div class="card market40-card"><div class="section-head compact-head"><div><span class="eyebrow">DIRETOR IA · DADOS REAIS · 5.4</span><h3>Plano baseado somente no vídeo validado</h3></div></div>
       <div class="coach30-kpis"><div><span>Caixa</span><b>${esc(fmtMoney(p.cash))}</b></div><div><span>Valor do elenco</span><b>${esc(fmtMoney(p.sq))}</b></div><div><span>Jogadores</span><b>${p.rows.length}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${c.ATA}/${c.MEI}/${c.DEF}/${c.GOL}</b></div></div>
       <div class="reason-box"><b>Venda agora</b>${sell}${p.sells.length?`<p class="small muted">Referência de caixa se as ${p.sells.length} vendas ocorrerem pelo valor mostrado: ${esc(fmtMoney(p.afterSales))}. O preço efetivo de venda pode variar no OSM.</p>`:''}</div>
       <div class="reason-box"><b>Compra</b><p>Caixa imediato: <b>${esc(fmtMoney(p.cash))}</b>. ${p.sells.length?`Referência após vendas: <b>${esc(fmtMoney(p.afterSales))}</b>.`:''}</p><p class="small muted">Sem ler a lista de transferências, não inventarei nome/preço disponível. O Diretor usa este teto real para indicar quais opções observadas no mercado cabem no orçamento.</p></div>
@@ -913,7 +1034,7 @@ Retorne JSON puro exatamente:
   function injectBackupSettings(){
     const view=document.getElementById('view-settings');if(!view||document.getElementById('multiAiBackupCard'))return;
     const card=document.createElement('div');card.id='multiAiBackupCard';card.className='card form';card.style.marginTop='12px';
-    card.innerHTML=`<span class="eyebrow">IA DE BACKUP · 5.3</span><h3>OCR especializado + IA de backup</h3><p class="small muted">Elenco: OCR.Space lê as tabelas; OpenRouter/Groq consolidam o texto. Gemini fica reservado para outras análises. As chaves ficam somente neste navegador.</p><label>OpenRouter API Key<input id="openrouterKey44" type="password" autocomplete="off" placeholder="sk-or-v1-..."></label><label>Groq API Key<input id="groqKey44" type="password" autocomplete="off" placeholder="gsk_..."></label><label>OCR.Space API Key<input id="ocrSpaceKey46" type="password" autocomplete="off" placeholder="Chave OCR.Space"></label><div class="actions"><button class="btn" id="saveBackupKeys44">Salvar chaves</button></div><p id="backupAiStatus44" class="small muted"></p>`;
+    card.innerHTML=`<span class="eyebrow">IA DE BACKUP · 5.4</span><h3>OCR especializado + IA de backup</h3><p class="small muted">Elenco: OCR.Space lê as tabelas; OpenRouter/Groq consolidam o texto. Gemini fica reservado para outras análises. As chaves ficam somente neste navegador.</p><label>OpenRouter API Key<input id="openrouterKey44" type="password" autocomplete="off" placeholder="sk-or-v1-..."></label><label>Groq API Key<input id="groqKey44" type="password" autocomplete="off" placeholder="gsk_..."></label><label>OCR.Space API Key<input id="ocrSpaceKey46" type="password" autocomplete="off" placeholder="Chave OCR.Space"></label><div class="actions"><button class="btn" id="saveBackupKeys44">Salvar chaves</button></div><p id="backupAiStatus44" class="small muted"></p>`;
     view.appendChild(card);
     const or=document.getElementById('openrouterKey44'),g=document.getElementById('groqKey44'),o=document.getElementById('ocrSpaceKey46');or.value=localStorage.getItem(OPENROUTER_KEY)||'';g.value=localStorage.getItem(GROQ_KEY)||'';o.value=localStorage.getItem(OCRSPACE_KEY)||'';
     const update=()=>{const k=backupKeys();document.getElementById('backupAiStatus44').textContent=`OCR.Space: ${ocrSpaceKey()?'configurado':'não configurado'} · OpenRouter: ${k.openrouter?'configurado':'não configurado'} · Groq: ${k.groq?'configurado':'não configurado'}${geminiCoolingDown()?' · Gemini em cooldown por cota':''}`};update();
@@ -921,6 +1042,6 @@ Retorne JSON puro exatamente:
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(injectBackupSettings,250));else setTimeout(injectBackupSettings,250);
 
-  window.OSM_MARKET_ENGINE_50={version:VERSION,consolidate,validateRoster,buildDirector};
+  window.OSM_MARKET_ENGINE_54={version:VERSION,consolidate,validateRoster,buildDirector};
   try{console.info('[OSM] Market Engine '+VERSION+' ativo')}catch{}
 })();
