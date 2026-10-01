@@ -1,6 +1,6 @@
 'use strict';
 /* OSM AI Coach Pro — Market Engine 5.0
-   Clean roster + finances reader with adaptive second pass. Replaces market hotfixes 3.4/3.5/3.6.
+   Roster + finances reader with continuous section sweep. Replaces market hotfixes 3.4/3.5/3.6.
    Key rules:
    - one visual source of truth for the roster
    - no Tesseract name gate
@@ -11,7 +11,7 @@
    - Director only decides from validated roster + real finances
 */
 (function(){
-  const VERSION='5.2.0';
+  const VERSION='5.3.0';
   const TARGET={ATA:4,MEI:6,DEF:6,GOL:2};
   const VALID_POS=new Set(Object.keys(TARGET));
   const oldRenderMarket=typeof renderMarket==='function'?renderMarket:null;
@@ -328,59 +328,52 @@
   }
 
 
-  async function exhaustiveDistinctFrames(frames,max=14){
-    const sorted=[...(frames||[])].sort((a,b)=>(a.time||0)-(b.time||0));
-    const enriched=[];
-    for(const f of sorted){
-      try{
-        const fp=await frameFingerprint(f);
-        if(fp.mean>55)enriched.push({frame:f,fp});
-      }catch{}
-    }
-    if(!enriched.length)return [];
-
-    const selected=[enriched[0]];
-    for(let i=1;i<enriched.length-1;i++){
-      const cur=enriched[i];
-      const d=Math.min(...selected.map(x=>fpDiff(cur.fp,x.fp)));
-      // limiar menor que o antigo: queremos cobrir TODAS as posições relevantes da rolagem
-      if(d>=3.2)selected.push(cur);
-      if(selected.length>=max-1)break;
-    }
-    const last=enriched[enriched.length-1];
-    if(!selected.some(x=>x.frame===last.frame)){
-      if(selected.length>=max)selected[selected.length-1]=last;
-      else selected.push(last);
-    }
-    return selected.map(x=>x.frame).sort((a,b)=>(a.time||0)-(b.time||0));
+  function normalizedSectionName(text){
+    const t=norm(text);
+    if(/\b(avancados|atacantes|forwards?)\b/.test(t))return 'ATA';
+    if(/\b(medios|meias|midfielders?)\b/.test(t))return 'MEI';
+    if(/\b(defesas|defensores|defenders?)\b/.test(t))return 'DEF';
+    if(/\b(guarda[- ]?redes|goleiros|goalkeepers?)\b/.test(t))return 'GOL';
+    return null;
   }
 
-  async function readOcrFrameWithFallback(frame,label){
-    const crop=await cropFrame(frame,{x:0,y:.31,w:1,h:.68},1536,.97);
-    try{
-      return await ocrSpaceImage(crop,label,12000);
-    }catch(firstErr){
-      // uma segunda tentativa só para aquele trecho; não reinicia a análise inteira
-      try{return await ocrSpaceImage(crop,label+' retry',12000)}catch(_){throw firstErr}
+  function sectionCoverageFromBlocks(blocks){
+    const seen={ATA:0,MEI:0,DEF:0,GOL:0};
+    const ordered=[];
+    for(const b of (blocks||[])){
+      const sec=normalizedSectionName(b.text||'');
+      if(sec){
+        seen[sec]++;
+        if(!ordered.includes(sec))ordered.push(sec);
+      }
     }
+    return {seen,ordered,all:Object.values(seen).every(v=>v>0)};
+  }
+
+  async function highResOcrFrame(frame,label){
+    // Não reduz mais 2448px para 1536px: os nomes/posições do OSM são pequenos.
+    const crop=await cropFrame(frame,{x:0,y:.28,w:1,h:.72},2600,.98);
+    return ocrSpaceImage(crop,label,10500);
   }
 
   async function fullRosterScan(frames){
-    const chosen=await exhaustiveDistinctFrames(frames,14);
-    if(!chosen.length)throw new Error('Nenhum quadro útil encontrado no vídeo.');
+    // V5.3: cobertura temporal uniforme, não "quadros visualmente diferentes".
+    // A lista muda pouco entre quadros; justamente por isso precisamos sobreposição.
+    const chosen=chooseFrames(frames,18);
+    if(chosen.length<8)throw new Error(`Poucos quadros extraídos do vídeo (${chosen.length}).`);
 
     const blocks=[];
-    setProgress(24,'Lendo cabeçalho do elenco…');
-    const head=await cropFrame(chosen[0],{x:0,y:0,w:1,h:.46},1440,.96);
-    try{blocks.push(await ocrSpaceImage(head,'cabeçalho',12000));}catch(_){}
+    setProgress(22,'Lendo cabeçalho do elenco…');
+    const head=await cropFrame(chosen[0],{x:0,y:0,w:1,h:.46},2200,.98);
+    try{blocks.push(await ocrSpaceImage(head,'cabeçalho',10500));}catch(_){}
 
-    // Lê TODOS os estados visuais distintos da rolagem, em lotes pequenos.
-    for(let base=0;base<chosen.length;base+=3){
-      const batch=chosen.slice(base,base+3);
-      setProgress(30+Math.round((base/Math.max(1,chosen.length))*52),
-        `Varredura completa ${Math.min(base+3,chosen.length)}/${chosen.length}…`);
+    // 18 quadros, em lotes de 4. Não chama IA por quadro.
+    for(let base=0;base<chosen.length;base+=4){
+      const batch=chosen.slice(base,base+4);
+      setProgress(28+Math.round((base/Math.max(1,chosen.length))*48),
+        `Lendo toda a rolagem ${Math.min(base+4,chosen.length)}/${chosen.length}…`);
       const settled=await Promise.allSettled(batch.map((f,i)=>
-        readOcrFrameWithFallback(f,`rolagem ${base+i+1}`)
+        highResOcrFrame(f,`rolagem ${String(base+i+1).padStart(2,'0')}`)
       ));
       for(const r of settled){
         if(r.status==='fulfilled'&&r.value?.text)blocks.push(r.value);
@@ -388,49 +381,44 @@
     }
 
     const tableBlocks=blocks.filter(x=>/^rolagem/.test(x.label));
-    if(!tableBlocks.length)throw new Error('OCR.Space não retornou linhas da tabela.');
+    if(tableBlocks.length<8)throw new Error(`OCR.Space retornou apenas ${tableBlocks.length} trechos úteis.`);
 
-    // Consolida progressivamente para medir estabilidade no fim da rolagem.
-    let cumulative=[];
-    let noNewTail=0;
-    const growth=[];
-    for(const b of tableBlocks){
-      const local=deterministicRowsFromOcr(b.text);
-      let ai=[];
-      try{
-        const st=await structureOcrText([b]);
-        ai=Array.isArray(st?.data?.players)?st.data.players:[];
-      }catch(_){}
-      const before=cumulative.length;
-      cumulative=consolidate([cumulative,local,ai]);
-      const added=Math.max(0,cumulative.length-before);
-      growth.push(added);
-      noNewTail=added===0?noNewTail+1:0;
-    }
-
+    setProgress(80,'Consolidando elenco completo…');
     const joined=blocks.map((x,i)=>`### BLOCO ${i+1} (${x.label})\n${x.text}`).join('\n\n');
-    const headerLocal=deterministicHeaderFromOcr(blocks.find(x=>x.label==='cabeçalho')?.text||joined);
+
+    // Parser local de TODOS os blocos.
+    const localRows=deterministicRowsFromOcr(joined);
+
+    // Uma única chamada de IA textual no final, nunca uma por quadro.
     let structured=null;
-    try{structured=await structureOcrText(blocks);}catch(_){}
-    const finalRows=consolidate([
-      cumulative,
-      Array.isArray(structured?.data?.players)?structured.data.players:[],
-      deterministicRowsFromOcr(joined)
-    ]);
+    try{structured=await structureOcrText(blocks);}catch(_){structured=null;}
+    const aiRows=Array.isArray(structured?.data?.players)?structured.data.players:[];
+
+    const finalRows=consolidate([localRows,aiRows]);
+    const headerLocal=deterministicHeaderFromOcr(blocks.find(x=>x.label==='cabeçalho')?.text||joined);
     const aiHeader=structured?.data?.header||{};
     const header={...headerLocal,...Object.fromEntries(Object.entries(aiHeader).filter(([_,v])=>v!==null&&v!==undefined&&v!==''))};
     if(header.playerCount==null)header.playerCount=expectedPlayerCountFromText(joined);
 
-    const stableTail=noNewTail>=2;
-    const coveredStartAndEnd=chosen.length>=2;
+    const coverage=sectionCoverageFromBlocks(tableBlocks);
+    const firstThird=sectionCoverageFromBlocks(tableBlocks.slice(0,Math.max(3,Math.ceil(tableBlocks.length/3))));
+    const lastThird=sectionCoverageFromBlocks(tableBlocks.slice(-Math.max(3,Math.ceil(tableBlocks.length/3))));
+
+    // A primeira parte precisa provar que passou pelo início (Avançados)
+    // e a última, pelo fim (Guarda-redes). As quatro seções têm de aparecer.
+    const coveredStart=firstThird.seen.ATA>0;
+    const coveredEnd=lastThird.seen.GOL>0;
+    const coverageComplete=coverage.all&&coveredStart&&coveredEnd;
+
     return {
       header,rows:finalRows,chosenFrames:chosen,ocrBlocks:blocks,
       distinctFrames:chosen.length,tableBlocks:tableBlocks.length,
-      stableTail,coveredStartAndEnd,growth,
-      provider:structured?.provider?`OCR.Space + ${structured.provider}`:'OCR.Space',
+      coverage,coverageComplete,coveredStart,coveredEnd,
+      provider:structured?.provider?`OCR.Space + ${structured.provider}`:'OCR.Space local',
       model:structured?.model||'parser determinístico'
     };
   }
+
 
   async function readHeader(frame){
     // Dedicated regions prevent 168M squad value from being mistaken for 9.3M cash.
@@ -484,7 +472,7 @@
         if(r.hits>hit._bestHits){Object.assign(hit,{rating:r.rating,age:r.age,value:r.value,valueNum:r.valueNum,posCode:r.posCode});hit._bestHits=r.hits;}
       }else merged.push({...r,_bestHits:r.hits});
     }
-    return merged.map(({names,_bestHits,...r})=>({...r,verifiedRoster:true,source:'market_engine_52'}));
+    return merged.map(({names,_bestHits,...r})=>({...r,verifiedRoster:true,source:'market_engine_53'}));
   }
 
   function composition(rows){
@@ -783,10 +771,11 @@ Retorne JSON puro exatamente:
       header=result.header||{};
       roster=consolidate([result.rows||[]]);
 
-      v21RenderEvidence(result.chosenFrames||frames);
+      v21RenderEvidence(chooseFrames(result.chosenFrames||frames,8));
       source=`${result.provider||'OCR.Space'}:${result.model||'parser'}`;
       const diag=document.getElementById('analysisDiagnostics');
-      if(diag)diag.textContent=`Elenco 5.2 · ${result.distinctFrames} estados distintos · ${result.tableBlocks} leituras OCR · ${roster.length} jogadores únicos · alvo ${header.playerCount??'não exibido'} · ${Math.round((Date.now()-started)/1000)}s.`;
+      const cov=result.coverage?.seen||{};
+      if(diag)diag.textContent=`Elenco 5.3 · ${result.tableBlocks}/${result.distinctFrames} trechos OCR · seções ATA/MEI/DEF/GOL ${cov.ATA||0}/${cov.MEI||0}/${cov.DEF||0}/${cov.GOL||0} · ${roster.length} jogadores únicos · ${Math.round((Date.now()-started)/1000)}s.`;
       validationScan=result;
     }catch(err){
       technicalError=String(err?.message||err);
@@ -796,19 +785,34 @@ Retorne JSON puro exatamente:
 
     const comp=composition(roster), sum=roster.reduce((a,p)=>a+(money(p.value)||0),0), sq=money(header?.squadValue), issues=[];
     const expected=num(header?.playerCount);
+
     if(expected!==null && roster.length!==expected){
       issues.push(`vídeo indica ${expected} jogadores, mas ${roster.length} foram lidos`);
     }
-    if(expected===null){
-      if(!validationScan?.coveredStartAndEnd)issues.push('não foi possível confirmar início e fim da rolagem');
-      if(!validationScan?.stableTail)issues.push('a varredura terminou ainda encontrando jogadores novos');
+
+    // Sem total explícito, só valida quando a própria rolagem comprova
+    // início, meio e fim pelas quatro seções do elenco.
+    if(!validationScan?.coverageComplete){
+      const cov=validationScan?.coverage?.seen||{ATA:0,MEI:0,DEF:0,GOL:0};
+      issues.push(`cobertura incompleta da lista (Avançados ${cov.ATA>0?'ok':'não'} · Médios ${cov.MEI>0?'ok':'não'} · Defesas ${cov.DEF>0?'ok':'não'} · Guarda-redes ${cov.GOL>0?'ok':'não'})`);
     }
+
+    // Todas as seções vistas, mas alguma ficou sem nenhum jogador estruturado:
+    // não pode declarar sucesso.
+    if(validationScan?.coverageComplete){
+      if(comp.ATA===0)issues.push('seção Avançados vista, mas nenhum atacante foi estruturado');
+      if(comp.MEI===0)issues.push('seção Médios vista, mas nenhum meia foi estruturado');
+      if(comp.DEF===0)issues.push('seção Defesas vista, mas nenhum defensor foi estruturado');
+      if(comp.GOL===0)issues.push('seção Guarda-redes vista, mas nenhum goleiro foi estruturado');
+    }
+
     if(sq!==null&&roster.length>0){
       const ratio=sum/sq;
       if(ratio<.55||ratio>1.50)issues.push(`soma dos jogadores ${fmtMoney(sum)} incompatível com elenco ${fmtMoney(sq)}`);
     }
     if(technicalError)issues.push(`falha técnica: ${technicalError}`);
-    const validation={ok:issues.length===0,issues,count:roster.length,expectedCount:expected,composition:comp,sumValues:sum,squadValue:sq,source,technicalError,elapsedMs:Date.now()-started,scan:validationScan?{distinctFrames:validationScan.distinctFrames,stableTail:validationScan.stableTail,growth:validationScan.growth}:null};
+
+    const validation={ok:issues.length===0,issues,count:roster.length,expectedCount:expected,composition:comp,sumValues:sum,squadValue:sq,source,technicalError,elapsedMs:Date.now()-started,scan:validationScan?{frames:validationScan.distinctFrames,blocks:validationScan.tableBlocks,coverage:validationScan.coverage?.seen,coverageComplete:validationScan.coverageComplete}:null};
 
     if(validation.ok){
       applyValidated(s,roster,header,validation); s.rosterValidation42.source=source; s.rosterValidation42.version=VERSION;
@@ -816,14 +820,14 @@ Retorne JSON puro exatamente:
       if(typeof renderMarket==='function')renderMarket();
       const msg=`${roster.length} jogadores validados · ${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL} · caixa ${fmtMoney(s.myTeam?.cash)} · elenco ${fmtMoney(s.myTeam?.squadValue)}.`;
       const el=document.getElementById('analysisContent');
-      if(el)el.innerHTML=`<div class="card" style="margin-top:12px"><span class="eyebrow">ELENCO VALIDADO · 5.2</span><h3>${roster.length} jogadores confirmados</h3><p class="small muted">${esc(msg)}</p><div class="fallback-kpis"><div><span>Caixa</span><b>${esc(fmtMoney(s.myTeam?.cash))}</b></div><div><span>Valor elenco</span><b>${esc(fmtMoney(s.myTeam?.squadValue))}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div></div><p class="small muted">Fonte: ${esc(source)} · leitura principal + passagem adaptativa · ${Math.round(validation.elapsedMs/1000)}s.</p></div>`;
+      if(el)el.innerHTML=`<div class="card" style="margin-top:12px"><span class="eyebrow">ELENCO VALIDADO · 5.3</span><h3>${roster.length} jogadores confirmados</h3><p class="small muted">${esc(msg)}</p><div class="fallback-kpis"><div><span>Caixa</span><b>${esc(fmtMoney(s.myTeam?.cash))}</b></div><div><span>Valor elenco</span><b>${esc(fmtMoney(s.myTeam?.squadValue))}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div></div><p class="small muted">Fonte: ${esc(source)} · varredura contínua das quatro seções · ${Math.round(validation.elapsedMs/1000)}s.</p></div>`;
       setAnalysisRun(s,'market','success',msg,{version:VERSION,validation}); setProgress(100,'Elenco validado'); job('Elenco e finanças atualizados.','done'); return;
     }
 
     preserveFailed(s,validation,header); try{localStorage.setItem(STATE_KEY,JSON.stringify(state))}catch{}
     if(typeof renderMarket==='function')renderMarket();
     const el=document.getElementById('analysisContent');
-    if(el)el.innerHTML=`<div class="card ai-fallback-card" style="margin-top:12px"><span class="eyebrow">VALIDAÇÃO DE ELENCO · 5.2</span><h3>Leitura incompleta — não alterei seu elenco</h3><p class="small muted">${esc(validation.issues.join(' · '))}</p><div class="fallback-kpis"><div><span>Encontrados</span><b>${validation.count}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div><div><span>Tempo</span><b>${Math.round(validation.elapsedMs/1000)}s</b></div></div>${technicalError?`<p class="small muted" style="margin-top:10px">Erro técnico: ${esc(technicalError)}</p>`:''}</div>`;
+    if(el)el.innerHTML=`<div class="card ai-fallback-card" style="margin-top:12px"><span class="eyebrow">VALIDAÇÃO DE ELENCO · 5.3</span><h3>Leitura incompleta — não alterei seu elenco</h3><p class="small muted">${esc(validation.issues.join(' · '))}</p><div class="fallback-kpis"><div><span>Encontrados</span><b>${validation.count}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div><div><span>Tempo</span><b>${Math.round(validation.elapsedMs/1000)}s</b></div></div>${technicalError?`<p class="small muted" style="margin-top:10px">Erro técnico: ${esc(technicalError)}</p>`:''}</div>`;
     setAnalysisRun(s,'market','warning',`Leitura incompleta: ${validation.issues.join('; ')}`,{version:VERSION,validation}); setProgress(100,'Leitura incompleta'); job('Elenco não foi alterado porque a validação não fechou.','done');
   }
 
@@ -851,11 +855,11 @@ Retorne JSON puro exatamente:
   }
   function directorHtml(s){
     const v=s?.rosterValidation42;
-    if(!v?.ok)return `<div class="card market40-card"><span class="eyebrow">DIRETOR IA · 5.2</span><h3>Plano bloqueado até ler o elenco completo</h3><p class="small muted">A versão 5.0 não usa elenco incompleto/corrompido. Reanalise o vídeo; compras e vendas só aparecem depois que quantidade, composição e valores fecharem.</p><div class="actions"><button class="btn" onclick="showView('analyze');setAnalysisMode('market')">Analisar elenco</button></div></div>`;
+    if(!v?.ok)return `<div class="card market40-card"><span class="eyebrow">DIRETOR IA · 5.3</span><h3>Plano bloqueado até ler o elenco completo</h3><p class="small muted">A versão 5.3 só libera o Diretor quando a rolagem comprovar cobertura completa do elenco.</p><div class="actions"><button class="btn" onclick="showView('analyze');setAnalysisMode('market')">Analisar elenco</button></div></div>`;
     const p=buildDirector(s),c={ATA:p.by.ATA.length,MEI:p.by.MEI.length,DEF:p.by.DEF.length,GOL:p.by.GOL.length};
     const sell=p.sells.length?p.sells.map((x,i)=>`<div class="radar-item"><div><b>${i+1}. ${esc(x.name)}</b><span>${esc(x.position)} · força ${esc(x.rating)} · valor ${esc(x.value)}${x.training?' · treinando':''}</span></div><span>${x.forSale?'Já à venda':'Excedente'}</span></div>`).join(''):'<p class="small muted">Nenhuma venda estrutural necessária agora.</p>';
     const weak=Object.entries(p.weakest).map(([k,x])=>x?`${k}: ${esc(x.name)} ${x.rating}`:`${k}: NI`).join(' · ');
-    return `<div class="card market40-card"><div class="section-head compact-head"><div><span class="eyebrow">DIRETOR IA · DADOS REAIS · 5.2</span><h3>Plano baseado somente no vídeo validado</h3></div></div>
+    return `<div class="card market40-card"><div class="section-head compact-head"><div><span class="eyebrow">DIRETOR IA · DADOS REAIS · 5.3</span><h3>Plano baseado somente no vídeo validado</h3></div></div>
       <div class="coach30-kpis"><div><span>Caixa</span><b>${esc(fmtMoney(p.cash))}</b></div><div><span>Valor do elenco</span><b>${esc(fmtMoney(p.sq))}</b></div><div><span>Jogadores</span><b>${p.rows.length}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${c.ATA}/${c.MEI}/${c.DEF}/${c.GOL}</b></div></div>
       <div class="reason-box"><b>Venda agora</b>${sell}${p.sells.length?`<p class="small muted">Referência de caixa se as ${p.sells.length} vendas ocorrerem pelo valor mostrado: ${esc(fmtMoney(p.afterSales))}. O preço efetivo de venda pode variar no OSM.</p>`:''}</div>
       <div class="reason-box"><b>Compra</b><p>Caixa imediato: <b>${esc(fmtMoney(p.cash))}</b>. ${p.sells.length?`Referência após vendas: <b>${esc(fmtMoney(p.afterSales))}</b>.`:''}</p><p class="small muted">Sem ler a lista de transferências, não inventarei nome/preço disponível. O Diretor usa este teto real para indicar quais opções observadas no mercado cabem no orçamento.</p></div>
@@ -909,7 +913,7 @@ Retorne JSON puro exatamente:
   function injectBackupSettings(){
     const view=document.getElementById('view-settings');if(!view||document.getElementById('multiAiBackupCard'))return;
     const card=document.createElement('div');card.id='multiAiBackupCard';card.className='card form';card.style.marginTop='12px';
-    card.innerHTML=`<span class="eyebrow">IA DE BACKUP · 5.2</span><h3>OCR especializado + IA de backup</h3><p class="small muted">Elenco: OCR.Space lê as tabelas; OpenRouter/Groq consolidam o texto. Gemini fica reservado para outras análises. As chaves ficam somente neste navegador.</p><label>OpenRouter API Key<input id="openrouterKey44" type="password" autocomplete="off" placeholder="sk-or-v1-..."></label><label>Groq API Key<input id="groqKey44" type="password" autocomplete="off" placeholder="gsk_..."></label><label>OCR.Space API Key<input id="ocrSpaceKey46" type="password" autocomplete="off" placeholder="Chave OCR.Space"></label><div class="actions"><button class="btn" id="saveBackupKeys44">Salvar chaves</button></div><p id="backupAiStatus44" class="small muted"></p>`;
+    card.innerHTML=`<span class="eyebrow">IA DE BACKUP · 5.3</span><h3>OCR especializado + IA de backup</h3><p class="small muted">Elenco: OCR.Space lê as tabelas; OpenRouter/Groq consolidam o texto. Gemini fica reservado para outras análises. As chaves ficam somente neste navegador.</p><label>OpenRouter API Key<input id="openrouterKey44" type="password" autocomplete="off" placeholder="sk-or-v1-..."></label><label>Groq API Key<input id="groqKey44" type="password" autocomplete="off" placeholder="gsk_..."></label><label>OCR.Space API Key<input id="ocrSpaceKey46" type="password" autocomplete="off" placeholder="Chave OCR.Space"></label><div class="actions"><button class="btn" id="saveBackupKeys44">Salvar chaves</button></div><p id="backupAiStatus44" class="small muted"></p>`;
     view.appendChild(card);
     const or=document.getElementById('openrouterKey44'),g=document.getElementById('groqKey44'),o=document.getElementById('ocrSpaceKey46');or.value=localStorage.getItem(OPENROUTER_KEY)||'';g.value=localStorage.getItem(GROQ_KEY)||'';o.value=localStorage.getItem(OCRSPACE_KEY)||'';
     const update=()=>{const k=backupKeys();document.getElementById('backupAiStatus44').textContent=`OCR.Space: ${ocrSpaceKey()?'configurado':'não configurado'} · OpenRouter: ${k.openrouter?'configurado':'não configurado'} · Groq: ${k.groq?'configurado':'não configurado'}${geminiCoolingDown()?' · Gemini em cooldown por cota':''}`};update();
