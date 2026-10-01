@@ -11,7 +11,7 @@
    - Director only decides from validated roster + real finances
 */
 (function(){
-  const VERSION='5.8.0';
+  const VERSION='6.0.0';
   const TARGET={ATA:4,MEI:6,DEF:6,GOL:2};
   const VALID_POS=new Set(Object.keys(TARGET));
   const oldRenderMarket=typeof renderMarket==='function'?renderMarket:null;
@@ -96,10 +96,7 @@
   }
 
   function likelySamePlayer(a,b){
-    if(!a||!b)return false;
-    const boundaryPair=new Set([a.position,b.position]);
-    const defGolBoundary=boundaryPair.has('DEF')&&boundaryPair.has('GOL');
-    if(a.position!==b.position && !defGolBoundary)return false;
+    if(!a||!b||a.position!==b.position)return false;
 
     const rd=Math.abs(Number(a.rating)-Number(b.rating));
     const ad=(a.age==null||b.age==null)?99:Math.abs(Number(a.age)-Number(b.age));
@@ -108,9 +105,6 @@
       ? (Math.abs(av-bv)<=900000 || Math.abs(av-bv)/Math.max(av,bv,1)<=0.09)
       : false;
     const ns=nameSimilarity(a.name,b.name);
-
-    // DEF/GOL na fronteira: permite fusão se os dados numéricos forem quase iguais.
-    if(defGolBoundary && rd<=1 && ad<=1 && valueClose)return true;
 
     // Nome muito parecido + pelo menos um número próximo.
     if(ns>=0.78 && (rd<=2 || ad<=1 || valueClose))return true;
@@ -125,12 +119,6 @@
   }
 
   function mergePlayerInto(target,source){
-    if(new Set([target.position,source.position]).has('DEF') && new Set([target.position,source.position]).has('GOL')){
-      // Na fronteira DEF->GOL, mantém DEF por padrão; goleiro legítimo normalmente
-      // continuará aparecendo repetido como GOL em mais de um quadro.
-      target.position='DEF';
-      target.posCode='DEF';
-    }
     target.name=betterName(target.name,source.name);
     target.training=target.training||source.training;
     target.forSale=target.forSale||source.forSale;
@@ -494,76 +482,6 @@
   }
 
 
-
-  function explicitKeeperCode(line){
-    return /(?:^|\s|\|)(GR|GK|GOL|POR)(?=\s|\||$)/i.test(String(line||''));
-  }
-
-  function explicitDefenderCode(line){
-    return /(?:^|\s|\|)(DD|DC|DE|DF|DEF|ZAG|CB|RB|LB)(?=\s|\||$)/i.test(String(line||''));
-  }
-
-  function rowsFromDefGolBoundary(blocks){
-    const rows=[];
-    let section='DEF';
-    let keeperHeadingSeen=false;
-
-    for(const block of (blocks||[])){
-      const lines=String(block?.text||'').split(/\r?\n/);
-      for(const raw of lines){
-        const sec=normalizedSectionName(raw);
-
-        if(sec==='GOL'){
-          keeperHeadingSeen=true;
-          section='GOL';
-          continue;
-        }
-        if(sec==='DEF'){
-          section='DEF';
-          continue;
-        }
-
-        // Código explícito tem prioridade apenas nesta fronteira.
-        // Isso evita transformar o último DEF em GOL por causa de um título deslocado.
-        let target=section;
-        if(explicitDefenderCode(raw)) target='DEF';
-        else if(explicitKeeperCode(raw)) target='GOL';
-        else if(!keeperHeadingSeen) target='DEF';
-
-        const row=parseRowFromSectionLine(raw,target);
-        if(row){
-          row.position=target;
-          row.posCode=broadPosCode(target);
-          rows.push(row);
-        }
-      }
-    }
-    return rows;
-  }
-
-  function fixDefGolMisclassification(rows){
-    const list=[...(rows||[])].map(x=>({...x}));
-    const gols=list.filter(x=>x.position==='GOL');
-    if(gols.length<=2)return list;
-
-    // Se houver mais de 2 goleiros, procura candidatos que têm cara de DEF:
-    // força alta/moderada e valor compatível com defesa, ou nome já visto como DEF em outra leitura.
-    // Não usa número fixo para validar o elenco; esta regra só resolve a fronteira visual DEF->GOL.
-    const candidates=gols
-      .filter(x=>Number(x.rating)>=75)
-      .sort((a,b)=>(money(b.value)||0)-(money(a.value)||0));
-
-    while(list.filter(x=>x.position==='GOL').length>2 && candidates.length){
-      const c=candidates.shift();
-      const idx=list.findIndex(x=>x===c || (x.name===c.name && x.position==='GOL'));
-      if(idx>=0){
-        list[idx].position='DEF';
-        list[idx].posCode='DEF';
-      }
-    }
-    return list;
-  }
-
   function rowsFromKnownSection(blocks,target){
     const rows=[];
     for(const block of (blocks||[])){
@@ -620,8 +538,7 @@
     // REGRA 5.7: uma recuperação de DEF só pode acrescentar DEF,
     // uma recuperação de MEI só pode acrescentar MEI, etc.
     // Não reenviamos a lista inteira para a IA porque isso gerava duplicatas.
-    const boundaryRows=(target==='DEF'||target==='GOL')?rowsFromDefGolBoundary(recovery):null;
-    const candidates=boundaryRows||rowsFromKnownSection(recovery,target);
+    const candidates=rowsFromKnownSection(recovery,target);
 
     const before=(existingRows||[]).length;
     const merged=consolidate([
@@ -643,182 +560,461 @@
     };
   }
 
+
+  function moneyFromText(text){
+    const m=String(text||'').match(/(\d+(?:[.,]\d+)?)\s*([MK])\b/i);
+    return m?(m[1].replace('.',',')+m[2].toUpperCase()):null;
+  }
+
+  function meanStdFeature(data){
+    const n=data.length;
+    let sum=0;
+    for(let i=0;i<n;i++)sum+=data[i];
+    const mean=sum/Math.max(1,n);
+    let v=0;
+    for(let i=0;i<n;i++){const d=data[i]-mean;v+=d*d;}
+    const std=Math.sqrt(v/Math.max(1,n))||1;
+    const out=new Float32Array(n);
+    for(let i=0;i<n;i++)out[i]=(data[i]-mean)/std;
+    return out;
+  }
+
+  function featureMse(a,b){
+    if(!a||!b||a.length!==b.length)return 999;
+    let s=0;
+    for(let i=0;i<a.length;i++){const d=a[i]-b[i];s+=d*d;}
+    return s/a.length;
+  }
+
+  function rowDistance(a,b){
+    return featureMse(a.nameFeat,b.nameFeat)*.60+
+           featureMse(a.numFeat,b.numFeat)*.40;
+  }
+
+  function canvasGrayFeature(img,sx,sy,sw,sh,w=48,h=16){
+    const c=document.createElement('canvas');
+    c.width=w;c.height=h;
+    const x=c.getContext('2d',{willReadFrequently:true});
+    x.fillStyle='#fff';x.fillRect(0,0,w,h);
+    x.drawImage(img,sx,sy,sw,sh,0,0,w,h);
+    const d=x.getImageData(0,0,w,h).data;
+    const gray=new Float32Array(w*h);
+    let k=0;
+    for(let i=0;i<d.length;i+=4){
+      gray[k++]=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+    }
+    return meanStdFeature(gray);
+  }
+
+  function rowSharpness(img,sx,sy,sw,sh){
+    const c=document.createElement('canvas');
+    c.width=96;c.height=18;
+    const x=c.getContext('2d',{willReadFrequently:true});
+    x.drawImage(img,sx,sy,sw,sh,0,0,96,18);
+    const d=x.getImageData(0,0,96,18).data;
+    const g=new Float32Array(96*18);
+    let k=0;
+    for(let i=0;i<d.length;i+=4)g[k++]=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+    let edge=0,n=0;
+    for(let y=1;y<17;y++){
+      for(let xx=1;xx<95;xx++){
+        const i=y*96+xx;
+        edge+=Math.abs(g[i]-g[i-1])+Math.abs(g[i]-g[i-96]);
+        n+=2;
+      }
+    }
+    return edge/Math.max(1,n);
+  }
+
+  async function detectRowsInFrame(frame,frameIndex){
+    const img=await v21LoadImage(frame.dataUrl);
+    const W=img.naturalWidth,H=img.naturalHeight;
+    const stripW=Math.max(80,Math.round(W*.058));
+    const c=document.createElement('canvas');
+    c.width=stripW;c.height=H;
+    const x=c.getContext('2d',{willReadFrequently:true});
+    x.drawImage(img,0,0,stripW,H,0,0,stripW,H);
+    const d=x.getImageData(0,0,stripW,H).data;
+
+    const score=new Uint16Array(H);
+    for(let y=0;y<H;y++){
+      let count=0;
+      for(let xx=0;xx<stripW;xx++){
+        const i=(y*stripW+xx)*4;
+        const r=d[i],g=d[i+1],b=d[i+2];
+        const mx=Math.max(r,g,b),mn=Math.min(r,g,b);
+        const sat=mx-mn,gray=(r+g+b)/3;
+        if((sat>45&&mx>80)||gray<160)count++;
+      }
+      score[y]=count;
+    }
+
+    const threshold=Math.max(18,Math.round(stripW*.18));
+    const gap=Math.max(2,Math.round(H*.003));
+    const minH=Math.max(14,Math.round(H*.018));
+    const maxH=Math.max(42,Math.round(H*.060));
+    const minY=Math.round(H*.08);
+
+    const active=[];
+    for(let y=minY;y<H;y++)if(score[y]>threshold)active.push(y);
+    const groups=[];
+    if(active.length){
+      let a=active[0],p=active[0];
+      for(let i=1;i<active.length;i++){
+        const y=active[i];
+        if(y-p>gap){
+          if(p-a>=minH&&p-a<=maxH)groups.push([a,p]);
+          a=y;
+        }
+        p=y;
+      }
+      if(p-a>=minH&&p-a<=maxH)groups.push([a,p]);
+    }
+
+    const out=[];
+    for(const [a,b] of groups){
+      const cy=(a+b)/2;
+      const rowH=Math.round(H*.086);
+      const sy=Math.max(0,Math.round(cy-rowH/2));
+      const sh=Math.min(rowH,H-sy);
+
+      const nameFeat=canvasGrayFeature(
+        img,
+        Math.round(W*.04),sy,
+        Math.round(W*.26),sh
+      );
+      const numFeat=canvasGrayFeature(
+        img,
+        Math.round(W*.54),sy,
+        Math.round(W*.43),sh
+      );
+      const sharp=rowSharpness(
+        img,
+        Math.round(W*.04),sy,
+        Math.round(W*.93),sh
+      );
+
+      // Camisa laranja = treinamento.
+      const jc=document.createElement('canvas');
+      jc.width=80;jc.height=70;
+      const jx=jc.getContext('2d',{willReadFrequently:true});
+      const jsx=0,jsy=Math.max(0,Math.round(cy-H*.035));
+      const jsw=Math.round(W*.055),jsh=Math.round(H*.07);
+      jx.drawImage(img,jsx,jsy,jsw,jsh,0,0,80,70);
+      const jd=jx.getImageData(0,0,80,70).data;
+      let orange=0;
+      for(let i=0;i<jd.length;i+=4){
+        const r=jd[i],g=jd[i+1],b2=jd[i+2];
+        if(r>175&&g>65&&g<190&&b2<95)orange++;
+      }
+
+      out.push({
+        frame,frameIndex,cy,W,H,sy,sh,
+        nameFeat,numFeat,sharpness:sharp,
+        training:orange>45
+      });
+    }
+    return out;
+  }
+
+  async function collectUniqueVisualRows(frames){
+    const sampled=chooseFrames(frames,16);
+    const candidates=[];
+    for(let i=0;i<sampled.length;i++){
+      const rows=await detectRowsInFrame(sampled[i],i);
+      candidates.push(...rows);
+    }
+    if(!candidates.length)throw new Error('Não consegui detectar linhas de jogadores no vídeo.');
+
+    // Conservador: prefere sobrar uma duplicata a fundir dois jogadores diferentes.
+    const TH=.022;
+    const clusters=[];
+    for(const cand of candidates){
+      let best=null,bestD=999;
+      for(const cl of clusters){
+        let d=999;
+        for(const m of cl.members)d=Math.min(d,rowDistance(cand,m));
+        if(d<bestD){bestD=d;best=cl;}
+      }
+      if(best&&bestD<TH){
+        best.members.push(cand);
+        if(cand.sharpness>best.rep.sharpness)best.rep=cand;
+      }else{
+        clusters.push({members:[cand],rep:cand});
+      }
+    }
+
+    // Remove clusters que apareceram só como ruído e não parecem uma linha estável.
+    // Mantemos singleton se for muito nítido porque primeiro/último jogador pode aparecer uma vez.
+    const reps=clusters
+      .filter(cl=>cl.members.length>=2 || cl.rep.sharpness>=5.5)
+      .map((cl,i)=>({...cl.rep,visualHits:cl.members.length,rowId:i+1}))
+      .sort((a,b)=>(a.frame.time||0)-(b.frame.time||0) || a.cy-b.cy);
+
+    if(reps.length<8)throw new Error(`Só ${reps.length} linhas visuais únicas foram detectadas.`);
+    if(reps.length>35)throw new Error(`Detecção gerou ${reps.length} linhas candidatas; vídeo/rolagem instável.`);
+    return {sampled,candidates,clusters,reps};
+  }
+
+  async function buildRowSheet(rows,startIndex){
+    const markerW=120,rowW=1600,rowH=72,pad=10;
+    const width=markerW+rowW;
+    const height=rows.length*(rowH+pad)+pad;
+    const c=document.createElement('canvas');
+    c.width=width;c.height=height;
+    const x=c.getContext('2d');
+    x.fillStyle='#fff';x.fillRect(0,0,width,height);
+    x.font='bold 24px monospace';
+    x.textBaseline='middle';
+
+    for(let i=0;i<rows.length;i++){
+      const r=rows[i],img=await v21LoadImage(r.frame.dataUrl);
+      const y=pad+i*(rowH+pad);
+      const sx=Math.round(r.W*.035);
+      const sw=Math.round(r.W*.95);
+      const sy=Math.max(0,Math.round(r.cy-r.H*.043));
+      const sh=Math.min(Math.round(r.H*.086),r.H-sy);
+
+      x.fillStyle='#000';
+      x.fillText(`ROW${String(startIndex+i+1).padStart(2,'0')}`,8,y+rowH/2);
+      x.drawImage(img,sx,sy,sw,sh,markerW,y,rowW,rowH);
+
+      x.strokeStyle='#bbb';
+      x.beginPath();x.moveTo(0,y+rowH+4);x.lineTo(width,y+rowH+4);x.stroke();
+    }
+
+    let dataUrl=c.toDataURL('image/jpeg',.90);
+    let b64=dataUrl.split(',')[1];
+    if(b64.length*.75>850000){
+      dataUrl=c.toDataURL('image/jpeg',.78);
+      b64=dataUrl.split(',')[1];
+    }
+    return {dataUrl,base64:b64,mimeType:'image/jpeg',rowStart:startIndex+1,rowCount:rows.length};
+  }
+
+  function parseMarkedRowChunk(chunk,rowId){
+    const text=String(chunk||'').replace(/\s+/g,' ').trim();
+    const moneyMatch=text.match(/(\d+(?:[.,]\d+)?)\s*([MK])\b/i);
+    const posMatch=text.match(/(?:^|\s|\|)(GR|GK|GOL|POR|DD|DC|DE|DF|DEF|ZAG|CB|RB|LB|MDC|MC|MCO|MD|ME|MF|MID|VOL|CM|CDM|CAM|LM|RM|PL|ED|EE|ATA|ATT|FW|FWD|ST|CA|PE|PD|LW|RW|CF)(?=\s|\||$)/i);
+    if(!moneyMatch||!posMatch)return null;
+
+    const position=positionFromCode(posMatch[1]);
+    if(!position)return null;
+
+    const beforePos=text.slice(0,posMatch.index);
+    const ageMatches=[...beforePos.matchAll(/\b(\d{2})\b/g)]
+      .map(m=>({n:Number(m[1]),i:m.index}))
+      .filter(x=>x.n>=15&&x.n<=45);
+    const ageObj=ageMatches.length?ageMatches[ageMatches.length-1]:null;
+    const age=ageObj?.n??null;
+
+    let name=beforePos;
+    if(ageObj)name=beforePos.slice(0,ageObj.i);
+    name=name.replace(/^ROW\s*\d+\s*/i,'').replace(/^ROW\d+\s*/i,'').trim();
+    name=cleanName(name);
+    if(!name)return null;
+
+    const afterPos=text.slice(posMatch.index+posMatch[0].length,moneyMatch.index);
+    const nums=[...afterPos.matchAll(/\b(\d{1,3})\b/g)]
+      .map(m=>Number(m[1]))
+      .filter(n=>n>=0&&n<=200);
+
+    if(nums.length<2)return null;
+    const attack=nums[0]??null;
+    const defence=nums[1]??null;
+    const midfield=nums[2]??null;
+
+    let rating=null;
+    if(position==='ATA')rating=attack;
+    else if(position==='DEF')rating=defence;
+    else if(position==='MEI')rating=midfield;
+    else if(position==='GOL')rating=defence;
+
+    if(rating==null||rating<40||rating>200)return null;
+
+    return {
+      rowId,
+      name,age,
+      position,
+      posCode:String(posMatch[1]).toUpperCase(),
+      rating,
+      attack,defence,midfield,
+      value:moneyMatch[1].replace('.',',')+moneyMatch[2].toUpperCase(),
+      training:false,forSale:false,
+      source:'row_ocr_local'
+    };
+  }
+
+  function deterministicMarkedRows(blocks){
+    const rows=[];
+    for(const b of (blocks||[])){
+      const text=String(b.text||'');
+      const re=/ROW\s*0*(\d{1,3})/gi;
+      const marks=[...text.matchAll(re)];
+      for(let i=0;i<marks.length;i++){
+        const id=Number(marks[i][1]);
+        const a=marks[i].index;
+        const z=i+1<marks.length?marks[i+1].index:text.length;
+        const chunk=text.slice(a,z);
+        const row=parseMarkedRowChunk(chunk,id);
+        if(row)rows.push(row);
+      }
+    }
+    return rows;
+  }
+
+  async function structureMarkedRows(blocks,maxRowId){
+    const joined=blocks.map((b,i)=>`### FOLHA ${i+1}\n${b.text}`).join('\n\n');
+    const prompt=`OCR de fichas individuais do elenco do OSM 26.
+Cada jogador começa com marcador ROW01, ROW02 etc.
+Extraia SOMENTE jogadores realmente presentes. Não crie ROW que não exista.
+Retorne JSON puro:
+{"players":[{"rowId":1,"name":"","age":null,"posCode":null,"attack":null,"defence":null,"midfield":null,"value":null}]}
+
+Regras:
+- name exatamente como aparece.
+- posCode é GR/DD/DC/DE/MDC/MC/MCO/MD/ME/PL/ED/EE ou equivalente visível.
+- attack, defence, midfield são as três colunas numéricas Ata/Def/Med nessa ordem.
+- value é a última coluna monetária.
+- rowId entre 1 e ${maxRowId}.
+- não invente campo ilegível.
+
+OCR:
+${joined}`;
+
+    const attempts=[];
+    if(backupKeys().groq)attempts.push(groqTextJson(prompt));
+    if(backupKeys().openrouter)attempts.push(openRouterTextJson(prompt));
+    if(!attempts.length)return [];
+
+    try{
+      const r=await Promise.any(attempts);
+      const arr=Array.isArray(r?.data?.players)?r.data.players:[];
+      return arr.map(v=>{
+        const rowId=num(v.rowId);
+        const position=positionFromCode(v.posCode);
+        if(!rowId||rowId<1||rowId>maxRowId||!position)return null;
+        const attack=num(v.attack),defence=num(v.defence),midfield=num(v.midfield);
+        let rating=position==='ATA'?attack:position==='DEF'?defence:position==='MEI'?midfield:defence;
+        return {
+          rowId,
+          name:v.name,age:num(v.age),
+          position,posCode:v.posCode,
+          rating,attack,defence,midfield,
+          value:v.value,training:false,forSale:false,
+          source:'row_ocr_ai'
+        };
+      }).filter(Boolean);
+    }catch{
+      return [];
+    }
+  }
+
+  async function readHeaderByOcr(frame){
+    const cashCrop=await cropForFreeOcr(frame,{x:.10,y:0,w:.16,h:.09});
+    const valueCrop=await cropForFreeOcr(frame,{x:.86,y:.07,w:.14,h:.11});
+    const [cashR,valueR]=await Promise.allSettled([
+      ocrSpaceImage(cashCrop,'caixa',15000,'2'),
+      ocrSpaceImage(valueCrop,'valor elenco',15000,'2')
+    ]);
+    const cash=cashR.status==='fulfilled'?moneyFromText(cashR.value.text):null;
+    const squadValue=valueR.status==='fulfilled'?moneyFromText(valueR.value.text):null;
+    return {cash,squadValue,overall:null,goalkeeper:null,defence:null,midfield:null,attack:null,formation:null};
+  }
+
   async function fullRosterScan(frames){
-    // 10 pontos uniformes sobre a rolagem inteira: cobertura com sobreposição,
-    // sem bombardear o endpoint gratuito com 18 requisições.
-    const chosen=chooseFrames(frames,10);
-    if(chosen.length<6){
-      throw new Error(`Poucos quadros extraídos do vídeo (${chosen.length}).`);
+    setProgress(22,'Detectando cada linha de jogador…');
+    const visual=await collectUniqueVisualRows(frames);
+    const reps=visual.reps;
+
+    setProgress(30,`${reps.length} linhas visuais únicas · preparando leitura…`);
+
+    const sheets=[];
+    for(let i=0;i<reps.length;i+=5){
+      sheets.push(await buildRowSheet(reps.slice(i,i+5),i));
     }
 
     const blocks=[];
     const failures=[];
-
-    setProgress(22,'Lendo cabeçalho do elenco…');
-    const head=await cropForFreeOcr(chosen[0],{x:0,y:0,w:1,h:.46});
-    try{
-      blocks.push(await ocrSpaceImage(head,'cabeçalho',18000,'2'));
-    }catch(err){
-      failures.push('cabeçalho: '+String(err?.message||err));
-    }
-
-    // Máximo de duas chamadas simultâneas.
-    for(let base=0;base<chosen.length;base+=2){
-      const batch=chosen.slice(base,base+2);
+    for(let base=0;base<sheets.length;base+=2){
       setProgress(
-        28+Math.round((base/Math.max(1,chosen.length))*46),
-        `Lendo elenco ${Math.min(base+2,chosen.length)}/${chosen.length}…`
+        38+Math.round((base/Math.max(1,sheets.length))*34),
+        `Lendo fichas de jogadores ${Math.min((base+2)*5,reps.length)}/${reps.length}…`
       );
-
+      const batch=sheets.slice(base,base+2);
       const settled=await Promise.allSettled(
-        batch.map((f,i)=>rosterOcrFrame(f,`rolagem ${String(base+i+1).padStart(2,'0')}`))
+        batch.map((sheet,i)=>ocrSpaceImage(sheet,`fichas ${base+i+1}`,18000,'2'))
       );
-
       for(const r of settled){
-        if(r.status==='fulfilled'&&r.value?.text){
-          blocks.push(r.value);
-        }else if(r.status==='rejected'){
-          failures.push(String(r.reason?.message||r.reason));
-        }
+        if(r.status==='fulfilled'&&r.value?.text)blocks.push(r.value);
+        else if(r.status==='rejected')failures.push(String(r.reason?.message||r.reason));
       }
     }
 
-    const tableBlocks=blocks.filter(x=>/^rolagem/.test(x.label));
-    if(tableBlocks.length<6){
-      throw new Error(
-        `OCR.Space retornou apenas ${tableBlocks.length} de ${chosen.length} quadros úteis`+
-        (failures.length?` · ${failures.slice(0,2).join(' | ')}`:'')
-      );
-    }
+    if(!blocks.length)throw new Error('OCR.Space não conseguiu ler nenhuma ficha de jogador.');
 
-    setProgress(78,'Reconstruindo todas as linhas do elenco…');
+    setProgress(76,'Consolidando fichas individuais…');
+    const localRows=deterministicMarkedRows(blocks);
+    const aiRows=await structureMarkedRows(blocks,reps.length);
 
-    const joined=blocks.map((x,i)=>
-      `### BLOCO ${i+1} (${x.label})\n${x.text}`
-    ).join('\n\n');
-
-    // Parser 5.5: posição vem primeiro da SEÇÃO da lista, não do OCR do código individual.
-    const sectionParsed=deterministicRowsFromSectionedBlocks(tableBlocks);
-    const localRows=sectionParsed.rows;
-
-    // IA textual é apenas consolidadora final; não lê a imagem.
-    let structured=null;
-    try{
-      structured=await structureOcrText(blocks);
-    }catch(_){
-      structured=null;
-    }
-
-    const aiRows=Array.isArray(structured?.data?.players)
-      ? structured.data.players
-      : [];
-
-    let finalRows=consolidate([localRows,aiRows]);
-
-    // Corrige a fronteira visual DEF -> GOL antes de qualquer recuperação.
-    // O OCR às vezes aplica "Guarda-redes" uma linha cedo.
-    finalRows=fixDefGolMisclassification(finalRows);
-
-    const headerLocal=deterministicHeaderFromOcr(
-      blocks.find(x=>x.label==='cabeçalho')?.text||joined
-    );
-    const aiHeader=structured?.data?.header||{};
-    const header={
-      ...headerLocal,
-      ...Object.fromEntries(
-        Object.entries(aiHeader).filter(([_,v])=>v!==null&&v!==undefined&&v!=='')
-      )
-    };
-
-    // Não usa quantidade de jogadores inferida pelo OCR para validar.
-    // Números da interface podem ser confundidos com "jogadores".
-    header.playerCount=null;
-
-    // Conferência objetiva: se a soma ainda não fecha com o valor total do elenco,
-    // não reprocessa tudo. Recupera apenas as seções que podem estar faltando,
-    // preservando todos os jogadores já encontrados.
-    const sqValue=money(header?.squadValue);
-    let playerSum=finalRows.reduce((a,p)=>a+(money(p.value)||0),0);
-    const recoveryBlocks=[];
-
-    if(sqValue!==null && playerSum/sqValue<.96){
-      const counts={
-        ATA:finalRows.filter(r=>r.position==='ATA').length,
-        MEI:finalRows.filter(r=>r.position==='MEI').length,
-        DEF:finalRows.filter(r=>r.position==='DEF').length,
-        GOL:finalRows.filter(r=>r.position==='GOL').length
-      };
-
-      // A seção com menor cobertura relativa no fluxo observado é tentada primeiro.
-      // No vídeo atual isto direciona a recuperação para Defesas sem hardcode de quantidade.
-      // Primeiro tenta somente a transição DEF -> GOL, que é onde o vídeo atual
-      // ainda perde linhas. Usa quadros do fim da lista com recortes sobrepostos.
-      const tailFrames=chosen.slice(Math.max(0,chosen.length-4));
-      if(playerSum/sqValue<.97 && tailFrames.length){
-        const boundaryBlocks=[];
-        for(let base=0;base<tailFrames.length;base+=2){
-          const tasks=[];
-          tailFrames.slice(base,base+2).forEach((f,bi)=>{
-            tasks.push((async()=>{
-              const crop=await cropForFreeOcr(f,{x:0,y:.34,w:1,h:.36});
-              return ocrSpaceImage(crop,`def-gol-${base+bi+1}-mid`,18000,'2');
-            })());
-            tasks.push((async()=>{
-              const crop=await cropForFreeOcr(f,{x:0,y:.58,w:1,h:.40});
-              return ocrSpaceImage(crop,`def-gol-${base+bi+1}-bottom`,18000,'2');
-            })());
-          });
-          const settled=await Promise.allSettled(tasks);
-          for(const r of settled)if(r.status==='fulfilled'&&r.value?.text)boundaryBlocks.push(r.value);
-        }
-
-        if(boundaryBlocks.length){
-          const boundaryRows=rowsFromDefGolBoundary(boundaryBlocks);
-          const before=finalRows.length;
-          finalRows=consolidate([finalRows,boundaryRows]);
-          finalRows=fixDefGolMisclassification(finalRows);
-          if(finalRows.length>before){
-            playerSum=finalRows.reduce((a,p)=>a+(money(p.value)||0),0);
-          }
-          recoveryBlocks.push(...boundaryBlocks);
-        }
+    // Aplica status visual (camisa laranja) pelo rowId.
+    const byId=new Map();
+    for(const r of [...localRows,...aiRows]){
+      if(!r?.rowId)continue;
+      const prev=byId.get(r.rowId);
+      if(!prev)byId.set(r.rowId,r);
+      else{
+        // Prefere o registro mais completo.
+        const score=x=>(x.name?2:0)+(x.age!=null?1:0)+(x.posCode?2:0)+(x.rating!=null?2:0)+(x.value?2:0);
+        if(score(r)>score(prev))byId.set(r.rowId,r);
       }
-
-      const currentCounts={
-        ATA:finalRows.filter(r=>r.position==='ATA').length,
-        MEI:finalRows.filter(r=>r.position==='MEI').length,
-        DEF:finalRows.filter(r=>r.position==='DEF').length,
-        GOL:finalRows.filter(r=>r.position==='GOL').length
-      };
-      const sectionOrder=(currentCounts.ATA>0&&currentCounts.MEI>0)
-        ? ['DEF','GOL']
-        : ['DEF','MEI','ATA','GOL'];
-
-      for(const target of sectionOrder){
-        if(playerSum/sqValue>=.96)break;
-
-        // Só tenta se a seção apareceu no vídeo ou já tem jogadores reconhecidos.
-        const secRange=sectionIndexRange(tableBlocks,target);
-        if(secRange.first<0 && counts[target]===0)continue;
-
-        const rec=await targetedSectionRecovery(chosen,tableBlocks,finalRows,target);
-        if(rec.blocks.length)recoveryBlocks.push(...rec.blocks);
-        if(rec.added>0){
-          finalRows=rec.rows;
-          playerSum=finalRows.reduce((a,p)=>a+(money(p.value)||0),0);
-        }
-
-        // Se a seção não trouxe nenhum jogador genuinamente novo,
-        // não repete/reinterpreta os mesmos dados daquele alvo.
-      }
-
-      if(recoveryBlocks.length)blocks.push(...recoveryBlocks);
     }
 
-    const parsedSections=deterministicRowsFromSectionedBlocks(tableBlocks);
-    const coverage={seen:parsedSections.seen,ordered:parsedSections.order,all:Object.values(parsedSections.seen).every(v=>v>0)};
-    const first=sectionCoverageFromBlocks(tableBlocks.slice(0,3));
-    const last=sectionCoverageFromBlocks(tableBlocks.slice(-3));
+    const parsed=[];
+    for(const [rowId,r] of byId.entries()){
+      const rep=reps[rowId-1];
+      parsed.push({
+        ...r,
+        training:rep?.training===true,
+        forSale:false
+      });
+    }
+
+    let finalRows=consolidate([parsed]);
+
+    // Se alguma ficha visual não gerou jogador, relê SOMENTE aquela ficha individual com Engine 3.
+    const knownIds=new Set([...byId.keys()]);
+    const missingIds=[];
+    for(let id=1;id<=reps.length;id++)if(!knownIds.has(id))missingIds.push(id);
+
+    if(missingIds.length && missingIds.length<=8){
+      const recovered=[];
+      for(let base=0;base<missingIds.length;base+=2){
+        const ids=missingIds.slice(base,base+2);
+        setProgress(82+Math.round((base/Math.max(1,missingIds.length))*8),
+          `Recuperando fichas ${Math.min(base+2,missingIds.length)}/${missingIds.length}…`);
+        const jobs=ids.map(async id=>{
+          const sheet=await buildRowSheet([reps[id-1]],id-1);
+          const b=await ocrSpaceImage(sheet,`ficha ROW${String(id).padStart(2,'0')}`,18000,'3');
+          return b;
+        });
+        const settled=await Promise.allSettled(jobs);
+        for(const r of settled)if(r.status==='fulfilled'&&r.value?.text)recovered.push(r.value);
+      }
+      if(recovered.length){
+        const local2=deterministicMarkedRows(recovered);
+        const ai2=await structureMarkedRows(recovered,reps.length);
+        const extra=[...local2,...ai2].map(r=>({
+          ...r,
+          training:reps[(r.rowId||1)-1]?.training===true
+        }));
+        finalRows=consolidate([finalRows,extra]);
+        blocks.push(...recovered);
+      }
+    }
+
+    setProgress(91,'Conferindo valor total do elenco…');
+    const header=await readHeaderByOcr(frames[0]);
 
     const positionCoverage={
       ATA:finalRows.filter(r=>r.position==='ATA').length,
@@ -827,33 +1023,26 @@
       GOL:finalRows.filter(r=>r.position==='GOL').length
     };
 
-    const coveredStart=first.seen.ATA>0 || positionCoverage.ATA>0;
-    const coveredEnd=last.seen.GOL>0 || positionCoverage.GOL>0;
-    const orderOk=['ATA','MEI','DEF','GOL'].every(x=>parsedSections.order.includes(x));
-
-    const coverageComplete=
-      coveredStart &&
-      coveredEnd &&
-      orderOk &&
-      Object.values(positionCoverage).every(v=>v>0);
+    const coverageComplete=Object.values(positionCoverage).every(v=>v>0);
 
     return {
       header,
       rows:finalRows,
-      chosenFrames:chosen,
-      ocrBlocks:blocks,
-      distinctFrames:chosen.length,
-      tableBlocks:tableBlocks.length,
-      coverage,
+      chosenFrames:visual.sampled,
+      distinctFrames:visual.sampled.length,
+      tableBlocks:blocks.length,
+      visualRows:reps.length,
       positionCoverage,
+      coverage:{seen:{
+        ATA:positionCoverage.ATA>0?1:0,
+        MEI:positionCoverage.MEI>0?1:0,
+        DEF:positionCoverage.DEF>0?1:0,
+        GOL:positionCoverage.GOL>0?1:0
+      }},
       coverageComplete,
-      coveredStart,
-      coveredEnd,
-      failures,
-      provider:structured?.provider
-        ? `OCR.Space E2 + ${structured.provider}`
-        : 'OCR.Space Engine 2',
-      model:structured?.model||'overlay + parser determinístico'
+      provider:'OCR.Space E2/E3 + leitor por linha',
+      model:'row-fingerprint + marked sheets',
+      failures
     };
   }
 
@@ -914,7 +1103,7 @@
     return merged.map(({_bestHits,...r})=>({
       ...r,
       verifiedRoster:true,
-      source:'market_engine_57'
+      source:'market_engine_60'
     }));
   }
 
@@ -1368,7 +1557,7 @@ Retorne JSON puro exatamente:
       source=`${result.provider||'OCR.Space'}:${result.model||'parser'}`;
       const diag=document.getElementById('analysisDiagnostics');
       const cov=result.positionCoverage||{};
-      if(diag)diag.textContent=`Elenco 5.8 · Engine 2 · ${result.tableBlocks}/${result.distinctFrames} quadros úteis · ATA/MEI/DEF/GOL ${cov.ATA||0}/${cov.MEI||0}/${cov.DEF||0}/${cov.GOL||0} · ${roster.length} únicos · ${Math.round((Date.now()-started)/1000)}s.`;
+      if(diag)diag.textContent=`Elenco 6.0 · ${result.visualRows||0} linhas visuais · ${result.tableBlocks||0} folhas OCR · ATA/MEI/DEF/GOL ${cov.ATA||0}/${cov.MEI||0}/${cov.DEF||0}/${cov.GOL||0} · ${roster.length} jogadores · ${Math.round((Date.now()-started)/1000)}s.`;
       validationScan=result;
     }catch(err){
       technicalError=String(err?.message||err);
@@ -1419,14 +1608,14 @@ Retorne JSON puro exatamente:
       if(typeof renderMarket==='function')renderMarket();
       const msg=`${roster.length} jogadores validados · ${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL} · caixa ${fmtMoney(s.myTeam?.cash)} · elenco ${fmtMoney(s.myTeam?.squadValue)}.`;
       const el=document.getElementById('analysisContent');
-      if(el)el.innerHTML=`<div class="card" style="margin-top:12px"><span class="eyebrow">ELENCO VALIDADO · 5.8</span><h3>${roster.length} jogadores confirmados</h3><p class="small muted">${esc(msg)}</p><div class="fallback-kpis"><div><span>Caixa</span><b>${esc(fmtMoney(s.myTeam?.cash))}</b></div><div><span>Valor elenco</span><b>${esc(fmtMoney(s.myTeam?.squadValue))}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div></div><p class="small muted">Fonte: ${esc(source)} · Engine 2 + recuperação da fronteira DEF/GOL + deduplicação tolerante · ${Math.round(validation.elapsedMs/1000)}s.</p></div>`;
+      if(el)el.innerHTML=`<div class="card" style="margin-top:12px"><span class="eyebrow">ELENCO VALIDADO · 6.0</span><h3>${roster.length} jogadores confirmados</h3><p class="small muted">${esc(msg)}</p><div class="fallback-kpis"><div><span>Caixa</span><b>${esc(fmtMoney(s.myTeam?.cash))}</b></div><div><span>Valor elenco</span><b>${esc(fmtMoney(s.myTeam?.squadValue))}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div></div><p class="small muted">Fonte: ${esc(source)} · leitura linha a linha + deduplicação visual antes do OCR · ${Math.round(validation.elapsedMs/1000)}s.</p></div>`;
       setAnalysisRun(s,'market','success',msg,{version:VERSION,validation}); setProgress(100,'Elenco validado'); job('Elenco e finanças atualizados.','done'); return;
     }
 
     preserveFailed(s,validation,header); try{localStorage.setItem(STATE_KEY,JSON.stringify(state))}catch{}
     if(typeof renderMarket==='function')renderMarket();
     const el=document.getElementById('analysisContent');
-    if(el)el.innerHTML=`<div class="card ai-fallback-card" style="margin-top:12px"><span class="eyebrow">VALIDAÇÃO DE ELENCO · 5.8</span><h3>Leitura incompleta — não alterei seu elenco</h3><p class="small muted">${esc(validation.issues.join(' · '))}</p><div class="fallback-kpis"><div><span>Encontrados</span><b>${validation.count}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div><div><span>Tempo</span><b>${Math.round(validation.elapsedMs/1000)}s</b></div></div>${technicalError?`<p class="small muted" style="margin-top:10px">Erro técnico: ${esc(technicalError)}</p>`:''}</div>`;
+    if(el)el.innerHTML=`<div class="card ai-fallback-card" style="margin-top:12px"><span class="eyebrow">VALIDAÇÃO DE ELENCO · 6.0</span><h3>Leitura incompleta — não alterei seu elenco</h3><p class="small muted">${esc(validation.issues.join(' · '))}</p><div class="fallback-kpis"><div><span>Encontrados</span><b>${validation.count}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div><div><span>Tempo</span><b>${Math.round(validation.elapsedMs/1000)}s</b></div></div>${technicalError?`<p class="small muted" style="margin-top:10px">Erro técnico: ${esc(technicalError)}</p>`:''}</div>`;
     setAnalysisRun(s,'market','warning',`Leitura incompleta: ${validation.issues.join('; ')}`,{version:VERSION,validation}); setProgress(100,'Leitura incompleta'); job('Elenco não foi alterado porque a validação não fechou.','done');
   }
 
@@ -1454,11 +1643,11 @@ Retorne JSON puro exatamente:
   }
   function directorHtml(s){
     const v=s?.rosterValidation42;
-    if(!v?.ok)return `<div class="card market40-card"><span class="eyebrow">DIRETOR IA · 5.8</span><h3>Plano bloqueado até ler o elenco completo</h3><p class="small muted">A versão 5.8 trata explicitamente a fronteira Defesas/Guarda-redes e recupera linhas perdidas no fim da lista.</p><div class="actions"><button class="btn" onclick="showView('analyze');setAnalysisMode('market')">Analisar elenco</button></div></div>`;
+    if(!v?.ok)return `<div class="card market40-card"><span class="eyebrow">DIRETOR IA · 6.0</span><h3>Plano bloqueado até ler o elenco completo</h3><p class="small muted">A versão 6.0 detecta cada linha de jogador visualmente, elimina repetições antes do OCR e lê fichas individuais.</p><div class="actions"><button class="btn" onclick="showView('analyze');setAnalysisMode('market')">Analisar elenco</button></div></div>`;
     const p=buildDirector(s),c={ATA:p.by.ATA.length,MEI:p.by.MEI.length,DEF:p.by.DEF.length,GOL:p.by.GOL.length};
     const sell=p.sells.length?p.sells.map((x,i)=>`<div class="radar-item"><div><b>${i+1}. ${esc(x.name)}</b><span>${esc(x.position)} · força ${esc(x.rating)} · valor ${esc(x.value)}${x.training?' · treinando':''}</span></div><span>${x.forSale?'Já à venda':'Excedente'}</span></div>`).join(''):'<p class="small muted">Nenhuma venda estrutural necessária agora.</p>';
     const weak=Object.entries(p.weakest).map(([k,x])=>x?`${k}: ${esc(x.name)} ${x.rating}`:`${k}: NI`).join(' · ');
-    return `<div class="card market40-card"><div class="section-head compact-head"><div><span class="eyebrow">DIRETOR IA · DADOS REAIS · 5.8</span><h3>Plano baseado somente no vídeo validado</h3></div></div>
+    return `<div class="card market40-card"><div class="section-head compact-head"><div><span class="eyebrow">DIRETOR IA · DADOS REAIS · 6.0</span><h3>Plano baseado somente no vídeo validado</h3></div></div>
       <div class="coach30-kpis"><div><span>Caixa</span><b>${esc(fmtMoney(p.cash))}</b></div><div><span>Valor do elenco</span><b>${esc(fmtMoney(p.sq))}</b></div><div><span>Jogadores</span><b>${p.rows.length}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${c.ATA}/${c.MEI}/${c.DEF}/${c.GOL}</b></div></div>
       <div class="reason-box"><b>Venda agora</b>${sell}${p.sells.length?`<p class="small muted">Referência de caixa se as ${p.sells.length} vendas ocorrerem pelo valor mostrado: ${esc(fmtMoney(p.afterSales))}. O preço efetivo de venda pode variar no OSM.</p>`:''}</div>
       <div class="reason-box"><b>Compra</b><p>Caixa imediato: <b>${esc(fmtMoney(p.cash))}</b>. ${p.sells.length?`Referência após vendas: <b>${esc(fmtMoney(p.afterSales))}</b>.`:''}</p><p class="small muted">Sem ler a lista de transferências, não inventarei nome/preço disponível. O Diretor usa este teto real para indicar quais opções observadas no mercado cabem no orçamento.</p></div>
@@ -1512,7 +1701,7 @@ Retorne JSON puro exatamente:
   function injectBackupSettings(){
     const view=document.getElementById('view-settings');if(!view||document.getElementById('multiAiBackupCard'))return;
     const card=document.createElement('div');card.id='multiAiBackupCard';card.className='card form';card.style.marginTop='12px';
-    card.innerHTML=`<span class="eyebrow">IA DE BACKUP · 5.8</span><h3>OCR especializado + IA de backup</h3><p class="small muted">Elenco: OCR.Space lê as tabelas; OpenRouter/Groq consolidam o texto. Gemini fica reservado para outras análises. As chaves ficam somente neste navegador.</p><label>OpenRouter API Key<input id="openrouterKey44" type="password" autocomplete="off" placeholder="sk-or-v1-..."></label><label>Groq API Key<input id="groqKey44" type="password" autocomplete="off" placeholder="gsk_..."></label><label>OCR.Space API Key<input id="ocrSpaceKey46" type="password" autocomplete="off" placeholder="Chave OCR.Space"></label><div class="actions"><button class="btn" id="saveBackupKeys44">Salvar chaves</button></div><p id="backupAiStatus44" class="small muted"></p>`;
+    card.innerHTML=`<span class="eyebrow">IA DE BACKUP · 6.0</span><h3>OCR especializado + IA de backup</h3><p class="small muted">Elenco: OCR.Space lê as tabelas; OpenRouter/Groq consolidam o texto. Gemini fica reservado para outras análises. As chaves ficam somente neste navegador.</p><label>OpenRouter API Key<input id="openrouterKey44" type="password" autocomplete="off" placeholder="sk-or-v1-..."></label><label>Groq API Key<input id="groqKey44" type="password" autocomplete="off" placeholder="gsk_..."></label><label>OCR.Space API Key<input id="ocrSpaceKey46" type="password" autocomplete="off" placeholder="Chave OCR.Space"></label><div class="actions"><button class="btn" id="saveBackupKeys44">Salvar chaves</button></div><p id="backupAiStatus44" class="small muted"></p>`;
     view.appendChild(card);
     const or=document.getElementById('openrouterKey44'),g=document.getElementById('groqKey44'),o=document.getElementById('ocrSpaceKey46');or.value=localStorage.getItem(OPENROUTER_KEY)||'';g.value=localStorage.getItem(GROQ_KEY)||'';o.value=localStorage.getItem(OCRSPACE_KEY)||'';
     const update=()=>{const k=backupKeys();document.getElementById('backupAiStatus44').textContent=`OCR.Space: ${ocrSpaceKey()?'configurado':'não configurado'} · OpenRouter: ${k.openrouter?'configurado':'não configurado'} · Groq: ${k.groq?'configurado':'não configurado'}${geminiCoolingDown()?' · Gemini em cooldown por cota':''}`};update();
@@ -1520,6 +1709,6 @@ Retorne JSON puro exatamente:
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(injectBackupSettings,250));else setTimeout(injectBackupSettings,250);
 
-  window.OSM_MARKET_ENGINE_58={version:VERSION,consolidate,validateRoster,buildDirector};
+  window.OSM_MARKET_ENGINE_57={version:VERSION,consolidate,validateRoster,buildDirector};
   try{console.info('[OSM] Market Engine '+VERSION+' ativo')}catch{}
 })();
