@@ -11,7 +11,7 @@
    - Director only decides from validated roster + real finances
 */
 (function(){
-  const VERSION='5.5.0';
+  const VERSION='5.6.0';
   const TARGET={ATA:4,MEI:6,DEF:6,GOL:2};
   const VALID_POS=new Set(Object.keys(TARGET));
   const oldRenderMarket=typeof renderMarket==='function'?renderMarket:null;
@@ -387,6 +387,82 @@
     }
   }
 
+
+  function sectionIndexRange(blocks,target){
+    let current='ATA';
+    let first=-1,last=-1;
+    for(let i=0;i<(blocks||[]).length;i++){
+      const lines=String(blocks[i]?.text||'').split(/\r?\n/);
+      let touched=false;
+      for(const line of lines){
+        const sec=normalizedSectionName(line);
+        if(sec)current=sec;
+        if(current===target)touched=true;
+        const explicit=explicitBroadPosition(line);
+        if(explicit===target)touched=true;
+      }
+      if(touched){
+        if(first<0)first=i;
+        last=i;
+      }
+    }
+    return {first,last};
+  }
+
+  async function targetedSectionRecovery(chosen,tableBlocks,existingRows,target){
+    const range=sectionIndexRange(tableBlocks,target);
+
+    // Mapeia o bloco OCR "rolagem NN" de volta ao quadro escolhido.
+    const candidateIdx=new Set();
+    if(range.first>=0){
+      for(let i=Math.max(0,range.first-1);i<=Math.min(chosen.length-1,range.last+1);i++)candidateIdx.add(i);
+    }else{
+      // Fallback pela ordem normal da lista: ATA -> MEI -> DEF -> GOL.
+      const from=target==='DEF'?Math.floor(chosen.length*.45):target==='MEI'?Math.floor(chosen.length*.20):0;
+      const to=target==='DEF'?Math.ceil(chosen.length*.88):target==='MEI'?Math.ceil(chosen.length*.62):chosen.length-1;
+      for(let i=from;i<=Math.min(chosen.length-1,to);i++)candidateIdx.add(i);
+    }
+
+    const frames=[...candidateIdx].sort((a,b)=>a-b).map(i=>chosen[i]).filter(Boolean);
+    if(!frames.length)return {rows:existingRows,blocks:[],added:0};
+
+    const recovery=[];
+    // Dois recortes verticais sobrepostos por quadro: evita perder jogador na borda.
+    for(let base=0;base<frames.length;base+=2){
+      setProgress(82+Math.round((base/Math.max(1,frames.length))*10),
+        `Recuperando ${target} ${Math.min(base+2,frames.length)}/${frames.length}…`);
+      const batch=frames.slice(base,base+2);
+      const tasks=[];
+      batch.forEach((f,bi)=>{
+        tasks.push((async()=>{
+          const crop=await cropForFreeOcr(f,{x:0,y:.30,w:1,h:.43});
+          return ocrSpaceImage(crop,`rec-${target}-${base+bi+1}-top`,18000,'2');
+        })());
+        tasks.push((async()=>{
+          const crop=await cropForFreeOcr(f,{x:0,y:.50,w:1,h:.48});
+          return ocrSpaceImage(crop,`rec-${target}-${base+bi+1}-bottom`,18000,'2');
+        })());
+      });
+      const settled=await Promise.allSettled(tasks);
+      for(const r of settled)if(r.status==='fulfilled'&&r.value?.text)recovery.push(r.value);
+    }
+
+    if(!recovery.length)return {rows:existingRows,blocks:[],added:0};
+
+    // Contexto: inclui os blocos originais para manter a seção correta,
+    // mas a consolidação final nunca remove o que já foi lido.
+    const parsed=deterministicRowsFromSectionedBlocks([...tableBlocks,...recovery]);
+    let ai=[];
+    try{
+      const st=await structureOcrText([...tableBlocks,...recovery]);
+      ai=Array.isArray(st?.data?.players)?st.data.players:[];
+    }catch(_){}
+
+    const before=(existingRows||[]).length;
+    const merged=consolidate([existingRows||[],parsed.rows,ai]);
+    return {rows:merged,blocks:recovery,added:Math.max(0,merged.length-before)};
+  }
+
   async function fullRosterScan(frames){
     // 10 pontos uniformes sobre a rolagem inteira: cobertura com sobreposição,
     // sem bombardear o endpoint gratuito com 18 requisições.
@@ -470,34 +546,44 @@
       )
     };
 
-    if(header.playerCount==null){
-      header.playerCount=expectedPlayerCountFromText(joined);
-    }
+    // Não usa quantidade de jogadores inferida pelo OCR para validar.
+    // Números da interface podem ser confundidos com "jogadores".
+    header.playerCount=null;
 
-    // Se a soma dos jogadores ainda estiver claramente abaixo do valor do elenco,
-    // sabemos objetivamente que faltam linhas. Fazemos UMA passagem extra em 4 quadros
-    // alternados com Engine 3, sem refazer tudo.
+    // Conferência objetiva: se a soma ainda não fecha com o valor total do elenco,
+    // não reprocessa tudo. Recupera apenas as seções que podem estar faltando,
+    // preservando todos os jogadores já encontrados.
     const sqValue=money(header?.squadValue);
     let playerSum=finalRows.reduce((a,p)=>a+(money(p.value)||0),0);
+    const recoveryBlocks=[];
+
     if(sqValue!==null && playerSum/sqValue<.96){
-      const retryFrames=[chosen[2],chosen[4],chosen[6],chosen[8]].filter(Boolean);
-      const retryBlocks=[];
-      for(let base=0;base<retryFrames.length;base+=2){
-        const settled=await Promise.allSettled(retryFrames.slice(base,base+2).map(async(f,i)=>{
-          const crop=await cropForFreeOcr(f,{x:0,y:.30,w:1,h:.69});
-          return ocrSpaceImage(crop,`recuperação ${base+i+1}`,18000,'3');
-        }));
-        for(const r of settled)if(r.status==='fulfilled'&&r.value?.text)retryBlocks.push(r.value);
+      const counts={
+        ATA:finalRows.filter(r=>r.position==='ATA').length,
+        MEI:finalRows.filter(r=>r.position==='MEI').length,
+        DEF:finalRows.filter(r=>r.position==='DEF').length,
+        GOL:finalRows.filter(r=>r.position==='GOL').length
+      };
+
+      // A seção com menor cobertura relativa no fluxo observado é tentada primeiro.
+      // No vídeo atual isto direciona a recuperação para Defesas sem hardcode de quantidade.
+      const sectionOrder=['DEF','MEI','ATA','GOL'];
+      for(const target of sectionOrder){
+        if(playerSum/sqValue>=.96)break;
+
+        // Só tenta se a seção apareceu no vídeo ou já tem jogadores reconhecidos.
+        const secRange=sectionIndexRange(tableBlocks,target);
+        if(secRange.first<0 && counts[target]===0)continue;
+
+        const rec=await targetedSectionRecovery(chosen,tableBlocks,finalRows,target);
+        if(rec.blocks.length)recoveryBlocks.push(...rec.blocks);
+        if(rec.added>0){
+          finalRows=rec.rows;
+          playerSum=finalRows.reduce((a,p)=>a+(money(p.value)||0),0);
+        }
       }
-      if(retryBlocks.length){
-        const parsedRetry=deterministicRowsFromSectionedBlocks([...tableBlocks,...retryBlocks]);
-        let retryStructured=null;
-        try{retryStructured=await structureOcrText([...blocks,...retryBlocks]);}catch(_){}
-        const retryAi=Array.isArray(retryStructured?.data?.players)?retryStructured.data.players:[];
-        finalRows=consolidate([finalRows,parsedRetry.rows,retryAi]);
-        playerSum=finalRows.reduce((a,p)=>a+(money(p.value)||0),0);
-        blocks.push(...retryBlocks);
-      }
+
+      if(recoveryBlocks.length)blocks.push(...recoveryBlocks);
     }
 
     const parsedSections=deterministicRowsFromSectionedBlocks(tableBlocks);
@@ -1049,7 +1135,7 @@ Retorne JSON puro exatamente:
       source=`${result.provider||'OCR.Space'}:${result.model||'parser'}`;
       const diag=document.getElementById('analysisDiagnostics');
       const cov=result.positionCoverage||{};
-      if(diag)diag.textContent=`Elenco 5.5 · Engine 2 · ${result.tableBlocks}/${result.distinctFrames} quadros úteis · ATA/MEI/DEF/GOL ${cov.ATA||0}/${cov.MEI||0}/${cov.DEF||0}/${cov.GOL||0} · ${roster.length} únicos · ${Math.round((Date.now()-started)/1000)}s.`;
+      if(diag)diag.textContent=`Elenco 5.6 · Engine 2 · ${result.tableBlocks}/${result.distinctFrames} quadros úteis · ATA/MEI/DEF/GOL ${cov.ATA||0}/${cov.MEI||0}/${cov.DEF||0}/${cov.GOL||0} · ${roster.length} únicos · ${Math.round((Date.now()-started)/1000)}s.`;
       validationScan=result;
     }catch(err){
       technicalError=String(err?.message||err);
@@ -1058,13 +1144,11 @@ Retorne JSON puro exatamente:
     }
 
     const comp=composition(roster), sum=roster.reduce((a,p)=>a+(money(p.value)||0),0), sq=money(header?.squadValue), issues=[];
-    const expected=num(header?.playerCount);
+    const expected=null;
 
-    if(expected!==null && roster.length!==expected){
-      issues.push(`vídeo indica ${expected} jogadores, mas ${roster.length} foram lidos`);
-    }
-
-    // Sem total explícito, só valida quando a própria rolagem comprova
+    // A quantidade de jogadores NÃO é inferida por OCR.
+    // A completude é comprovada pela rolagem + soma de valores.
+    // Só valida quando a própria rolagem comprova
     // início, meio e fim pelas quatro seções do elenco.
     if(!validationScan?.coverageComplete){
       const cov=validationScan?.coverage?.seen||{ATA:0,MEI:0,DEF:0,GOL:0};
@@ -1082,7 +1166,7 @@ Retorne JSON puro exatamente:
 
     if(sq!==null&&roster.length>0){
       const ratio=sum/sq;
-      if(ratio<.96||ratio>1.04){
+      if(ratio<.97||ratio>1.03){
         const missing=Math.max(0,sq-sum);
         issues.push(`valores lidos somam ${fmtMoney(sum)} de ${fmtMoney(sq)}${missing>0?` · ainda faltam cerca de ${fmtMoney(missing)} em jogadores`:''}`);
       }
@@ -1097,14 +1181,14 @@ Retorne JSON puro exatamente:
       if(typeof renderMarket==='function')renderMarket();
       const msg=`${roster.length} jogadores validados · ${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL} · caixa ${fmtMoney(s.myTeam?.cash)} · elenco ${fmtMoney(s.myTeam?.squadValue)}.`;
       const el=document.getElementById('analysisContent');
-      if(el)el.innerHTML=`<div class="card" style="margin-top:12px"><span class="eyebrow">ELENCO VALIDADO · 5.5</span><h3>${roster.length} jogadores confirmados</h3><p class="small muted">${esc(msg)}</p><div class="fallback-kpis"><div><span>Caixa</span><b>${esc(fmtMoney(s.myTeam?.cash))}</b></div><div><span>Valor elenco</span><b>${esc(fmtMoney(s.myTeam?.squadValue))}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div></div><p class="small muted">Fonte: ${esc(source)} · Engine 2 + parser por seção + conferência pelo valor do elenco · ${Math.round(validation.elapsedMs/1000)}s.</p></div>`;
+      if(el)el.innerHTML=`<div class="card" style="margin-top:12px"><span class="eyebrow">ELENCO VALIDADO · 5.6</span><h3>${roster.length} jogadores confirmados</h3><p class="small muted">${esc(msg)}</p><div class="fallback-kpis"><div><span>Caixa</span><b>${esc(fmtMoney(s.myTeam?.cash))}</b></div><div><span>Valor elenco</span><b>${esc(fmtMoney(s.myTeam?.squadValue))}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div></div><p class="small muted">Fonte: ${esc(source)} · Engine 2 + parser por seção + recuperação direcionada · ${Math.round(validation.elapsedMs/1000)}s.</p></div>`;
       setAnalysisRun(s,'market','success',msg,{version:VERSION,validation}); setProgress(100,'Elenco validado'); job('Elenco e finanças atualizados.','done'); return;
     }
 
     preserveFailed(s,validation,header); try{localStorage.setItem(STATE_KEY,JSON.stringify(state))}catch{}
     if(typeof renderMarket==='function')renderMarket();
     const el=document.getElementById('analysisContent');
-    if(el)el.innerHTML=`<div class="card ai-fallback-card" style="margin-top:12px"><span class="eyebrow">VALIDAÇÃO DE ELENCO · 5.5</span><h3>Leitura incompleta — não alterei seu elenco</h3><p class="small muted">${esc(validation.issues.join(' · '))}</p><div class="fallback-kpis"><div><span>Encontrados</span><b>${validation.count}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div><div><span>Tempo</span><b>${Math.round(validation.elapsedMs/1000)}s</b></div></div>${technicalError?`<p class="small muted" style="margin-top:10px">Erro técnico: ${esc(technicalError)}</p>`:''}</div>`;
+    if(el)el.innerHTML=`<div class="card ai-fallback-card" style="margin-top:12px"><span class="eyebrow">VALIDAÇÃO DE ELENCO · 5.6</span><h3>Leitura incompleta — não alterei seu elenco</h3><p class="small muted">${esc(validation.issues.join(' · '))}</p><div class="fallback-kpis"><div><span>Encontrados</span><b>${validation.count}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div><div><span>Tempo</span><b>${Math.round(validation.elapsedMs/1000)}s</b></div></div>${technicalError?`<p class="small muted" style="margin-top:10px">Erro técnico: ${esc(technicalError)}</p>`:''}</div>`;
     setAnalysisRun(s,'market','warning',`Leitura incompleta: ${validation.issues.join('; ')}`,{version:VERSION,validation}); setProgress(100,'Leitura incompleta'); job('Elenco não foi alterado porque a validação não fechou.','done');
   }
 
@@ -1132,11 +1216,11 @@ Retorne JSON puro exatamente:
   }
   function directorHtml(s){
     const v=s?.rosterValidation42;
-    if(!v?.ok)return `<div class="card market40-card"><span class="eyebrow">DIRETOR IA · 5.5</span><h3>Plano bloqueado até ler o elenco completo</h3><p class="small muted">A versão 5.5 lê a posição pela seção da lista e só valida quando a soma dos jogadores fecha com o valor total do elenco.</p><div class="actions"><button class="btn" onclick="showView('analyze');setAnalysisMode('market')">Analisar elenco</button></div></div>`;
+    if(!v?.ok)return `<div class="card market40-card"><span class="eyebrow">DIRETOR IA · 5.6</span><h3>Plano bloqueado até ler o elenco completo</h3><p class="small muted">A versão 5.6 preserva o que já foi lido e recupera apenas as seções faltantes; não usa contagem de jogadores inferida por OCR.</p><div class="actions"><button class="btn" onclick="showView('analyze');setAnalysisMode('market')">Analisar elenco</button></div></div>`;
     const p=buildDirector(s),c={ATA:p.by.ATA.length,MEI:p.by.MEI.length,DEF:p.by.DEF.length,GOL:p.by.GOL.length};
     const sell=p.sells.length?p.sells.map((x,i)=>`<div class="radar-item"><div><b>${i+1}. ${esc(x.name)}</b><span>${esc(x.position)} · força ${esc(x.rating)} · valor ${esc(x.value)}${x.training?' · treinando':''}</span></div><span>${x.forSale?'Já à venda':'Excedente'}</span></div>`).join(''):'<p class="small muted">Nenhuma venda estrutural necessária agora.</p>';
     const weak=Object.entries(p.weakest).map(([k,x])=>x?`${k}: ${esc(x.name)} ${x.rating}`:`${k}: NI`).join(' · ');
-    return `<div class="card market40-card"><div class="section-head compact-head"><div><span class="eyebrow">DIRETOR IA · DADOS REAIS · 5.5</span><h3>Plano baseado somente no vídeo validado</h3></div></div>
+    return `<div class="card market40-card"><div class="section-head compact-head"><div><span class="eyebrow">DIRETOR IA · DADOS REAIS · 5.6</span><h3>Plano baseado somente no vídeo validado</h3></div></div>
       <div class="coach30-kpis"><div><span>Caixa</span><b>${esc(fmtMoney(p.cash))}</b></div><div><span>Valor do elenco</span><b>${esc(fmtMoney(p.sq))}</b></div><div><span>Jogadores</span><b>${p.rows.length}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${c.ATA}/${c.MEI}/${c.DEF}/${c.GOL}</b></div></div>
       <div class="reason-box"><b>Venda agora</b>${sell}${p.sells.length?`<p class="small muted">Referência de caixa se as ${p.sells.length} vendas ocorrerem pelo valor mostrado: ${esc(fmtMoney(p.afterSales))}. O preço efetivo de venda pode variar no OSM.</p>`:''}</div>
       <div class="reason-box"><b>Compra</b><p>Caixa imediato: <b>${esc(fmtMoney(p.cash))}</b>. ${p.sells.length?`Referência após vendas: <b>${esc(fmtMoney(p.afterSales))}</b>.`:''}</p><p class="small muted">Sem ler a lista de transferências, não inventarei nome/preço disponível. O Diretor usa este teto real para indicar quais opções observadas no mercado cabem no orçamento.</p></div>
@@ -1190,7 +1274,7 @@ Retorne JSON puro exatamente:
   function injectBackupSettings(){
     const view=document.getElementById('view-settings');if(!view||document.getElementById('multiAiBackupCard'))return;
     const card=document.createElement('div');card.id='multiAiBackupCard';card.className='card form';card.style.marginTop='12px';
-    card.innerHTML=`<span class="eyebrow">IA DE BACKUP · 5.5</span><h3>OCR especializado + IA de backup</h3><p class="small muted">Elenco: OCR.Space lê as tabelas; OpenRouter/Groq consolidam o texto. Gemini fica reservado para outras análises. As chaves ficam somente neste navegador.</p><label>OpenRouter API Key<input id="openrouterKey44" type="password" autocomplete="off" placeholder="sk-or-v1-..."></label><label>Groq API Key<input id="groqKey44" type="password" autocomplete="off" placeholder="gsk_..."></label><label>OCR.Space API Key<input id="ocrSpaceKey46" type="password" autocomplete="off" placeholder="Chave OCR.Space"></label><div class="actions"><button class="btn" id="saveBackupKeys44">Salvar chaves</button></div><p id="backupAiStatus44" class="small muted"></p>`;
+    card.innerHTML=`<span class="eyebrow">IA DE BACKUP · 5.6</span><h3>OCR especializado + IA de backup</h3><p class="small muted">Elenco: OCR.Space lê as tabelas; OpenRouter/Groq consolidam o texto. Gemini fica reservado para outras análises. As chaves ficam somente neste navegador.</p><label>OpenRouter API Key<input id="openrouterKey44" type="password" autocomplete="off" placeholder="sk-or-v1-..."></label><label>Groq API Key<input id="groqKey44" type="password" autocomplete="off" placeholder="gsk_..."></label><label>OCR.Space API Key<input id="ocrSpaceKey46" type="password" autocomplete="off" placeholder="Chave OCR.Space"></label><div class="actions"><button class="btn" id="saveBackupKeys44">Salvar chaves</button></div><p id="backupAiStatus44" class="small muted"></p>`;
     view.appendChild(card);
     const or=document.getElementById('openrouterKey44'),g=document.getElementById('groqKey44'),o=document.getElementById('ocrSpaceKey46');or.value=localStorage.getItem(OPENROUTER_KEY)||'';g.value=localStorage.getItem(GROQ_KEY)||'';o.value=localStorage.getItem(OCRSPACE_KEY)||'';
     const update=()=>{const k=backupKeys();document.getElementById('backupAiStatus44').textContent=`OCR.Space: ${ocrSpaceKey()?'configurado':'não configurado'} · OpenRouter: ${k.openrouter?'configurado':'não configurado'} · Groq: ${k.groq?'configurado':'não configurado'}${geminiCoolingDown()?' · Gemini em cooldown por cota':''}`};update();
@@ -1198,6 +1282,6 @@ Retorne JSON puro exatamente:
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(injectBackupSettings,250));else setTimeout(injectBackupSettings,250);
 
-  window.OSM_MARKET_ENGINE_55={version:VERSION,consolidate,validateRoster,buildDirector};
+  window.OSM_MARKET_ENGINE_56={version:VERSION,consolidate,validateRoster,buildDirector};
   try{console.info('[OSM] Market Engine '+VERSION+' ativo')}catch{}
 })();
