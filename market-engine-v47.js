@@ -1,42 +1,38 @@
+
 'use strict';
-/* OSM AI Coach Pro — Market Engine 4.6
-   Consolidated roster + finances reader. Replaces market hotfixes 3.4/3.5/3.6.
-   Key rules:
-   - one visual source of truth for the roster
-   - no Tesseract name gate
-   - one cropped table frame per AI request
-   - consensus by position/rating/value/age across overlapping frames
-   - cash and squad value read from dedicated screen regions
-   - never overwrite roster unless completeness/consistency checks pass
-   - Director only decides from validated roster + real finances
+/* OSM AI Coach Pro — Market Engine 4.8
+   Deterministic OCR.Space table reconstruction using TextOverlay coordinates.
+   Replaces the previous market-engine-v47.js file in-place.
 */
 (function(){
-  const VERSION='4.7.0';
+  const VERSION='4.8.0';
+  const OCRSPACE_KEY='osm_ai_coach_ocrspace_key';
+  const OPENROUTER_KEY='osm_ai_coach_openrouter_key';
+  const GROQ_KEY='osm_ai_coach_groq_key';
   const TARGET={ATA:4,MEI:6,DEF:6,GOL:2};
   const VALID_POS=new Set(Object.keys(TARGET));
-  const oldRenderMarket=typeof renderMarket==='function'?renderMarket:null;
-  const oldRenderDashboard=typeof renderDashboard==='function'?renderDashboard:null;
   const oldAnalyze=typeof v21Analyze==='function'?v21Analyze:null;
+  const oldRenderMarket=typeof renderMarket==='function'?renderMarket:null;
 
   const esc=v=>String(v??'NI').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
   const norm=v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/\s+/g,' ').trim();
-  const num=v=>{ if(v===null||v===undefined||v===''||v==='NI')return null; const x=Number(v); return Number.isFinite(x)?x:null; };
-  function money(v){
+  const num=v=>{if(v===null||v===undefined||v===''||v==='NI')return null;const x=Number(String(v).replace(',','.'));return Number.isFinite(x)?x:null};
+  const money=v=>{
     if(v===null||v===undefined||v==='')return null;
     if(typeof v==='number'&&Number.isFinite(v))return v;
-    const s=String(v).trim().toLowerCase().replace(/\s/g,'').replace(',','.');
-    const m=s.match(/([0-9]+(?:\.[0-9]+)?)([kmb])?/i); if(!m)return null;
-    let x=Number(m[1]); if(!Number.isFinite(x))return null;
-    const u=(m[2]||'').toLowerCase(); if(u==='k')x*=1e3; else if(u==='m')x*=1e6; else if(u==='b')x*=1e9;
+    const m=String(v).replace(/\s/g,'').replace(',','.').match(/([0-9]+(?:\.[0-9]+)?)([KMB])?/i);
+    if(!m)return null; let x=Number(m[1]); if(!Number.isFinite(x))return null;
+    const u=(m[2]||'').toUpperCase(); if(u==='K')x*=1e3; else if(u==='M')x*=1e6; else if(u==='B')x*=1e9;
     return x;
-  }
-  function fmtMoney(v){
+  };
+  const fmtMoney=v=>{
     const x=money(v); if(x===null)return 'NI';
     if(x>=1e9)return (x/1e9).toFixed(x>=1e10?0:1).replace('.',',')+'B';
     if(x>=1e6)return (x/1e6).toFixed(x>=1e8?0:1).replace('.',',')+'M';
     if(x>=1e3)return Math.round(x/1e3)+'K';
     return String(Math.round(x));
-  }
+  };
+
   function positionFromCode(raw){
     const x=String(raw||'').toUpperCase().replace(/[^A-Z]/g,'');
     if(['GR','GK','GOL','POR'].includes(x))return 'GOL';
@@ -48,160 +44,68 @@
   function cleanName(v){
     let s=String(v||'').replace(/\s+/g,' ').trim();
     s=s.replace(/^[^A-Za-zÀ-ÿ]+|[^A-Za-zÀ-ÿ'’.\- ]+$/g,'').trim();
-    if(s.length<2||s.length>48)return null;
-    if(/\b(jogador|idade|valor|estado|nac|pos|ata|def|med|avancados|defesas|medios|guarda)\b/i.test(s))return null;
+    if(s.length<2||s.length>45)return null;
+    if(/^(jogador|idade|valor|estado|pos|ata|def|med|nac|nome)$/i.test(s))return null;
     if(!/[A-Za-zÀ-ÿ]{2}/.test(s))return null;
     return s;
   }
-  function compactName(v){return norm(v).replace(/[^a-z0-9]/g,'');}
-  function sigFor(row){
-    const mv=money(row.value); const bucket=mv===null?'?':Math.round(mv/100000);
-    return `${row.position}|${row.rating}|${row.age??'?'}|${bucket}`;
-  }
-  function betterName(a,b){
-    if(!a)return b;if(!b)return a;
-    const score=x=>String(x).split(' ').filter(Boolean).length*10+String(x).length;
-    return score(b)>score(a)?b:a;
-  }
+  function compactName(v){return norm(v).replace(/[^a-z0-9]/g,'')}
 
-  async function cropFrame(frame,box,maxW=1280,quality=.86){
-    const img=await v21LoadImage(frame.dataUrl);
-    const sx=Math.max(0,Math.round(img.naturalWidth*box.x)),sy=Math.max(0,Math.round(img.naturalHeight*box.y));
-    const sw=Math.max(1,Math.round(img.naturalWidth*box.w)),sh=Math.max(1,Math.round(img.naturalHeight*box.h));
-    const scale=Math.min(1,maxW/sw),cw=Math.max(1,Math.round(sw*scale)),ch=Math.max(1,Math.round(sh*scale));
-    const c=document.createElement('canvas');c.width=cw;c.height=ch;
-    c.getContext('2d').drawImage(img,sx,sy,sw,sh,0,0,cw,ch);
-    const dataUrl=c.toDataURL('image/jpeg',quality);
-    return {dataUrl,base64:dataUrl.split(',')[1],mimeType:'image/jpeg',time:frame.time||0};
-  }
-  const OPENROUTER_KEY='osm_ai_coach_openrouter_key';
-  const GROQ_KEY='osm_ai_coach_groq_key';
-  const OCRSPACE_KEY='osm_ai_coach_ocrspace_key';
-  const GEMINI_COOLDOWN='osm_ai_coach_gemini_cooldown_until';
-
-  function backupKeys(){
-    return {
-      openrouter:String(localStorage.getItem(OPENROUTER_KEY)||'').trim(),
-      groq:String(localStorage.getItem(GROQ_KEY)||'').trim()
-    };
-  }
   function withAbort(ms){
     const controller=new AbortController();
     const timer=setTimeout(()=>controller.abort(),ms);
     return {controller,clear:()=>clearTimeout(timer)};
   }
-  function imageParts(parts){
-    return (parts||[]).filter(p=>p?.inlineData?.data).map(p=>({
-      type:'image_url',
-      image_url:{url:`data:${p.inlineData.mimeType||'image/jpeg'};base64,${p.inlineData.data}`}
-    }));
-  }
-  function textFromParts(parts){return (parts||[]).filter(p=>p?.text).map(p=>p.text).join('\n\n');}
-  function parseProviderText(txt,label){
-    if(!txt)throw new Error(`${label}: resposta vazia`);
-    try{return parseJsonText(txt)}catch(err){throw new Error(`${label}: JSON inválido`)}
-  }
-  function markGeminiQuota(raw){
-    const t=String(raw||'').toLowerCase();
-    if(t.includes('429')&&(t.includes('quota')||t.includes('exceeded'))){
-      localStorage.setItem(GEMINI_COOLDOWN,String(Date.now()+6*60*60*1000));
-      return true;
-    }
-    return false;
-  }
-  function geminiCoolingDown(){return Number(localStorage.getItem(GEMINI_COOLDOWN)||0)>Date.now();}
 
-  async function geminiOnce(parts,timeoutMs=10000){
-    const key=localStorage.getItem(API_KEY_STORAGE);
-    if(!key)throw new Error('Gemini: chave não configurada');
-    if(geminiCoolingDown())throw new Error('Gemini: cota em cooldown');
-    const model=(settings?.model&&/gemini/i.test(settings.model))?settings.model:'gemini-flash-latest';
+  async function loadImage(src){
+    if(typeof v21LoadImage==='function')return v21LoadImage(src);
+    return new Promise((resolve,reject)=>{const i=new Image();i.onload=()=>resolve(i);i.onerror=reject;i.src=src});
+  }
+
+  async function cropFrame(frame,box,maxW=1500,quality=.96){
+    const img=await loadImage(frame.dataUrl);
+    const sx=Math.max(0,Math.round(img.naturalWidth*box.x));
+    const sy=Math.max(0,Math.round(img.naturalHeight*box.y));
+    const sw=Math.max(1,Math.round(img.naturalWidth*box.w));
+    const sh=Math.max(1,Math.round(img.naturalHeight*box.h));
+    const scale=Math.min(1.55,maxW/sw);
+    const cw=Math.max(1,Math.round(sw*scale)),ch=Math.max(1,Math.round(sh*scale));
+    const c=document.createElement('canvas');c.width=cw;c.height=ch;
+    const ctx=c.getContext('2d');
+    ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';
+    ctx.drawImage(img,sx,sy,sw,sh,0,0,cw,ch);
+    const dataUrl=c.toDataURL('image/jpeg',quality);
+    return {dataUrl,base64:dataUrl.split(',')[1],mimeType:'image/jpeg',width:cw,height:ch,time:frame.time||0};
+  }
+
+  function ocrKey(){return String(localStorage.getItem(OCRSPACE_KEY)||'').trim()}
+
+  async function ocrSpace(panel,label,timeoutMs=16000){
+    const key=ocrKey(); if(!key)throw new Error('OCR.Space: chave não configurada');
     const guard=withAbort(timeoutMs);
     try{
-      const body={contents:[{role:'user',parts}],generationConfig:{temperature:0,maxOutputTokens:900,responseMimeType:'application/json'}};
-      const res=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,{
-        method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':key},body:JSON.stringify(body),signal:guard.controller.signal
-      });
+      const fd=new FormData();
+      fd.append('base64Image',`data:${panel.mimeType};base64,${panel.base64}`);
+      fd.append('language','auto');
+      fd.append('OCREngine','3');
+      fd.append('isTable','true');
+      fd.append('isOverlayRequired','true');
+      fd.append('scale','true');
+      const res=await fetch('https://api.ocr.space/parse/image',{method:'POST',headers:{apikey:key},body:fd,signal:guard.controller.signal});
       const raw=await res.text();
-      if(!res.ok){markGeminiQuota(`HTTP ${res.status} ${raw}`);throw new Error(`Gemini HTTP ${res.status}: ${raw.slice(0,180)}`)}
-      const data=JSON.parse(raw);
-      const txt=(data?.candidates?.[0]?.content?.parts||[]).map(p=>p.text||'').join('').trim();
-      return {provider:'Gemini',model,data:parseProviderText(txt,'Gemini')};
+      if(!res.ok)throw new Error(`OCR.Space HTTP ${res.status}: ${raw.slice(0,160)}`);
+      let data;try{data=JSON.parse(raw)}catch{throw new Error('OCR.Space: resposta inválida')}
+      if(data?.IsErroredOnProcessing){
+        const em=Array.isArray(data?.ErrorMessage)?data.ErrorMessage.join(' | '):(data?.ErrorMessage||data?.ErrorDetails||'erro');
+        throw new Error(`OCR.Space: ${em}`);
+      }
+      const pr=(data?.ParsedResults||[])[0];
+      if(!pr)throw new Error(`OCR.Space: ${label} sem resultado`);
+      return {label,text:String(pr.ParsedText||''),overlay:pr.TextOverlay||null,width:panel.width,height:panel.height};
     }catch(err){
-      if(err?.name==='AbortError')throw new Error(`Gemini: tempo excedido (${Math.round(timeoutMs/1000)}s)`);
+      if(err?.name==='AbortError')throw new Error(`OCR.Space: ${label} excedeu ${Math.round(timeoutMs/1000)}s`);
       throw err;
     }finally{guard.clear()}
-  }
-
-  async function openRouterOnce(parts,timeoutMs=20000){
-    const key=backupKeys().openrouter;if(!key)throw new Error('OpenRouter: chave não configurada');
-    const guard=withAbort(timeoutMs);
-    try{
-      const content=[{type:'text',text:textFromParts(parts)},...imageParts(parts)];
-      const res=await fetch('https://openrouter.ai/api/v1/chat/completions',{
-        method:'POST',signal:guard.controller.signal,
-        headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`,'HTTP-Referer':location.origin,'X-Title':'OSM AI Coach Pro'},
-        body:JSON.stringify({model:'google/gemma-4-26b-a4b-it:free',messages:[{role:'user',content}],temperature:0,max_tokens:900,response_format:{type:'json_object'}})
-      });
-      const raw=await res.text();
-      if(!res.ok)throw new Error(`OpenRouter HTTP ${res.status}: ${raw.slice(0,180)}`);
-      const data=JSON.parse(raw);const txt=String(data?.choices?.[0]?.message?.content||'').trim();
-      return {provider:'OpenRouter',model:data?.model||'google/gemma-4-26b-a4b-it:free',data:parseProviderText(txt,'OpenRouter')};
-    }catch(err){if(err?.name==='AbortError')throw new Error(`OpenRouter: tempo excedido (${Math.round(timeoutMs/1000)}s)`);throw err}
-    finally{guard.clear()}
-  }
-
-  async function groqOnce(parts,timeoutMs=16000){
-    const key=backupKeys().groq;if(!key)throw new Error('Groq: chave não configurada');
-    const guard=withAbort(timeoutMs);
-    try{
-      const imgs=imageParts(parts).slice(0,3);
-      const content=[{type:'text',text:textFromParts(parts)},...imgs];
-      const res=await fetch('https://api.groq.com/openai/v1/chat/completions',{
-        method:'POST',signal:guard.controller.signal,
-        headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},
-        body:JSON.stringify({model:'qwen/qwen3.8-27b',messages:[{role:'user',content}],temperature:0,max_completion_tokens:850,response_format:{type:'json_object'},reasoning_effort:'none'})
-      });
-      const raw=await res.text();
-      if(!res.ok)throw new Error(`Groq HTTP ${res.status}: ${raw.slice(0,180)}`);
-      const data=JSON.parse(raw);const txt=String(data?.choices?.[0]?.message?.content||'').trim();
-      return {provider:'Groq',model:data?.model||'qwen/qwen3.8-27b',data:parseProviderText(txt,'Groq')};
-    }catch(err){if(err?.name==='AbortError')throw new Error(`Groq: tempo excedido (${Math.round(timeoutMs/1000)}s)`);throw err}
-    finally{guard.clear()}
-  }
-
-  async function modelJson(parts,{timeoutMs=42000,maxOutputTokens=12000,mode='visual'}={}){
-    const started=Date.now(), errors=[];
-    const diag=document.getElementById('analysisDiagnostics');
-    if(diag)diag.textContent='Elenco 4.6 · roteamento multi-IA';
-
-    if(!geminiCoolingDown() && localStorage.getItem(API_KEY_STORAGE)){
-      try{
-        job('Elenco 4.6 · tentando Gemini…');
-        const g=await geminiOnce(parts,Math.min(10000,timeoutMs));
-        if(diag)diag.textContent=`Elenco 4.6 concluído com ${g.provider} · ${g.model}`;
-        return g;
-      }catch(err){errors.push(String(err?.message||err));}
-    }
-
-    const keys=backupKeys();
-    const fallbacks=[];
-    if(keys.openrouter)fallbacks.push(()=>openRouterOnce(parts,Math.min(19000,timeoutMs)));
-    if(keys.groq)fallbacks.push(()=>groqOnce(parts,Math.min(15000,timeoutMs)));
-    if(!fallbacks.length){
-      throw new Error(`${errors.join(' | ')}${errors.length?' | ':''}Configure OpenRouter ou Groq gratuito em Config > IA de backup.`);
-    }
-
-    job('Gemini indisponível · usando IA gratuita de backup…');
-    const attempts=fallbacks.map(fn=>fn().then(x=>({ok:true,x})).catch(error=>({ok:false,error})));
-    const settled=await Promise.all(attempts);
-    const winner=settled.find(x=>x.ok)?.x;
-    if(winner){
-      if(diag)diag.textContent=`Elenco 4.6 concluído com ${winner.provider} · ${winner.model} · ${Math.round((Date.now()-started)/1000)}s`;
-      return winner;
-    }
-    for(const x of settled)if(!x.ok)errors.push(String(x.error?.message||x.error));
-    throw new Error(errors.join(' | ')||'Todas as IAs falharam.');
   }
 
   function chooseFrames(frames,max=9){
@@ -215,468 +119,316 @@
     return out;
   }
 
-  async function readHeader(frame){
-    // Dedicated regions prevent 168M squad value from being mistaken for 9.3M cash.
-    const cash=await cropFrame(frame,{x:.10,y:0,w:.16,h:.10},520,.9);
-    const teamValue=await cropFrame(frame,{x:.86,y:.08,w:.14,h:.12},520,.9);
-    const stats=await cropFrame(frame,{x:.58,y:.12,w:.36,h:.31},900,.88);
-    const prompt=`OSM 26. Leia somente estas três imagens do cabeçalho, na ordem: (1) dinheiro/caixa no topo, (2) valor total do elenco, (3) força/setores/formação. Nunca troque caixa por valor do elenco. Retorne JSON puro exatamente: {"cash":null,"squadValue":null,"overall":null,"goalkeeper":null,"defence":null,"midfield":null,"attack":null,"formation":null}. Para dinheiro use texto com unidade, ex. "9,3M". Se não estiver legível, null.`;
-    const parts=[{text:prompt},
-      {inlineData:{mimeType:cash.mimeType,data:cash.base64}},
-      {inlineData:{mimeType:teamValue.mimeType,data:teamValue.base64}},
-      {inlineData:{mimeType:stats.mimeType,data:stats.base64}}];
-    return (await modelJson(parts,{timeoutMs:70000,maxOutputTokens:1600,mode:'image'})).data||{};
+  function overlayLines(block){
+    const lines=block?.overlay?.Lines||block?.overlay?.lines||[];
+    return lines.map(line=>{
+      const words=(line.Words||line.words||[]).map(w=>({
+        text:String(w.WordText||w.wordText||w.Text||w.text||'').trim(),
+        left:Number(w.Left??w.left??0),
+        top:Number(w.Top??w.top??0),
+        width:Number(w.Width??w.width??0),
+        height:Number(w.Height??w.height??0)
+      })).filter(w=>w.text);
+      words.sort((a,b)=>a.left-b.left);
+      const left=words.length?words[0].left:0;
+      const right=words.length?Math.max(...words.map(w=>w.left+w.width)):0;
+      const top=words.length?Math.min(...words.map(w=>w.top)):0;
+      const h=words.length?Math.max(...words.map(w=>w.height)):0;
+      return {words,left,right,top,height:h,text:words.map(w=>w.text).join(' ')};
+    }).filter(x=>x.words.length);
   }
 
-  async function readOneTableFrame(frame,index,total){
-    const crop=await cropFrame(frame,{x:0,y:.46,w:1,h:.54},1280,.9);
-    const prompt=`OSM 26 Android. Esta imagem contém uma parte da TABELA DO ELENCO. Leia TODAS as linhas de jogadores que estejam suficientemente visíveis. Não invente nem complete nome cortado. Colunas úteis: Jogador, Idade, Pos, Ata, Def, Med, Estado, Valor.\nPara cada jogador:\n- name: nome exatamente visível\n- age: idade\n- posCode: código exatamente visível (GR/DD/DC/DE/MDC/MC/MCO/MD/ME/PL/ED/EE)\n- rating: força PRINCIPAL do jogador: para PL/ED/EE use Ata; para DD/DC/DE use Def; para MDC/MC/MCO/MD/ME use Med; para GR use a força do goleiro/linha\n- value: valor monetário da última coluna, ex. 7,7M\n- training=true somente se a camisa do jogador estiver laranja\n- forSale=true somente se houver claramente o ícone/setas de transferência na linha.\nIgnore títulos, cabeçalhos e linhas parcialmente cortadas. JSON puro: {"rows":[{"name":"","age":null,"posCode":null,"rating":null,"value":null,"training":false,"forSale":false}]}.`;
-    const r=await modelJson([{text:prompt},{inlineData:{mimeType:crop.mimeType,data:crop.base64}}],{timeoutMs:22000,maxOutputTokens:3600});
-    return {index,total,rows:Array.isArray(r.data?.rows)?r.data.rows:[],model:r.model};
-  }
-
-  function normalizeRow(r){
-    const name=cleanName(r?.name),position=positionFromCode(r?.posCode),rating=num(r?.rating),age=num(r?.age),valueNum=money(r?.value);
-    if(!name||!position||rating===null||rating<40||rating>200||valueNum===null||valueNum<100000)return null;
-    if(age!==null&&(age<15||age>45))return null;
-    return {name,position,posCode:String(r?.posCode||'').toUpperCase(),rating,age,value:fmtMoney(valueNum),valueNum,training:r?.training===true,forSale:r?.forSale===true};
-  }
-  function consolidate(lists){
-    const groups=new Map();
-    for(const list of lists){
-      for(const raw of (list||[])){
-        const r=normalizeRow(raw); if(!r)continue;
-        const sig=sigFor(r);
-        const existing=groups.get(sig);
-        if(!existing){groups.set(sig,{...r,hits:1,names:[r.name]});continue;}
-        existing.hits++;
-        existing.names.push(r.name);
-        existing.name=betterName(existing.name,r.name);
-        existing.training=existing.training||r.training;
-        existing.forSale=existing.forSale||r.forSale;
+  function findHeaderXs(blocks){
+    const found={};
+    const aliases={
+      name:['jogador','player','nome'],
+      age:['idade','age'],
+      pos:['pos','pos.','posição','position'],
+      ata:['ata','att'],
+      def:['def'],
+      med:['med','mei','mid'],
+      value:['valor','value','preço','preco']
+    };
+    for(const b of blocks){
+      for(const line of overlayLines(b)){
+        for(const w of line.words){
+          const t=norm(w.text).replace(/[.:]/g,'');
+          for(const [k,arr] of Object.entries(aliases)){
+            if(found[k]!==undefined)continue;
+            if(arr.some(a=>t===norm(a).replace(/[.:]/g,'')))found[k]=w.left+w.width/2;
+          }
+        }
       }
     }
-    // Also merge same normalized name when slight numeric OCR drift produced neighboring signatures.
-    let rows=[...groups.values()];
-    const merged=[];
-    for(const r of rows.sort((a,b)=>b.hits-a.hits)){
-      const key=compactName(r.name);
-      const hit=merged.find(x=>compactName(x.name)===key && x.position===r.position && Math.abs(x.rating-r.rating)<=1);
-      if(hit){
-        hit.hits+=r.hits; hit.name=betterName(hit.name,r.name); hit.training=hit.training||r.training;hit.forSale=hit.forSale||r.forSale;
-        if(r.hits>hit._bestHits){Object.assign(hit,{rating:r.rating,age:r.age,value:r.value,valueNum:r.valueNum,posCode:r.posCode});hit._bestHits=r.hits;}
-      }else merged.push({...r,_bestHits:r.hits});
+    return found;
+  }
+
+  function nearestWord(words,x,tolerance=95){
+    let best=null,bd=Infinity;
+    for(const w of words){
+      const cx=w.left+w.width/2,d=Math.abs(cx-x);
+      if(d<bd){best=w;bd=d}
     }
-    return merged.map(({names,_bestHits,...r})=>({...r,verifiedRoster:true,source:'market_engine_47'}));
+    return bd<=tolerance?best:null;
   }
 
-  function composition(rows){
-    const c={ATA:0,MEI:0,DEF:0,GOL:0}; for(const p of rows)if(c[p.position]!==undefined)c[p.position]++; return c;
-  }
-  function validateRoster(rows,header,frameResults){
-    const comp=composition(rows),sum=rows.reduce((a,p)=>a+(money(p.value)||0),0),sq=money(header?.squadValue);
-    const issues=[];
-    if(rows.length<16)issues.push(`só ${rows.length} jogadores reconhecidos (mínimo seguro 16)`);
-    if(comp.ATA<3||comp.MEI<4||comp.DEF<5||comp.GOL<1)issues.push(`composição incompleta ${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}`);
-    if(sq!==null&&rows.length>=16){const ratio=sum/sq;if(ratio<.68||ratio>1.35)issues.push(`soma dos jogadores ${fmtMoney(sum)} incompatível com elenco ${fmtMoney(sq)}`);}
-    const successful=frameResults.filter(x=>x&&Array.isArray(x.rows)&&x.rows.length).length;
-    if(successful<3)issues.push(`apenas ${successful} quadros retornaram linhas`);
-    return {ok:issues.length===0,issues,count:rows.length,composition:comp,sumValues:sum,squadValue:sq,successfulFrames:successful};
-  }
-
-  function applyValidated(s,rows,header,validation){
-    s.roster=rows;
-    s.myTeam=s.myTeam||{};
-    s.myTeam.playerCount=rows.length;
-    s.myTeam.validatedPlayerCount=rows.length;
-    const cash=money(header?.cash),sq=money(header?.squadValue);
-    if(cash!==null)s.myTeam.cash=cash;
-    if(sq!==null)s.myTeam.squadValue=sq;
-    for(const k of ['overall','goalkeeper','defence','midfield','attack']){const x=num(header?.[k]);if(x!==null&&x>0)s.myTeam[k]=x;}
-    if(header?.formation)s.myTeam.formation=String(header.formation);
-    s.rosterValidation42={...validation,ok:true,at:new Date().toISOString(),version:VERSION,header:{cash,squadValue:sq}};
-    s.lastAnalysisAt=new Date().toISOString();
-    s.marketPlan=null;
-    if(s.coachAI)s.coachAI.marketPlan=null;
-    if(s.coachAI34){s.coachAI34.budget=cash??s.coachAI34.budget??null;}
-  }
-
-  function preserveFailed(s,validation,header){
-    s.rosterValidation42={...validation,ok:false,at:new Date().toISOString(),version:VERSION,header:{cash:money(header?.cash),squadValue:money(header?.squadValue)}};
-    // Never keep a known-bad one-row roster from 3.4-3.6 as if it were current.
-    if(!Array.isArray(s.roster)||s.roster.length<8 || s.roster.some(p=>/visual_table_35|market_engine_36|local_ocr_market/i.test(String(p?.source||'')))){
-      s.roster=[];
-      if(s.myTeam){s.myTeam.validatedPlayerCount=0;s.myTeam.playerCount=null;}
+  function detectPos(words){
+    for(const w of words){
+      const p=positionFromCode(w.text);
+      if(p)return {word:w,position:p,posCode:String(w.text).toUpperCase().replace(/[^A-Z]/g,'')};
     }
+    return null;
   }
 
-
-  function fileToBase64(file){
-    return new Promise((resolve,reject)=>{
-      const r=new FileReader();
-      r.onload=()=>{const x=String(r.result||'');resolve(x.includes(',')?x.split(',')[1]:x)};
-      r.onerror=()=>reject(r.error||new Error('Falha ao ler o vídeo'));
-      r.readAsDataURL(file);
-    });
-  }
-
-  function directRosterPrompt(){
-    return `Você é um extrator visual especialista em OSM 26 Android. Analise TODO o vídeo anexado, do início ao fim. O usuário está rolando a tela do próprio elenco. A MESMA linha de jogador aparece em vários momentos durante a rolagem: consolide duplicatas e devolva cada jogador UMA única vez. Não invente, não complete nome cortado e não use conhecimento externo.
-
-OBJETIVO 1 — CABEÇALHO DO MEU TIME:
-- cash: dinheiro/caixa disponível no topo (ex.: 9,3M). NÃO confundir com valor do elenco.
-- squadValue: valor total do elenco (ex.: 168M).
-- overall: força geral.
-- goalkeeper, defence, midfield, attack: forças dos quatro setores.
-- formation: formação mostrada.
-
-OBJETIVO 2 — TODOS OS JOGADORES DA TABELA:
-Leia as colunas Jogador, Idade, Pos., Ata, Def., Med., Estado, Valor. Para cada linha:
-- name: nome exatamente visível;
-- age: idade;
-- posCode: código exatamente visível. Códigos possíveis incluem GR, DD, DC, DE, MDC, MC, MCO, MD, ME, PL, ED, EE;
-- rating: força principal: GR=goleiro; DD/DC/DE=Def; MDC/MC/MCO/MD/ME=Med; PL/ED/EE=Ata;
-- value: valor da última coluna com unidade, ex. 7,7M;
-- training=true SOMENTE quando a camisa/indicador do jogador estiver laranja;
-- forSale=true SOMENTE quando houver as setas/ícone de transferência claramente na linha.
-
-REGRAS CRÍTICAS:
-- Percorra visualmente o vídeo inteiro; não pare nas primeiras linhas.
-- Não crie jogador a partir de cabeçalho, menu ou texto solto.
-- Não retorne a mesma pessoa duas vezes por aparecer em vários quadros.
-- Se uma linha estiver parcialmente cortada e reaparecer completa depois, use a completa.
-- cash e squadValue são campos diferentes.
-- Se um dado não estiver legível, use null; nunca estime.
-
-Retorne JSON puro EXATAMENTE neste formato:
-{"header":{"cash":null,"squadValue":null,"overall":null,"goalkeeper":null,"defence":null,"midfield":null,"attack":null,"formation":null},"players":[{"name":"","age":null,"posCode":null,"rating":null,"value":null,"training":false,"forSale":false}],"observedPlayerCount":null}`;
-  }
-
-  async function makeVerticalRosterSheet(frames){
-    const selected=(frames||[]).filter(Boolean);
-    if(!selected.length)return null;
-    const cells=[];
-    for(const f of selected){
-      const img=await v21LoadImage(f.dataUrl);
-      const sx=0, sy=Math.round(img.naturalHeight*.34), sw=img.naturalWidth, sh=Math.round(img.naturalHeight*.64);
-      const scale=Math.min(1,1280/sw), w=Math.max(1,Math.round(sw*scale)), h=Math.max(1,Math.round(sh*scale));
-      const c=document.createElement('canvas'); c.width=w; c.height=h;
-      c.getContext('2d').drawImage(img,sx,sy,sw,sh,0,0,w,h);
-      cells.push(c);
+  function detectMoney(words){
+    for(let i=words.length-1;i>=0;i--){
+      const t=words[i].text.replace(/\s/g,'');
+      if(/^\d+(?:[.,]\d+)?[MKB]$/i.test(t))return {word:words[i],raw:t.toUpperCase()};
     }
-    const gap=10, width=Math.max(...cells.map(c=>c.width)), height=cells.reduce((a,c)=>a+c.height,0)+gap*(cells.length-1);
-    const out=document.createElement('canvas'); out.width=width; out.height=height;
-    const x=out.getContext('2d'); x.fillStyle='#fff'; x.fillRect(0,0,width,height);
-    let y=0; for(const c of cells){x.drawImage(c,0,y); y+=c.height+gap;}
-    const dataUrl=out.toDataURL('image/jpeg',.92);
-    return {dataUrl,base64:dataUrl.split(',')[1],mimeType:'image/jpeg'};
+    return null;
   }
 
-  async function makeFirstRosterPanel(frame,tableFrames){
-    const top=await cropFrame(frame,{x:0,y:0,w:1,h:.46},1280,.92);
-    const sheet=await makeVerticalRosterSheet(tableFrames);
-    const a=await v21LoadImage(top.dataUrl),b=await v21LoadImage(sheet.dataUrl);
-    const w=Math.max(a.naturalWidth,b.naturalWidth),gap=10,h=a.naturalHeight+gap+b.naturalHeight;
-    const c=document.createElement('canvas');c.width=w;c.height=h;const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,w,h);x.drawImage(a,0,0);x.drawImage(b,0,a.naturalHeight+gap);
-    const dataUrl=c.toDataURL('image/jpeg',.92);return {dataUrl,base64:dataUrl.split(',')[1],mimeType:'image/jpeg'};
+  function detectAge(words,posX){
+    const c=words.filter(w=>w.left<posX).map(w=>({w,n:Number(w.text.replace(/\D/g,''))}))
+      .filter(x=>Number.isFinite(x.n)&&x.n>=15&&x.n<=45);
+    return c.length?c[c.length-1]:null;
   }
 
-
-  function ocrSpaceKey(){return String(localStorage.getItem(OCRSPACE_KEY)||'').trim();}
-  async function ocrSpaceImage(panel,label,timeoutMs=18000){
-    const key=ocrSpaceKey();
-    if(!key)throw new Error('OCR.Space: chave não configurada');
-    const guard=withAbort(timeoutMs);
-    try{
-      const fd=new FormData();
-      fd.append('base64Image',`data:${panel.mimeType||'image/jpeg'};base64,${panel.base64}`);
-      fd.append('language','auto');
-      fd.append('OCREngine','3');
-      fd.append('isTable','true');
-      fd.append('isOverlayRequired','false');
-      fd.append('scale','true');
-      const res=await fetch('https://api.ocr.space/parse/image',{method:'POST',headers:{apikey:key},body:fd,signal:guard.controller.signal});
-      const raw=await res.text();
-      if(!res.ok)throw new Error(`OCR.Space HTTP ${res.status}: ${raw.slice(0,220)}`);
-      let data;try{data=JSON.parse(raw)}catch{throw new Error('OCR.Space: resposta inválida')}
-      if(data?.IsErroredOnProcessing){
-        const em=Array.isArray(data?.ErrorMessage)?data.ErrorMessage.join(' | '):(data?.ErrorMessage||data?.ErrorDetails||'erro de OCR');
-        throw new Error(`OCR.Space: ${em}`);
+  function detectRating(words,posInfo,headers){
+    const nums=words.map(w=>({w,n:Number(w.text.replace(/[^\d]/g,''))}))
+      .filter(x=>Number.isFinite(x.n)&&x.n>=40&&x.n<=200);
+    if(!nums.length)return null;
+    const targetKey=posInfo.position==='ATA'?'ata':posInfo.position==='DEF'?'def':posInfo.position==='MEI'?'med':null;
+    if(targetKey&&headers[targetKey]!==undefined){
+      let best=null,bd=Infinity;
+      for(const x of nums){
+        const d=Math.abs((x.w.left+x.w.width/2)-headers[targetKey]);
+        if(d<bd){best=x;bd=d}
       }
-      const text=(data?.ParsedResults||[]).map(x=>String(x?.ParsedText||'')).join('\n').trim();
-      if(!text)throw new Error(`OCR.Space: ${label} sem texto`);
-      return {label,text};
-    }catch(err){
-      if(err?.name==='AbortError')throw new Error(`OCR.Space: ${label} excedeu ${Math.round(timeoutMs/1000)}s`);
-      throw err;
-    }finally{guard.clear()}
+      if(best&&bd<120)return best;
+    }
+    // GR usually has one main rating; otherwise choose the right-most plausible stat after position.
+    const after=nums.filter(x=>x.w.left>posInfo.word.left);
+    return after.length?after[after.length-1]:nums[nums.length-1];
   }
 
-  async function groqTextJson(prompt,timeoutMs=16000){
-    const key=backupKeys().groq;if(!key)throw new Error('Groq: chave não configurada');
-    const guard=withAbort(timeoutMs);
-    try{
-      const res=await fetch('https://api.groq.com/openai/v1/chat/completions',{method:'POST',signal:guard.controller.signal,headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},body:JSON.stringify({model:'qwen/qwen3.8-27b',messages:[{role:'user',content:prompt}],temperature:0,max_completion_tokens:2200,response_format:{type:'json_object'},reasoning_effort:'none'})});
-      const raw=await res.text();if(!res.ok)throw new Error(`Groq HTTP ${res.status}: ${raw.slice(0,180)}`);
-      const data=JSON.parse(raw);return {provider:'Groq',model:data?.model||'qwen/qwen3.8-27b',data:parseProviderText(String(data?.choices?.[0]?.message?.content||''),'Groq')};
-    }catch(err){if(err?.name==='AbortError')throw new Error('Groq texto: tempo excedido');throw err}finally{guard.clear()}
+  function rowFromOverlayLine(line,headers){
+    const words=line.words;
+    const pos=detectPos(words), mv=detectMoney(words);
+    if(!pos||!mv)return null;
+    const rating=detectRating(words,pos,headers); if(!rating)return null;
+    const age=detectAge(words,pos.word.left);
+    let nameWords=words.filter(w=>w.left<pos.word.left);
+    if(age)nameWords=nameWords.filter(w=>w!==age.w);
+    // drop flags/nationality fragments and isolated digits
+    nameWords=nameWords.filter(w=>!/^(\d+|[A-Z]{2,3})$/.test(w.text));
+    let name=cleanName(nameWords.map(w=>w.text).join(' '));
+    if(!name)return null;
+    const value=mv.raw;
+    return {
+      name,age:age?age.n:null,posCode:pos.posCode,position:pos.position,
+      rating:rating.n,value,valueNum:money(value),
+      training:false,forSale:false,source:'ocrspace_overlay'
+    };
   }
 
-  async function openRouterTextJson(prompt,timeoutMs=18000){
-    const key=backupKeys().openrouter;if(!key)throw new Error('OpenRouter: chave não configurada');
-    const guard=withAbort(timeoutMs);
-    try{
-      const res=await fetch('https://openrouter.ai/api/v1/chat/completions',{method:'POST',signal:guard.controller.signal,headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`,'HTTP-Referer':location.origin,'X-Title':'OSM AI Coach Pro'},body:JSON.stringify({model:'qwen/qwen3.8-27b:free',messages:[{role:'user',content:prompt}],temperature:0,max_tokens:2400,response_format:{type:'json_object'}})});
-      const raw=await res.text();if(!res.ok)throw new Error(`OpenRouter HTTP ${res.status}: ${raw.slice(0,180)}`);
-      const data=JSON.parse(raw);return {provider:'OpenRouter',model:data?.model||'qwen/qwen3.8-27b:free',data:parseProviderText(String(data?.choices?.[0]?.message?.content||''),'OpenRouter')};
-    }catch(err){if(err?.name==='AbortError')throw new Error('OpenRouter texto: tempo excedido');throw err}finally{guard.clear()}
-  }
-
-  function deterministicRowsFromOcr(text){
-    const out=[];const posRe=/(?:^|\s|\|)(GR|GK|GOL|POR|DD|DC|DE|DF|DEF|MDC|MC|MCO|MD|ME|MF|MID|VOL|PL|ED|EE|ATA|ATT|FW|FWD|ST)(?=\s|\||$)/i;
-    for(const rawLine of String(text||'').split(/\r?\n/)){
-      const line=rawLine.replace(/[|]+/g,' | ').replace(/\s+/g,' ').trim();if(line.length<5)continue;
-      const pm=line.match(posRe);const mm=line.match(/(\d+(?:[.,]\d+)?)\s*([MK])\b/i);if(!pm||!mm)continue;
-      const position=positionFromCode(pm[1]);if(!position)continue;
-      const before=line.slice(0,pm.index).replace(/^\s*\|?\s*/,'').trim();
-      const nums=[...line.matchAll(/\b(\d{2,3})\b/g)].map(m=>Number(m[1]));
-      let age=nums.find(x=>x>=15&&x<=45)??null;
-      const ratings=nums.filter(x=>x>=40&&x<=200 && x!==age);let rating=ratings.length?Math.max(...ratings):null;
-      let name=before.replace(/\b\d{2}\b.*$/,'').replace(/[|]/g,' ').trim();name=cleanName(name);
-      const value=mm[1].replace('.',',')+mm[2].toUpperCase();
-      if(name&&rating!==null)out.push({name,age,posCode:pm[1].toUpperCase(),rating,value,training:false,forSale:false});
+  function rowsFromBlocks(blocks){
+    const headers=findHeaderXs(blocks);
+    const out=[];
+    for(const b of blocks){
+      for(const line of overlayLines(b)){
+        const r=rowFromOverlayLine(line,headers);
+        if(r)out.push(r);
+      }
     }
     return out;
   }
 
-  function deterministicHeaderFromOcr(text){
-    const ms=[...String(text||'').matchAll(/(\d+(?:[.,]\d+)?)\s*([MK])\b/ig)].map(m=>({raw:m[0],v:money(m[0]),i:m.index})).filter(x=>x.v!==null);
-    let cash=ms.length?ms[0].raw:null;let squadValue=null;
-    const big=ms.filter(x=>x.v>=5e7).sort((a,b)=>b.v-a.v);if(big[0])squadValue=big[0].raw;
-    return {cash,squadValue,overall:null,goalkeeper:null,defence:null,midfield:null,attack:null,formation:null};
-  }
-
-  async function structureOcrText(blocks){
-    const joined=blocks.map((x,i)=>`### BLOCO ${i+1} (${x.label})\n${x.text}`).join('\n\n');
-    const prompt=`Você recebe OCR de 3 painéis da MESMA rolagem do elenco no OSM 26 Android. O OCR já extraiu texto/tabela. NÃO invente dados ausentes e NÃO use conhecimento externo. Consolide duplicatas da rolagem.\n\nNo BLOCO 1 também existe o cabeçalho do time. cash é o dinheiro disponível (ex. 9,3M) e squadValue é o valor total do elenco (ex. 168M); nunca troque os dois.\n\nPara jogadores, retorne somente linhas que tenham nome, idade se visível, código de posição (GR/DD/DC/DE/MDC/MC/MCO/MD/ME/PL/ED/EE), força principal e valor monetário. Se training/forSale não estiver explicitamente reconhecível no OCR, use false.\n\nRetorne JSON puro: {"header":{"cash":null,"squadValue":null,"overall":null,"goalkeeper":null,"defence":null,"midfield":null,"attack":null,"formation":null},"players":[{"name":"","age":null,"posCode":null,"rating":null,"value":null,"training":false,"forSale":false}],"observedPlayerCount":null}.\n\n${joined}`;
-    const attempts=[];if(backupKeys().groq)attempts.push(groqTextJson(prompt));if(backupKeys().openrouter)attempts.push(openRouterTextJson(prompt));
-    if(attempts.length){try{return await Promise.any(attempts)}catch{}}
-    const rows=deterministicRowsFromOcr(joined),header=deterministicHeaderFromOcr(blocks[0]?.text||joined);
-    return {provider:'OCR.Space local',model:'parser determinístico',data:{header,players:rows,observedPlayerCount:rows.length}};
-  }
-
-  async function readRosterWithOcrSpace(frames){
-    // V4.7: OCR individual por trecho da rolagem. Painéis compostos reduziam a fonte
-    // e faziam o OCR.Space perder jogadores no meio/fim da lista.
-    const chosen=chooseFrames(frames,10);
-    if(chosen.length<6)throw new Error(`quadros insuficientes (${chosen.length})`);
-
-    const blocks=[];
-    setProgress(34,'OCR.Space lendo cabeçalho…');
-    const headerCrop=await cropFrame(chosen[0],{x:0,y:0,w:1,h:.46},1280,.94);
-    try{blocks.push(await ocrSpaceImage(headerCrop,'cabeçalho',15000));}catch(_){/* cabeçalho não bloqueia tabela */}
-
-    // Recorta a tabela de cada ponto da rolagem em resolução alta.
-    const tableCrops=[];
-    for(let i=0;i<chosen.length;i++){
-      tableCrops.push(await cropFrame(chosen[i],{x:0,y:.32,w:1,h:.68},1440,.94));
+  function levenshtein(a,b){
+    a=compactName(a);b=compactName(b);
+    const m=a.length,n=b.length; if(!m)return n;if(!n)return m;
+    const dp=Array(n+1).fill(0).map((_,j)=>j);
+    for(let i=1;i<=m;i++){
+      let prev=dp[0];dp[0]=i;
+      for(let j=1;j<=n;j++){
+        const tmp=dp[j];
+        dp[j]=Math.min(dp[j]+1,dp[j-1]+1,prev+(a[i-1]===b[j-1]?0:1));
+        prev=tmp;
+      }
     }
-
-    // 2 OCRs em paralelo por lote: rápido sem disparar muitas requisições simultâneas.
-    for(let i=0;i<tableCrops.length;i+=2){
-      setProgress(40+Math.round((i/tableCrops.length)*28),`OCR.Space trechos ${i+1}-${Math.min(i+2,tableCrops.length)}/${tableCrops.length}…`);
-      const batch=tableCrops.slice(i,i+2).map((crop,j)=>
-        ocrSpaceImage(crop,`trecho ${i+j+1}`,15000).catch(()=>null)
-      );
-      const got=await Promise.all(batch);
-      for(const b of got)if(b?.text)blocks.push(b);
-    }
-    if(blocks.length<4)throw new Error(`OCR.Space retornou poucos trechos úteis (${blocks.length})`);
-
-    setProgress(72,'Consolidando jogadores reconhecidos…');
-    const joined=blocks.map((x,i)=>`### BLOCO ${i+1} (${x.label})\n${x.text}`).join('\n\n');
-    const localRows=deterministicRowsFromOcr(joined);
-    const localHeader=deterministicHeaderFromOcr(blocks[0]?.text||joined);
-
-    let structured=null;
-    try{structured=await structureOcrText(blocks);}catch(_){structured=null;}
-    const aiRows=Array.isArray(structured?.data?.players)?structured.data.players:[];
-    // Une o que a IA estruturou com o que o parser determinístico encontrou.
-    // A validação/consolidate remove duplicatas e linhas inválidas depois.
-    const rows=[...aiRows,...localRows];
-    const aiHeader=structured?.data?.header||{};
-    const header={...localHeader,...Object.fromEntries(Object.entries(aiHeader).filter(([_,v])=>v!==null&&v!==undefined&&v!==''))};
-    const provider=structured?.provider?`OCR.Space + ${structured.provider}`:'OCR.Space local';
-    const model=structured?.model||'parser determinístico';
-    return {provider,model,header,rows,observedPlayerCount:rows.length,sheetCount:blocks.length,ocrBlocks:blocks};
+    return dp[n];
   }
 
-  async function readRosterPanelsOnce(frames,timeoutMs=42000){
-    const chosen=chooseFrames(frames,12);
-    if(chosen.length<6)throw new Error(`quadros insuficientes (${chosen.length})`);
-    const panels=[];
-    panels.push(await makeFirstRosterPanel(chosen[0],chosen.slice(0,4)));
-    const p2=await makeVerticalRosterSheet(chosen.slice(4,8));if(p2)panels.push(p2);
-    const p3=await makeVerticalRosterSheet(chosen.slice(8,12));if(p3)panels.push(p3);
-    const prompt=`OSM 26 Android. Você recebeu 3 painéis da MESMA rolagem do elenco. O primeiro painel contém o cabeçalho do time e as primeiras linhas; os outros continuam a tabela. Consolide cada jogador UMA única vez.
+  function samePlayer(a,b){
+    if(a.position!==b.position)return false;
+    if(Math.abs(a.rating-b.rating)>1)return false;
+    if(a.age!==null&&b.age!==null&&Math.abs(a.age-b.age)>1)return false;
+    const av=money(a.value),bv=money(b.value);
+    if(av&&bv&&Math.abs(av-bv)>700000)return false;
+    const na=compactName(a.name),nb=compactName(b.name);
+    if(na===nb)return true;
+    const d=levenshtein(na,nb),mx=Math.max(na.length,nb.length);
+    return mx>=5 && d<=Math.max(1,Math.floor(mx*.22));
+  }
 
-CABEÇALHO: cash = dinheiro/caixa disponível no topo; squadValue = valor total do elenco; overall, goalkeeper, defence, midfield, attack e formation. Nunca confunda cash com squadValue.
+  function betterName(a,b){
+    const score=s=>String(s||'').split(/\s+/).filter(Boolean).length*20+String(s||'').length;
+    return score(b)>score(a)?b:a;
+  }
 
-TABELA: leia Jogador, Idade, Pos., Ata, Def, Med, Estado e Valor. Para cada linha completa retorne name exatamente visível, age, posCode, rating principal da posição, value, training e forSale. Códigos: GR/DD/DC/DE/MDC/MC/MCO/MD/ME/PL/ED/EE. Remova duplicatas da rolagem. Não invente nomes ou valores.
+  function consolidate(rows){
+    const out=[];
+    for(const r of rows){
+      if(!r.name||!VALID_POS.has(r.position)||r.rating<40||r.rating>200||!r.valueNum)continue;
+      const hit=out.find(x=>samePlayer(x,r));
+      if(hit){
+        hit.hits++;hit.name=betterName(hit.name,r.name);
+        if(hit.age===null&&r.age!==null)hit.age=r.age;
+      }else out.push({...r,hits:1});
+    }
+    return out.map(r=>({...r,verifiedRoster:true,source:'market_engine_48'}));
+  }
 
-Retorne JSON puro exatamente:
-{"header":{"cash":null,"squadValue":null,"overall":null,"goalkeeper":null,"defence":null,"midfield":null,"attack":null,"formation":null},"players":[{"name":"","age":null,"posCode":null,"rating":null,"value":null,"training":false,"forSale":false}],"observedPlayerCount":null}`;
-    const parts=[{text:prompt}];for(const p of panels)parts.push({inlineData:{mimeType:p.mimeType,data:p.base64}});
-    const r=await modelJson(parts,{timeoutMs,maxOutputTokens:900,mode:'image'});
-    return {model:r.model,provider:r.provider,header:r.data?.header||{},rows:Array.isArray(r.data?.players)?r.data.players:[],observedPlayerCount:num(r.data?.observedPlayerCount),sheetCount:panels.length};
+  function composition(rows){
+    const c={ATA:0,MEI:0,DEF:0,GOL:0}; for(const r of rows)if(c[r.position]!==undefined)c[r.position]++; return c;
+  }
+
+  function parseHeaderText(text){
+    const all=String(text||'');
+    const ms=[...all.matchAll(/(\d+(?:[.,]\d+)?)\s*([MK])\b/ig)].map(m=>({raw:m[0],v:money(m[0])})).filter(x=>x.v!==null);
+    let cash=null,squadValue=null;
+    const small=ms.filter(x=>x.v>0&&x.v<5e7); if(small.length)cash=small[0].raw;
+    const big=ms.filter(x=>x.v>=5e7).sort((a,b)=>b.v-a.v); if(big.length)squadValue=big[0].raw;
+    const nums=[...all.matchAll(/\b(\d{2,3})\b/g)].map(m=>Number(m[1])).filter(x=>x>=40&&x<=200);
+    return {cash,squadValue,overall:nums.find(x=>x>=50&&x<=150)??null};
+  }
+
+  function validate(rows,header){
+    const comp=composition(rows),issues=[];
+    if(rows.length<16)issues.push(`só ${rows.length} jogadores reconhecidos (mínimo seguro 16)`);
+    if(comp.ATA<3||comp.MEI<4||comp.DEF<5||comp.GOL<1)issues.push(`composição incompleta ${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}`);
+    return {ok:issues.length===0,issues,count:rows.length,composition:comp};
+  }
+
+  function applyValidated(s,rows,header,val){
+    s.roster=rows;s.myTeam=s.myTeam||{};
+    s.myTeam.playerCount=rows.length;s.myTeam.validatedPlayerCount=rows.length;
+    const cash=money(header.cash),sq=money(header.squadValue);
+    if(cash!==null)s.myTeam.cash=cash;if(sq!==null)s.myTeam.squadValue=sq;
+    s.rosterValidation42={...val,ok:true,version:VERSION,at:new Date().toISOString(),header:{cash,squadValue:sq}};
+    s.lastAnalysisAt=new Date().toISOString();s.marketPlan=null;
   }
 
   async function analyzeMarket(files){
-    const slotNo=Number(document.getElementById('analysisSlot')?.value)||state.selectedSlot; state.selectedSlot=slotNo;
-    const s=selectedSlot();
-    const video=(files||[]).find(f=>String(f.type||'').startsWith('video/'));
+    const slotNo=Number(document.getElementById('analysisSlot')?.value)||state.selectedSlot;
+    state.selectedSlot=slotNo; const s=selectedSlot(); const started=Date.now();
+    let frames=[]; const video=(files||[]).find(f=>String(f.type||'').startsWith('video/'));
     const images=(files||[]).filter(f=>String(f.type||'').startsWith('image/'));
-    let frames=[]; let header={}; let roster=[]; let source=''; let technicalError='';
-    const started=Date.now();
-
     try{
-      if(video){
-        setProgress(8,'Extraindo quadros da rolagem…');
-        frames=await v21ExtractVideoFrames(video,16);
-      }else if(images.length){
-        setProgress(8,'Preparando imagens do elenco…');
-        for(const f of images)frames.push(await v21ImageToFrame(f));
-      }else throw new Error('Selecione vídeo ou imagens do elenco.');
-
+      setProgress(6,'Extraindo quadros da rolagem…');
+      if(video)frames=await v21ExtractVideoFrames(video,20);
+      else for(const f of images)frames.push(await v21ImageToFrame(f));
+      if(!frames.length)throw new Error('Nenhuma mídia válida.');
       v21RenderEvidence(frames);
-      setProgress(28,'Montando painéis e iniciando OCR especializado…');
-      if(!ocrSpaceKey())throw new Error('OCR.Space: chave não configurada em Config > OCR especializado');
-      const result=await readRosterWithOcrSpace(frames);
-      header=result.header||{};
-      roster=consolidate([result.rows||[]]);
-      source=`${result.provider||'IA'}:${result.model||'modelo'}`;
-      const diag=document.getElementById('analysisDiagnostics');
-      if(diag)diag.textContent=`Elenco 4.7 · ${result.provider} · ${result.sheetCount} painéis · ${Math.round((Date.now()-started)/1000)}s.`;
-    }catch(err){
-      technicalError=String(err?.message||err);
-      const diag=document.getElementById('analysisDiagnostics');
-      if(diag)diag.textContent=`Elenco 4.6 falhou: ${technicalError}`;
-    }
 
-    const comp=composition(roster), sum=roster.reduce((a,p)=>a+(money(p.value)||0),0), sq=money(header?.squadValue), issues=[];
-    if(roster.length<16)issues.push(`só ${roster.length} jogadores reconhecidos (mínimo seguro 16)`);
-    if(comp.ATA<3||comp.MEI<4||comp.DEF<5||comp.GOL<1)issues.push(`composição incompleta ${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}`);
-    if(sq!==null&&roster.length>=16){const ratio=sum/sq;if(ratio<.60||ratio>1.45)issues.push(`soma dos jogadores ${fmtMoney(sum)} incompatível com elenco ${fmtMoney(sq)}`);}
-    if(technicalError)issues.push(`falha técnica: ${technicalError}`);
-    const validation={ok:issues.length===0,issues,count:roster.length,composition:comp,sumValues:sum,squadValue:sq,source,technicalError,elapsedMs:Date.now()-started};
+      const chosen=chooseFrames(frames,9);
+      const blocks=[];
 
-    if(validation.ok){
-      applyValidated(s,roster,header,validation); s.rosterValidation42.source=source; s.rosterValidation42.version=VERSION;
-      try{localStorage.setItem(STATE_KEY,JSON.stringify(state))}catch{}
-      if(typeof renderMarket==='function')renderMarket();
-      const msg=`${roster.length} jogadores validados · ${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL} · caixa ${fmtMoney(s.myTeam?.cash)} · elenco ${fmtMoney(s.myTeam?.squadValue)}.`;
+      setProgress(18,'OCR.Space lendo cabeçalho…');
+      const head=await cropFrame(chosen[0],{x:0,y:0,w:1,h:.46},1500,.96);
+      let hb=null; try{hb=await ocrSpace(head,'cabeçalho',16000);blocks.push(hb)}catch(_){}
+
+      for(let i=0;i<chosen.length;i++){
+        setProgress(25+Math.round((i/chosen.length)*55),`OCR.Space lendo tabela ${i+1}/${chosen.length}…`);
+        // Wider crop: keep full row width and avoid cutting first/last line.
+        const crop=await cropFrame(chosen[i],{x:0,y:.38,w:1,h:.60},1600,.97);
+        try{
+          const b=await ocrSpace(crop,`tabela ${i+1}`,16000);
+          if(b?.overlay?.Lines?.length)blocks.push(b);
+        }catch(_){}
+      }
+      const tableBlocks=blocks.filter(b=>/^tabela/.test(b.label));
+      if(tableBlocks.length<4)throw new Error(`OCR.Space retornou poucos trechos úteis (${tableBlocks.length})`);
+
+      setProgress(84,'Reconstruindo linhas pelas coordenadas…');
+      const rawRows=rowsFromBlocks(tableBlocks);
+      const roster=consolidate(rawRows);
+      const header=parseHeaderText(hb?.text||'');
+      const val=validate(roster,header);
+      const comp=val.composition;
+
+      const diag=document.getElementById('analysisDiagnostics');
+      if(diag)diag.textContent=`Elenco 4.8 · OCR.Space overlay · ${tableBlocks.length} trechos · ${rawRows.length} linhas candidatas · ${roster.length} jogadores únicos · ${Math.round((Date.now()-started)/1000)}s`;
+
+      if(val.ok){
+        applyValidated(s,roster,header,val);
+        localStorage.setItem(STATE_KEY,JSON.stringify(state));
+        if(typeof renderMarket==='function')renderMarket();
+        const el=document.getElementById('analysisContent');
+        if(el)el.innerHTML=`<div class="card" style="margin-top:12px"><span class="eyebrow">ELENCO VALIDADO · 4.8</span><h3>${roster.length} jogadores confirmados</h3><p class="small muted">Reconstrução pela posição visual das colunas, sem IA generativa para adivinhar linhas.</p><div class="fallback-kpis"><div><span>Encontrados</span><b>${roster.length}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div><div><span>Tempo</span><b>${Math.round((Date.now()-started)/1000)}s</b></div></div></div>`;
+        setAnalysisRun(s,'market','success',`${roster.length} jogadores validados`,{version:VERSION,validation:val});
+        setProgress(100,'Elenco validado');job('Elenco atualizado.','done');return;
+      }
+
+      s.rosterValidation42={...val,ok:false,version:VERSION,at:new Date().toISOString()};
+      localStorage.setItem(STATE_KEY,JSON.stringify(state));
       const el=document.getElementById('analysisContent');
-      if(el)el.innerHTML=`<div class="card" style="margin-top:12px"><span class="eyebrow">ELENCO VALIDADO · 4.7</span><h3>${roster.length} jogadores confirmados</h3><p class="small muted">${esc(msg)}</p><div class="fallback-kpis"><div><span>Caixa</span><b>${esc(fmtMoney(s.myTeam?.cash))}</b></div><div><span>Valor elenco</span><b>${esc(fmtMoney(s.myTeam?.squadValue))}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div></div><p class="small muted">Fonte: ${esc(source)} · 3 painéis consolidados · ${Math.round(validation.elapsedMs/1000)}s.</p></div>`;
-      setAnalysisRun(s,'market','success',msg,{version:VERSION,validation}); setProgress(100,'Elenco validado'); job('Elenco e finanças atualizados.','done'); return;
+      if(el)el.innerHTML=`<div class="card ai-fallback-card" style="margin-top:12px"><span class="eyebrow">VALIDAÇÃO DE ELENCO · 4.8</span><h3>Leitura incompleta — não alterei seu elenco</h3><p class="small muted">${esc(val.issues.join(' · '))}</p><div class="fallback-kpis"><div><span>Encontrados</span><b>${roster.length}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div><div><span>Linhas candidatas</span><b>${rawRows.length}</b></div></div></div>`;
+      setAnalysisRun(s,'market','warning',`Leitura incompleta: ${val.issues.join('; ')}`,{version:VERSION,validation:val});
+      setProgress(100,'Leitura incompleta');job('Elenco não foi alterado porque a validação não fechou.','done');
+    }catch(err){
+      const msg=String(err?.message||err);
+      const el=document.getElementById('analysisContent');
+      if(el)el.innerHTML=`<div class="card ai-fallback-card" style="margin-top:12px"><span class="eyebrow">ELENCO · 4.8</span><h3>Falha na leitura</h3><p class="small muted">${esc(msg)}</p></div>`;
+      setProgress(100,'Falha na leitura');job(msg,'error');
     }
-
-    preserveFailed(s,validation,header); try{localStorage.setItem(STATE_KEY,JSON.stringify(state))}catch{}
-    if(typeof renderMarket==='function')renderMarket();
-    const el=document.getElementById('analysisContent');
-    if(el)el.innerHTML=`<div class="card ai-fallback-card" style="margin-top:12px"><span class="eyebrow">VALIDAÇÃO DE ELENCO · 4.7</span><h3>Leitura incompleta — não alterei seu elenco</h3><p class="small muted">${esc(validation.issues.join(' · '))}</p><div class="fallback-kpis"><div><span>Encontrados</span><b>${validation.count}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div><div><span>Tempo</span><b>${Math.round(validation.elapsedMs/1000)}s</b></div></div>${technicalError?`<p class="small muted" style="margin-top:10px">Erro técnico: ${esc(technicalError)}</p>`:''}</div>`;
-    setAnalysisRun(s,'market','warning',`Leitura incompleta: ${validation.issues.join('; ')}`,{version:VERSION,validation}); setProgress(100,'Leitura incompleta'); job('Elenco não foi alterado porque a validação não fechou.','done');
   }
 
-
-  // Market analysis is now a single implementation; old market hotfixes are not loaded by index 4.0.
   if(oldAnalyze){
-    v21Analyze=async function(files){if(analysisMode==='market')return analyzeMarket(files);return oldAnalyze(files);};
+    v21Analyze=async function(files){if(analysisMode==='market')return analyzeMarket(files);return oldAnalyze(files)};
     window.v21Analyze=v21Analyze;
   }
 
-  function safeRows(s){return Array.isArray(s?.roster)?s.roster.filter(p=>p?.verifiedRoster&&VALID_POS.has(p.position)&&num(p.rating)!==null&&money(p.value)!==null):[];}
   function buildDirector(s){
-    const rows=safeRows(s),by={ATA:[],MEI:[],DEF:[],GOL:[]};
-    for(const p of rows)by[p.position].push(p);for(const k in by)by[k].sort((a,b)=>a.rating-b.rating);
+    const rows=Array.isArray(s?.roster)?s.roster.filter(p=>p?.verifiedRoster&&VALID_POS.has(p.position)): [];
+    const by={ATA:[],MEI:[],DEF:[],GOL:[]};rows.forEach(p=>by[p.position].push(p));
+    for(const k in by)by[k].sort((a,b)=>a.rating-b.rating);
     const sells=[];
     for(const [k,target] of Object.entries(TARGET)){
-      const eligible=by[k].filter(p=>!p.training).sort((a,b)=>(b.forSale?1:0)-(a.forSale?1:0)||a.rating-b.rating);
+      const eligible=by[k].filter(p=>!p.training);
       const excess=Math.max(0,eligible.length-target);
       eligible.slice(0,excess).forEach(p=>sells.push(p));
     }
-    sells.sort((a,b)=>(b.forSale?1:0)-(a.forSale?1:0)||a.rating-b.rating);
-    const cash=money(s?.myTeam?.cash),sq=money(s?.myTeam?.squadValue),saleRef=sells.slice(0,4).reduce((a,p)=>a+(money(p.value)||0),0);
-    const weakest={};for(const k in by)weakest[k]=by[k][0]||null;
-    return {rows,by,sells:sells.slice(0,4),cash,sq,saleRef,afterSales:cash===null?null:cash+saleRef,weakest};
-  }
-  function directorHtml(s){
-    const v=s?.rosterValidation42;
-    if(!v?.ok)return `<div class="card market40-card"><span class="eyebrow">DIRETOR IA · 4.7</span><h3>Plano bloqueado até o elenco ficar validado</h3><p class="small muted">A versão 4.7 não usa elenco incompleto/corrompido. Reanalise o vídeo; compras e vendas só aparecem depois que quantidade, composição e valores fecharem.</p><div class="actions"><button class="btn" onclick="showView('analyze');setAnalysisMode('market')">Analisar elenco</button></div></div>`;
-    const p=buildDirector(s),c={ATA:p.by.ATA.length,MEI:p.by.MEI.length,DEF:p.by.DEF.length,GOL:p.by.GOL.length};
-    const sell=p.sells.length?p.sells.map((x,i)=>`<div class="radar-item"><div><b>${i+1}. ${esc(x.name)}</b><span>${esc(x.position)} · força ${esc(x.rating)} · valor ${esc(x.value)}${x.training?' · treinando':''}</span></div><span>${x.forSale?'Já à venda':'Excedente'}</span></div>`).join(''):'<p class="small muted">Nenhuma venda estrutural necessária agora.</p>';
-    const weak=Object.entries(p.weakest).map(([k,x])=>x?`${k}: ${esc(x.name)} ${x.rating}`:`${k}: NI`).join(' · ');
-    return `<div class="card market40-card"><div class="section-head compact-head"><div><span class="eyebrow">DIRETOR IA · DADOS REAIS · 4.7</span><h3>Plano baseado somente no vídeo validado</h3></div></div>
-      <div class="coach30-kpis"><div><span>Caixa</span><b>${esc(fmtMoney(p.cash))}</b></div><div><span>Valor do elenco</span><b>${esc(fmtMoney(p.sq))}</b></div><div><span>Jogadores</span><b>${p.rows.length}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${c.ATA}/${c.MEI}/${c.DEF}/${c.GOL}</b></div></div>
-      <div class="reason-box"><b>Venda agora</b>${sell}${p.sells.length?`<p class="small muted">Referência de caixa se as ${p.sells.length} vendas ocorrerem pelo valor mostrado: ${esc(fmtMoney(p.afterSales))}. O preço efetivo de venda pode variar no OSM.</p>`:''}</div>
-      <div class="reason-box"><b>Compra</b><p>Caixa imediato: <b>${esc(fmtMoney(p.cash))}</b>. ${p.sells.length?`Referência após vendas: <b>${esc(fmtMoney(p.afterSales))}</b>.`:''}</p><p class="small muted">Sem ler a lista de transferências, não inventarei nome/preço disponível. O Diretor usa este teto real para indicar quais opções observadas no mercado cabem no orçamento.</p></div>
-      <div class="reason-box"><b>Pontos mais fracos do elenco</b><p>${weak}</p></div>
-      <div class="actions"><button class="btn" onclick="showView('analyze');setAnalysisMode('market')">Atualizar elenco</button></div></div>`;
+    return {rows,by,sells:sells.slice(0,4),cash:money(s?.myTeam?.cash),sq:money(s?.myTeam?.squadValue)};
   }
 
   if(oldRenderMarket){
     renderMarket=function(){
-      const out=oldRenderMarket.apply(this,arguments); const s=selectedSlot(),root=document.getElementById('marketContent');if(!root||!s)return out;
-      // Remove every legacy AI/market plan card. The base roster table can stay only when roster is valid.
-      root.querySelectorAll('.coach30-market,.coach34-director,.director36,.finance35,.market40-card').forEach(x=>x.remove());
-      [...root.querySelectorAll('.card')].forEach(card=>{
-        const t=norm(card.textContent);
-        if(t.includes('plano de crescimento do time')||t.includes('perfis de compra recomendados')||t.includes('plano 72h')||t.includes('subir força rapidamente')||t.startsWith('plano ativo'))card.remove();
-        if(!s?.rosterValidation42?.ok&&(t.includes('saude do elenco')||t.includes('elenco reconhecido')))card.remove();
-      });
-      if(!s?.rosterValidation42?.ok){[...root.querySelectorAll('*')].filter(x=>/dados suficientes/i.test(String(x.textContent||''))&&x.children.length<3).forEach(x=>x.remove());}
-      root.insertAdjacentHTML('afterbegin',directorHtml(s));
+      const out=oldRenderMarket.apply(this,arguments);const s=selectedSlot(),root=document.getElementById('marketContent');
+      if(!root||!s)return out;
+      root.querySelectorAll('.market48-director,.market40-card,.coach30-market,.coach34-director,.director36,.finance35').forEach(x=>x.remove());
+      if(!s?.rosterValidation42?.ok){
+        root.insertAdjacentHTML('afterbegin',`<div class="card market48-director"><span class="eyebrow">DIRETOR IA · 4.8</span><h3>Plano bloqueado até validar o elenco</h3><p class="small muted">O Diretor não usa elenco parcial. Reanalise o vídeo; quando a tabela fechar, compras e vendas são recalculadas com os dados reais.</p></div>`);
+        return out;
+      }
+      const d=buildDirector(s),c={ATA:d.by.ATA.length,MEI:d.by.MEI.length,DEF:d.by.DEF.length,GOL:d.by.GOL.length};
+      const sell=d.sells.length?d.sells.map((p,i)=>`<div class="radar-item"><div><b>${i+1}. ${esc(p.name)}</b><span>${p.position} · força ${p.rating} · ${esc(p.value)}</span></div></div>`).join(''):'<p class="small muted">Nenhuma venda estrutural necessária agora.</p>';
+      root.insertAdjacentHTML('afterbegin',`<div class="card market48-director"><span class="eyebrow">DIRETOR IA · 4.8</span><h3>Plano com elenco validado</h3><div class="coach30-kpis"><div><span>Caixa</span><b>${esc(fmtMoney(d.cash))}</b></div><div><span>Valor elenco</span><b>${esc(fmtMoney(d.sq))}</b></div><div><span>Jogadores</span><b>${d.rows.length}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${c.ATA}/${c.MEI}/${c.DEF}/${c.GOL}</b></div></div><div class="reason-box"><b>Vendas estruturais</b>${sell}</div></div>`);
       return out;
     };
     window.renderMarket=renderMarket;
   }
 
-  // Coach IA dashboard: prevent duplicate cards and purge invalid zero snapshots.
-  if(oldRenderDashboard){
-    renderDashboard=function(){
-      document.querySelectorAll('#coach30Dashboard').forEach(x=>x.remove());
-      const s=selectedSlot();
-      if(s?.coachAI){
-        for(const k of ['ownSnapshots','rivalSnapshots'])if(Array.isArray(s.coachAI[k]))s.coachAI[k]=s.coachAI[k].filter(x=>num(x?.overall)!==null&&num(x.overall)>0);
-      }
-      const out=oldRenderDashboard.apply(this,arguments);
-      const nodes=[...document.querySelectorAll('#coach30Dashboard')];if(nodes.length>1)nodes.slice(0,-1).forEach(x=>x.remove());
-      return out;
-    };
-    window.renderDashboard=renderDashboard;
-  }
-
-  // One-time migration: old failed 3.x validations must not masquerade as current roster data.
-  try{
-    for(const s of (state?.slots||[])){
-      if(s?.rosterValidation42?.version===VERSION)continue;
-      const legacyBad=s?.rosterValidation42?.ok===false || s?.rosterValidation40?.ok===false || s?.rosterValidation36?.ok===false || (Array.isArray(s?.roster)&&s.roster.length<8&&s.roster.some(p=>/visual_table_35|market_engine_36|local_ocr_market/i.test(String(p?.source||''))));
-      if(legacyBad){s.roster=[];s.rosterValidation42={ok:false,version:VERSION,at:new Date().toISOString(),issues:['dados antigos descartados; reanalise o vídeo'],count:0,composition:{ATA:0,MEI:0,DEF:0,GOL:0},sumValues:0,successfulFrames:0};if(s.myTeam){s.myTeam.playerCount=null;s.myTeam.validatedPlayerCount=0;}}
-    }
-    localStorage.setItem(STATE_KEY,JSON.stringify(state));
-  }catch(err){console.warn('[Market Engine 4.6 migrate]',err);}
-
-
-  function injectBackupSettings(){
-    const view=document.getElementById('view-settings');if(!view||document.getElementById('multiAiBackupCard'))return;
-    const card=document.createElement('div');card.id='multiAiBackupCard';card.className='card form';card.style.marginTop='12px';
-    card.innerHTML=`<span class="eyebrow">IA DE BACKUP · 4.7</span><h3>OCR especializado + IA de backup</h3><p class="small muted">Elenco: OCR.Space lê as tabelas; OpenRouter/Groq consolidam o texto. Gemini fica reservado para outras análises. As chaves ficam somente neste navegador.</p><label>OpenRouter API Key<input id="openrouterKey44" type="password" autocomplete="off" placeholder="sk-or-v1-..."></label><label>Groq API Key<input id="groqKey44" type="password" autocomplete="off" placeholder="gsk_..."></label><label>OCR.Space API Key<input id="ocrSpaceKey46" type="password" autocomplete="off" placeholder="Chave OCR.Space"></label><div class="actions"><button class="btn" id="saveBackupKeys44">Salvar chaves</button></div><p id="backupAiStatus44" class="small muted"></p>`;
+  function injectSettings(){
+    const view=document.getElementById('view-settings');if(!view||document.getElementById('market48Settings'))return;
+    const card=document.createElement('div');card.className='card form';card.id='market48Settings';card.style.marginTop='12px';
+    card.innerHTML=`<span class="eyebrow">OCR DO ELENCO · 4.8</span><h3>OCR.Space</h3><p class="small muted">A leitura do elenco usa coordenadas de tabela do OCR.Space. OpenRouter/Groq não são necessários para reconstruir as linhas.</p><label>OCR.Space API Key<input id="ocrSpaceKey48" type="password" autocomplete="off" placeholder="Chave OCR.Space"></label><div class="actions"><button class="btn" id="saveOcr48">Salvar OCR</button></div>`;
     view.appendChild(card);
-    const or=document.getElementById('openrouterKey44'),g=document.getElementById('groqKey44'),o=document.getElementById('ocrSpaceKey46');or.value=localStorage.getItem(OPENROUTER_KEY)||'';g.value=localStorage.getItem(GROQ_KEY)||'';o.value=localStorage.getItem(OCRSPACE_KEY)||'';
-    const update=()=>{const k=backupKeys();document.getElementById('backupAiStatus44').textContent=`OCR.Space: ${ocrSpaceKey()?'configurado':'não configurado'} · OpenRouter: ${k.openrouter?'configurado':'não configurado'} · Groq: ${k.groq?'configurado':'não configurado'}${geminiCoolingDown()?' · Gemini em cooldown por cota':''}`};update();
-    document.getElementById('saveBackupKeys44').onclick=()=>{localStorage.setItem(OPENROUTER_KEY,or.value.trim());localStorage.setItem(GROQ_KEY,g.value.trim());localStorage.setItem(OCRSPACE_KEY,o.value.trim());update();toast('Chaves de backup salvas neste aparelho');};
+    const inp=document.getElementById('ocrSpaceKey48');inp.value=localStorage.getItem(OCRSPACE_KEY)||'';
+    document.getElementById('saveOcr48').onclick=()=>{localStorage.setItem(OCRSPACE_KEY,inp.value.trim());toast('Chave OCR.Space salva')};
   }
-  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(injectBackupSettings,250));else setTimeout(injectBackupSettings,250);
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(injectSettings,300));else setTimeout(injectSettings,300);
 
-  window.OSM_MARKET_ENGINE_46={version:VERSION,consolidate,validateRoster,buildDirector};
-  try{console.info('[OSM] Market Engine '+VERSION+' ativo')}catch{}
+  window.OSM_MARKET_ENGINE_48={version:VERSION};
+  try{console.info('[OSM] Market Engine 4.8 ativo')}catch{}
 })();
