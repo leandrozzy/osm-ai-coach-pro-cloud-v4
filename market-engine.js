@@ -2835,3 +2835,386 @@ Retorne JSON puro exatamente:
 
   try{console.info('[OSM] V7.3 Stable Analysis ativo')}catch(_){}
 })();
+
+/* =========================================================
+   V7.4 FAST TACTIC
+   Correção do erro real visto na V7.3:
+   - não usa mais prompt/OCR gigante no modo Partida;
+   - não espera Gemini quando a cota está ruim;
+   - reduz imagens antes de mandar ao OpenRouter;
+   - se visão falhar, OCR.Space + Groq GPT-OSS 20B recebem texto CURTO;
+   - remove Qwen do fallback de Partida para evitar HTTP 413.
+   ========================================================= */
+(function(){
+  'use strict';
+
+  const V74='7.4.0';
+  const OR_KEY='osm_ai_coach_openrouter_key';
+  const GROQ_KEY='osm_ai_coach_groq_key';
+  const OCR_KEY='osm_ai_coach_ocrspace_key';
+
+  const previousAnalyze74=typeof v21Analyze==='function'?v21Analyze:null;
+  const previousPackage74=typeof v21AnalyzePackage==='function'?v21AnalyzePackage:null;
+
+  function safeErr74(e){
+    return String(e?.message||e||'erro')
+      .replace(/sk-or-v1-[A-Za-z0-9_-]+/g,'[OpenRouter oculto]')
+      .replace(/gsk_[A-Za-z0-9_-]+/g,'[Groq oculto]')
+      .replace(/AIza[A-Za-z0-9_-]+/g,'[Gemini oculto]')
+      .slice(0,360);
+  }
+
+  function esc74(v){
+    return String(v??'').replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
+  }
+
+  function diag74(msg){
+    const el=document.getElementById('analysisDiagnostics');
+    if(el)el.textContent=msg;
+  }
+
+  function parseJson74(txt){
+    let s=String(txt||'').trim()
+      .replace(/^```(?:json)?\s*/i,'')
+      .replace(/\s*```$/,'')
+      .trim();
+    if(!s)throw new Error('resposta vazia');
+    try{return JSON.parse(s)}catch(_){}
+
+    const a=s.indexOf('{'), b=s.lastIndexOf('}');
+    if(a>=0&&b>a){
+      let x=s.slice(a,b+1)
+        .replace(/,\s*([}\]])/g,'$1')
+        .replace(/[\u201C\u201D]/g,'"');
+      try{return JSON.parse(x)}catch(_){}
+    }
+    throw new Error('JSON inválido');
+  }
+
+  function useful74(data){
+    const c=data?.capture||data?.captures?.[0]||data||{};
+    return [
+      c?.teamName,c?.opponent?.teamName,c?.match?.venue,c?.match?.refereeColor,
+      c?.myTeam?.overall,c?.opponent?.overall,
+      c?.opponent?.formation,c?.opponent?.style,c?.opponent?.marking,c?.opponent?.offside
+    ].filter(v=>v!==null&&v!==undefined&&v!==''&&v!=='NI').length;
+  }
+
+  function shortPrompt74(extraText=''){
+    const schema=`{
+ "capture":{
+  "teamName":null,
+  "opponent":{"teamName":null,"manager":null,"human":null,"loginBonus":null,"stadium":null,"trainingCamp":null,"secretTraining":null,"overall":null,"goalkeeper":null,"defence":null,"midfield":null,"attack":null,"formation":null,"style":null,"marking":null,"offside":null},
+  "myTeam":{"overall":null,"goalkeeper":null,"defence":null,"midfield":null,"attack":null},
+  "match":{"venue":null,"refereeColor":null}
+ }
+}`;
+    return `Leia telas reais do OSM 26 Android da MESMA partida.
+Extraia SOMENTE o que estiver visível. Não estime. Campo ausente = null.
+
+Precisamos:
+- meu time e adversário;
+- local Casa/Fora;
+- cor do árbitro: Verde/Azul/Amarelo/Laranja/Vermelho;
+- força geral dos dois times;
+- GOL/DEF/MEI/ATA dos dois;
+- rival humano/manager/bônus login/estádio/CT/treino secreto;
+- formação, plano de jogo, marcação e impedimento do rival.
+
+Responda APENAS JSON válido:
+${schema}
+${extraText?`\nOCR auxiliar:\n${extraText}`:''}`;
+  }
+
+  async function slimFrame74(frame,maxW=900,quality=.72){
+    if(!frame?.dataUrl)return frame;
+    try{
+      const img=await v21LoadImage(frame.dataUrl);
+      const scale=Math.min(1,maxW/img.naturalWidth);
+      const w=Math.max(1,Math.round(img.naturalWidth*scale));
+      const h=Math.max(1,Math.round(img.naturalHeight*scale));
+      const c=document.createElement('canvas');
+      c.width=w;c.height=h;
+      c.getContext('2d').drawImage(img,0,0,w,h);
+      const dataUrl=c.toDataURL('image/jpeg',quality);
+      return {dataUrl,base64:dataUrl.split(',')[1],mimeType:'image/jpeg',time:frame.time||0};
+    }catch(_){return frame}
+  }
+
+  function spread74(arr,limit){
+    const a=(arr||[]).filter(Boolean);
+    if(a.length<=limit)return a;
+    const out=[];
+    for(let i=0;i<limit;i++){
+      const idx=Math.round(i*(a.length-1)/Math.max(1,limit-1));
+      if(a[idx]&&!out.includes(a[idx]))out.push(a[idx]);
+    }
+    return out;
+  }
+
+  async function openRouterVision74(frames){
+    const key=String(localStorage.getItem(OR_KEY)||'').trim();
+    if(!key)throw new Error('OpenRouter: chave não configurada');
+
+    const chosen=spread74(frames,3);
+    const slim=[];
+    for(const f of chosen)slim.push(await slimFrame74(f,900,.70));
+
+    const content=[{type:'text',text:shortPrompt74()}];
+    for(const f of slim){
+      content.push({type:'image_url',image_url:{url:`data:${f.mimeType||'image/jpeg'};base64,${f.base64}`}});
+    }
+
+    const ctl=new AbortController();
+    const timer=setTimeout(()=>ctl.abort(),26000);
+    try{
+      const res=await fetch('https://openrouter.ai/api/v1/chat/completions',{
+        method:'POST',
+        signal:ctl.signal,
+        headers:{
+          'Content-Type':'application/json',
+          'Authorization':`Bearer ${key}`,
+          'HTTP-Referer':location.origin,
+          'X-Title':'OSM AI Coach Pro'
+        },
+        body:JSON.stringify({
+          model:'openrouter/free',
+          messages:[{role:'user',content}],
+          temperature:0,
+          max_tokens:2400
+        })
+      });
+
+      const raw=await res.text();
+      if(!res.ok)throw new Error(`OpenRouter HTTP ${res.status}: ${raw.slice(0,170)}`);
+      const j=JSON.parse(raw);
+      const data=parseJson74(String(j?.choices?.[0]?.message?.content||''));
+      if(useful74(data)<3)throw new Error(`OpenRouter: só ${useful74(data)} campos úteis`);
+      return {data,provider:`OpenRouter/${j?.model||'free'}`};
+    }catch(e){
+      if(e?.name==='AbortError')throw new Error('OpenRouter: tempo excedido (26s)');
+      throw e;
+    }finally{clearTimeout(timer)}
+  }
+
+  async function ocrSpace74(frame,label){
+    const key=String(localStorage.getItem(OCR_KEY)||'').trim();
+    if(!key)throw new Error('OCR.Space: chave não configurada');
+
+    const slim=await slimFrame74(frame,1100,.80);
+    const fd=new FormData();
+    fd.append('base64Image',`data:image/jpeg;base64,${slim.base64}`);
+    fd.append('language','auto');
+    fd.append('OCREngine','2');
+    fd.append('isTable','false');
+    fd.append('isOverlayRequired','false');
+    fd.append('scale','true');
+
+    const ctl=new AbortController();
+    const timer=setTimeout(()=>ctl.abort(),12000);
+    try{
+      const res=await fetch('https://api.ocr.space/parse/image',{
+        method:'POST',signal:ctl.signal,headers:{apikey:key},body:fd
+      });
+      const raw=await res.text();
+      if(!res.ok)throw new Error(`OCR.Space HTTP ${res.status}`);
+      const j=JSON.parse(raw);
+      if(j?.IsErroredOnProcessing)throw new Error('OCR.Space: falhou ao processar');
+      let txt=(j?.ParsedResults||[]).map(x=>String(x?.ParsedText||'')).join('\n').trim();
+      if(!txt)throw new Error(`OCR.Space ${label}: sem texto`);
+      txt=txt.slice(0,5200);
+      return `### ${label}\n${txt}`;
+    }catch(e){
+      if(e?.name==='AbortError')throw new Error(`OCR.Space ${label}: tempo excedido`);
+      throw e;
+    }finally{clearTimeout(timer)}
+  }
+
+  async function groqText74(text){
+    const key=String(localStorage.getItem(GROQ_KEY)||'').trim();
+    if(!key)throw new Error('Groq: chave não configurada');
+
+    const compact=String(text||'').slice(0,14500);
+    const prompt=shortPrompt74(compact);
+
+    const ctl=new AbortController();
+    const timer=setTimeout(()=>ctl.abort(),15000);
+    try{
+      const res=await fetch('https://api.groq.com/openai/v1/chat/completions',{
+        method:'POST',
+        signal:ctl.signal,
+        headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},
+        body:JSON.stringify({
+          model:'openai/gpt-oss-20b',
+          messages:[{role:'user',content:prompt}],
+          temperature:0,
+          max_completion_tokens:2200
+        })
+      });
+      const raw=await res.text();
+      if(!res.ok)throw new Error(`Groq HTTP ${res.status}: ${raw.slice(0,180)}`);
+      const j=JSON.parse(raw);
+      const data=parseJson74(String(j?.choices?.[0]?.message?.content||''));
+      if(useful74(data)<3)throw new Error(`Groq: só ${useful74(data)} campos úteis`);
+      return {data,provider:'Groq/openai-gpt-oss-20b'};
+    }catch(e){
+      if(e?.name==='AbortError')throw new Error('Groq: tempo excedido (15s)');
+      throw e;
+    }finally{clearTimeout(timer)}
+  }
+
+  async function fastTacticPackage74(ocr,evidence){
+    const errors=[];
+
+    diag74('V7.4 · OpenRouter visão compacta…');
+    try{
+      const r=await openRouterVision74(evidence);
+      diag74(`V7.4 · concluído com ${r.provider}`);
+      return r.data;
+    }catch(e){errors.push(safeErr74(e))}
+
+    if(localStorage.getItem(OCR_KEY) && localStorage.getItem(GROQ_KEY)){
+      diag74('V7.4 · OpenRouter falhou · OCR.Space + Groq…');
+      const chosen=spread74(evidence,4);
+      const settled=await Promise.all(
+        chosen.map((f,i)=>ocrSpace74(f,`quadro ${i+1}`)
+          .then(text=>({ok:true,text}))
+          .catch(error=>({ok:false,error})))
+      );
+
+      const texts=settled.filter(x=>x.ok).map(x=>x.text);
+      for(const x of settled)if(!x.ok)errors.push(safeErr74(x.error));
+
+      if(texts.length){
+        try{
+          const r=await groqText74(texts.join('\n\n'));
+          diag74(`V7.4 · concluído com OCR.Space + ${r.provider}`);
+          return r.data;
+        }catch(e){errors.push(safeErr74(e))}
+      }
+    }
+
+    const local=String(ocr?.joined||'').slice(0,12000);
+    if(local && localStorage.getItem(GROQ_KEY)){
+      diag74('V7.4 · usando OCR local compacto + Groq…');
+      try{
+        const r=await groqText74(local);
+        diag74(`V7.4 · concluído com OCR local + ${r.provider}`);
+        return r.data;
+      }catch(e){errors.push(safeErr74(e))}
+    }
+
+    throw new Error(errors.join(' | ')||'Nenhum provedor conseguiu concluir a leitura.');
+  }
+
+  async function package74(ocr,evidence,mode){
+    if(mode==='tactic')return fastTacticPackage74(ocr,evidence);
+    if(previousPackage74)return previousPackage74(ocr,evidence,mode);
+    throw new Error('Pacote anterior indisponível');
+  }
+  try{v21AnalyzePackage=package74}catch(_){}
+  window.v21AnalyzePackage=package74;
+
+  function failure74(msg){
+    const coverage=document.getElementById('coverageContent');
+    if(coverage){
+      coverage.innerHTML=`
+        <div class="audit-card" style="border-color:#8e6b21">
+          <div class="audit-top"><div><span class="eyebrow">LEITURA ATUAL · V7.4</span><h3>Não validada</h3></div><div class="quality-score">—</div></div>
+          <p class="small muted">Os dados anteriores foram preservados, mas não contam como leitura desta tentativa.</p>
+        </div>`;
+    }
+    const target=document.getElementById('analysisContent');
+    if(target){
+      target.innerHTML=`
+        <div class="card ai-fallback-card">
+          <span class="eyebrow">V7.4 · DIAGNÓSTICO</span>
+          <h3>Não consegui validar a nova leitura</h3>
+          <p class="small muted">${esc74(msg)}</p>
+          <div class="actions">
+            <button class="btn" onclick="runPendingAnalysis()">Tentar novamente</button>
+            <button class="btn ghost" onclick="showView('pregame')">Abrir pré-jogo</button>
+          </div>
+        </div>`;
+    }
+  }
+
+  v21Analyze=async function(files){
+    if(analysisMode!=='tactic'){
+      if(previousAnalyze74)return previousAnalyze74(files);
+      throw new Error('Analisador anterior indisponível');
+    }
+
+    const slotNo=Number(document.getElementById('analysisSlot')?.value)||state.selectedSlot;
+    state.selectedSlot=slotNo;
+
+    const video=(files||[]).find(f=>String(f.type||'').startsWith('video/'));
+    const images=(files||[]).filter(f=>String(f.type||'').startsWith('image/'));
+    let frames=[];
+
+    setProgress(5,'V7.4 · capturando telas…');
+    if(video)frames=await v21ExtractVideoFrames(video,28);
+    else if(images.length){
+      for(const f of images)frames.push(await v21ImageToFrame(f));
+    }else throw new Error('Selecione o vídeo da partida.');
+
+    v21RenderEvidence(frames);
+    setProgress(18,'V7.4 · OCR local rápido…');
+    const ocr=await v21RunLocalOcr(frames);
+
+    let evidence=[];
+    try{
+      const req=v21SelectRequiredTacticFrames(frames,ocr);
+      evidence=req.filter(x=>x?.frame).map(x=>x.frame);
+    }catch(_){}
+
+    const extras=v21SelectVisualEvidence(frames,6);
+    for(const f of extras){
+      if(!evidence.includes(f))evidence.push(f);
+      if(evidence.length>=6)break;
+    }
+    if(!evidence.length)evidence=spread74(frames,6);
+
+    try{
+      setProgress(50,'V7.4 · lendo partida…');
+      const result=await fastTacticPackage74(ocr,evidence);
+      const capture=result?.capture||result?.captures?.[0]||result;
+      const confirmed=useful74(capture);
+
+      if(confirmed<4)throw new Error(`Só ${confirmed} campos principais foram confirmados.`);
+
+      v21ApplyCapture(capture);
+      saveState();
+      calcQuality(selectedSlot());
+      renderCoverage(selectedSlot());
+      renderAnalysisSummary(selectedSlot());
+      renderPregame();
+
+      setAnalysisRun(
+        selectedSlot(),'tactic','success',
+        `V7.4: ${confirmed} campos principais confirmados na leitura atual.`,
+        {quality:selectedSlot().analysisQuality,currentRunValidated:true}
+      );
+
+      setProgress(86,'V7.4 · gerando tática…');
+      if(document.getElementById('autoTactic')?.checked){
+        try{await generateTactic(slotNo)}catch(err){console.warn('[V7.4] tática automática',err)}
+      }
+
+      setProgress(100,'Partida pronta');
+      diag74(`V7.4 · leitura validada · ${confirmed} campos`);
+      job('Partida analisada. Abra o Pré-jogo para usar a tática.','done');
+    }catch(e){
+      const msg=safeErr74(e);
+      setAnalysisRun(selectedSlot(),'tactic','error',`V7.4: ${msg}`,{currentRunValidated:false});
+      failure74(msg);
+      setProgress(100,'Leitura não validada');
+      diag74(`V7.4 · ${msg}`);
+      job('Falha na leitura atual; dados anteriores preservados.','error');
+    }
+  };
+
+  window.v21Analyze=v21Analyze;
+  window.OSM_FAST_TACTIC_VERSION=V74;
+  try{console.info('[OSM] V7.4 Fast Tactic ativo')}catch(_){}
+})();
