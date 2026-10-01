@@ -1,0 +1,23 @@
+/* Coach IA 3.0 — camada visual não destrutiva */
+.coach30-card,.coach30-pregame,.coach30-market,.coach30-learning,.coach30-radar{border:1px solid rgba(120,150,180,.18);box-shadow:0 12px 30px rgba(0,0,0,.12)}
+#coach30Dashboard{margin:12px 0}
+.coach30-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.coach30-head h3{margin:4px 0 6px}
+.coach30-version{font-size:12px;opacity:.65;border:1px solid rgba(255,255,255,.12);padding:4px 8px;border-radius:999px}
+.coach30-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:12px 0}
+.coach30-kpis>div{background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.07);border-radius:12px;padding:10px;min-width:0}
+.coach30-kpis span{display:block;font-size:11px;opacity:.65;margin-bottom:4px}
+.coach30-kpis b{font-size:18px}
+.coach30-kpis.sectors b.neg{color:#ff8b8b}.coach30-kpis.sectors b.pos{color:#78e7a3}
+.coach30-grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}
+.coach30-grid2>div{border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:12px}
+.coach30-grid2 h4{margin:0 0 8px}.coach30-grid2 p{margin:6px 0;font-size:13px}
+.coach30-actions-list{display:grid;gap:7px;margin:12px 0}.coach30-actions-list>div{padding:9px 11px;border-radius:10px;background:rgba(255,255,255,.035);font-size:13px}
+.coach30-ranked{display:grid;gap:5px;margin-top:10px;padding:10px;border-radius:10px;background:rgba(255,255,255,.035)}
+.coach30-ranked span{font-size:12px;opacity:.82}
+.coach30-lessons{display:grid;gap:8px;margin-top:12px}.coach30-lessons>div{padding:10px;border:1px solid rgba(255,255,255,.07);border-radius:10px;display:grid;gap:4px}.coach30-lessons span,.coach30-lessons small{font-size:12px;opacity:.76}
+.coach-danger{border-color:rgba(255,86,86,.52)!important;background:linear-gradient(180deg,rgba(255,69,69,.09),rgba(255,69,69,.025))!important}
+.coach-warn{border-color:rgba(255,190,73,.42)!important;background:linear-gradient(180deg,rgba(255,190,73,.08),rgba(255,190,73,.02))!important}
+.coach-ok{border-color:rgba(80,210,140,.30)!important}
+.coach30-radar{margin-top:10px}
+@media(max-width:720px){.coach30-kpis{grid-template-columns:1fr 1fr}.coach30-grid2{grid-template-columns:1fr}.coach30-head{align-items:flex-start}.coach30-kpis b{font-size:16px}}
