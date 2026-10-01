@@ -1,0 +1,3 @@
+OSM AI Coach Pro 4.7 — OCR.Space por trechos individuais.
+Substitua todos os arquivos na main, aguarde Ready, feche o PWA e abra novamente.
+O leitor usa até 10 recortes da rolagem + parser local + IA de consolidação.
