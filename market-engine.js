@@ -11,7 +11,7 @@
    - Director only decides from validated roster + real finances
 */
 (function(){
-  const VERSION='5.4.0';
+  const VERSION='5.5.0';
   const TARGET={ATA:4,MEI:6,DEF:6,GOL:2};
   const VALID_POS=new Set(Object.keys(TARGET));
   const oldRenderMarket=typeof renderMarket==='function'?renderMarket:null;
@@ -441,8 +441,9 @@
       `### BLOCO ${i+1} (${x.label})\n${x.text}`
     ).join('\n\n');
 
-    // Overlay do Engine 2 preserva as linhas; parser local lê primeiro.
-    const localRows=deterministicRowsFromOcr(joined);
+    // Parser 5.5: posição vem primeiro da SEÇÃO da lista, não do OCR do código individual.
+    const sectionParsed=deterministicRowsFromSectionedBlocks(tableBlocks);
+    const localRows=sectionParsed.rows;
 
     // IA textual é apenas consolidadora final; não lê a imagem.
     let structured=null;
@@ -456,7 +457,7 @@
       ? structured.data.players
       : [];
 
-    const finalRows=consolidate([localRows,aiRows]);
+    let finalRows=consolidate([localRows,aiRows]);
 
     const headerLocal=deterministicHeaderFromOcr(
       blocks.find(x=>x.label==='cabeçalho')?.text||joined
@@ -473,7 +474,34 @@
       header.playerCount=expectedPlayerCountFromText(joined);
     }
 
-    const coverage=sectionCoverageFromBlocks(tableBlocks);
+    // Se a soma dos jogadores ainda estiver claramente abaixo do valor do elenco,
+    // sabemos objetivamente que faltam linhas. Fazemos UMA passagem extra em 4 quadros
+    // alternados com Engine 3, sem refazer tudo.
+    const sqValue=money(header?.squadValue);
+    let playerSum=finalRows.reduce((a,p)=>a+(money(p.value)||0),0);
+    if(sqValue!==null && playerSum/sqValue<.96){
+      const retryFrames=[chosen[2],chosen[4],chosen[6],chosen[8]].filter(Boolean);
+      const retryBlocks=[];
+      for(let base=0;base<retryFrames.length;base+=2){
+        const settled=await Promise.allSettled(retryFrames.slice(base,base+2).map(async(f,i)=>{
+          const crop=await cropForFreeOcr(f,{x:0,y:.30,w:1,h:.69});
+          return ocrSpaceImage(crop,`recuperação ${base+i+1}`,18000,'3');
+        }));
+        for(const r of settled)if(r.status==='fulfilled'&&r.value?.text)retryBlocks.push(r.value);
+      }
+      if(retryBlocks.length){
+        const parsedRetry=deterministicRowsFromSectionedBlocks([...tableBlocks,...retryBlocks]);
+        let retryStructured=null;
+        try{retryStructured=await structureOcrText([...blocks,...retryBlocks]);}catch(_){}
+        const retryAi=Array.isArray(retryStructured?.data?.players)?retryStructured.data.players:[];
+        finalRows=consolidate([finalRows,parsedRetry.rows,retryAi]);
+        playerSum=finalRows.reduce((a,p)=>a+(money(p.value)||0),0);
+        blocks.push(...retryBlocks);
+      }
+    }
+
+    const parsedSections=deterministicRowsFromSectionedBlocks(tableBlocks);
+    const coverage={seen:parsedSections.seen,ordered:parsedSections.order,all:Object.values(parsedSections.seen).every(v=>v>0)};
     const first=sectionCoverageFromBlocks(tableBlocks.slice(0,3));
     const last=sectionCoverageFromBlocks(tableBlocks.slice(-3));
 
@@ -486,11 +514,12 @@
 
     const coveredStart=first.seen.ATA>0 || positionCoverage.ATA>0;
     const coveredEnd=last.seen.GOL>0 || positionCoverage.GOL>0;
+    const orderOk=['ATA','MEI','DEF','GOL'].every(x=>parsedSections.order.includes(x));
 
-    // Não existe "mínimo 18". A validação usa cobertura da rolagem.
     const coverageComplete=
       coveredStart &&
       coveredEnd &&
+      orderOk &&
       Object.values(positionCoverage).every(v=>v>0);
 
     return {
@@ -535,7 +564,9 @@
   }
 
   function normalizeRow(r){
-    const name=cleanName(r?.name),position=positionFromCode(r?.posCode),rating=num(r?.rating),age=num(r?.age),valueNum=money(r?.value);
+    const broad=String(r?.position||'').toUpperCase();
+    const position=VALID_POS.has(broad)?broad:positionFromCode(r?.posCode);
+    const name=cleanName(r?.name),rating=num(r?.rating),age=num(r?.age),valueNum=money(r?.value);
     if(!name||!position||rating===null||rating<40||rating>200||valueNum===null||valueNum<100000)return null;
     if(age!==null&&(age<15||age>45))return null;
     return {name,position,posCode:String(r?.posCode||'').toUpperCase(),rating,age,value:fmtMoney(valueNum),valueNum,training:r?.training===true,forSale:r?.forSale===true};
@@ -566,7 +597,7 @@
         if(r.hits>hit._bestHits){Object.assign(hit,{rating:r.rating,age:r.age,value:r.value,valueNum:r.valueNum,posCode:r.posCode});hit._bestHits=r.hits;}
       }else merged.push({...r,_bestHits:r.hits});
     }
-    return merged.map(({names,_bestHits,...r})=>({...r,verifiedRoster:true,source:'market_engine_53'}));
+    return merged.map(({names,_bestHits,...r})=>({...r,verifiedRoster:true,source:'market_engine_55'}));
   }
 
   function composition(rows){
@@ -758,6 +789,99 @@ Retorne JSON puro EXATAMENTE neste formato:
     }catch(err){if(err?.name==='AbortError')throw new Error('OpenRouter texto: tempo excedido');throw err}finally{guard.clear()}
   }
 
+
+  function broadPosCode(section){
+    return section==='ATA'?'ATA':section==='MEI'?'MID':section==='DEF'?'DEF':section==='GOL'?'GOL':null;
+  }
+
+  function explicitBroadPosition(line){
+    const re=/(?:^|\s|\|)(GR|GK|GOL|POR|DD|DC|DE|DF|DEF|ZAG|CB|RB|LB|MDC|MC|MCO|MD|ME|MF|MID|VOL|CM|CDM|CAM|LM|RM|PL|ED|EE|ATA|ATT|FW|FWD|ST|CA|PE|PD|LW|RW|CF)(?=\s|\||$)/i;
+    const m=String(line||'').match(re);
+    return m?positionFromCode(m[1]):null;
+  }
+
+  function parseRowFromSectionLine(rawLine,section){
+    const line=String(rawLine||'').replace(/[|]+/g,' | ').replace(/\s+/g,' ').trim();
+    if(line.length<5)return null;
+
+    const mm=line.match(/(\d+(?:[.,]\d+)?)\s*([MK])\b/i);
+    if(!mm)return null;
+
+    const explicit=explicitBroadPosition(line);
+    const position=explicit||section;
+    if(!VALID_POS.has(position))return null;
+
+    // Numbers before monetary value. In OSM columns are:
+    // Idade | Pos. | Ata | Def | Med | ... | Valor
+    const beforeMoney=line.slice(0,mm.index);
+    const nums=[...beforeMoney.matchAll(/\b(\d{2,3})\b/g)]
+      .map(m=>({n:Number(m[1]),i:m.index}))
+      .filter(x=>Number.isFinite(x.n));
+
+    const ageObj=nums.find(x=>x.n>=15&&x.n<=45) || null;
+    const age=ageObj?.n??null;
+    const stats=nums.filter(x=>x.n>=40&&x.n<=200 && (!ageObj || x.i!==ageObj.i)).map(x=>x.n);
+
+    let rating=null;
+    if(stats.length>=3){
+      if(position==='ATA')rating=stats[0];
+      else if(position==='DEF')rating=stats[1];
+      else if(position==='MEI')rating=stats[2];
+      else rating=Math.max(...stats);
+    }else if(stats.length){
+      rating=Math.max(...stats);
+    }
+    if(rating===null)return null;
+
+    // Prefer the text before age; otherwise before explicit position code.
+    let cut=beforeMoney.length;
+    if(ageObj)cut=Math.min(cut,ageObj.i);
+    const posMatch=beforeMoney.match(/(?:^|\s|\|)(GR|GK|GOL|POR|DD|DC|DE|DF|DEF|ZAG|CB|RB|LB|MDC|MC|MCO|MD|ME|MF|MID|VOL|CM|CDM|CAM|LM|RM|PL|ED|EE|ATA|ATT|FW|FWD|ST|CA|PE|PD|LW|RW|CF)(?=\s|\||$)/i);
+    if(posMatch)cut=Math.min(cut,posMatch.index);
+
+    let name=beforeMoney.slice(0,cut).replace(/^\s*\|?\s*/,'').replace(/[|]/g,' ').trim();
+    name=cleanName(name);
+    if(!name)return null;
+
+    const value=mm[1].replace('.',',')+mm[2].toUpperCase();
+    return {
+      name,age,position,posCode:broadPosCode(position),rating,value,
+      training:false,forSale:false,source:'section_parser'
+    };
+  }
+
+  function deterministicRowsFromSectionedBlocks(blocks){
+    const rows=[];
+    const seen={ATA:0,MEI:0,DEF:0,GOL:0};
+    const order=[];
+    let current='ATA'; // a lista do OSM começa por Avançados
+
+    for(const block of (blocks||[])){
+      const lines=String(block?.text||'').split(/\r?\n/);
+      for(const raw of lines){
+        const sec=normalizedSectionName(raw);
+        if(sec){
+          current=sec;
+          seen[sec]++;
+          if(!order.includes(sec))order.push(sec);
+          continue;
+        }
+
+        const explicit=explicitBroadPosition(raw);
+        if(explicit && VALID_POS.has(explicit) && explicit!==current){
+          // Ajuda quando o OCR perde o título de uma seção.
+          current=explicit;
+          seen[explicit]=Math.max(1,seen[explicit]);
+          if(!order.includes(explicit))order.push(explicit);
+        }
+
+        const row=parseRowFromSectionLine(raw,current);
+        if(row)rows.push(row);
+      }
+    }
+    return {rows,seen,order};
+  }
+
   function deterministicRowsFromOcr(text){
     const out=[];const posRe=/(?:^|\s|\|)(GR|GK|GOL|POR|DD|DC|DE|DF|DEF|MDC|MC|MCO|MD|ME|MF|MID|VOL|PL|ED|EE|ATA|ATT|FW|FWD|ST)(?=\s|\||$)/i;
     for(const rawLine of String(text||'').split(/\r?\n/)){
@@ -802,12 +926,41 @@ Retorne JSON puro EXATAMENTE neste formato:
 
   async function structureOcrText(blocks){
     const joined=blocks.map((x,i)=>`### BLOCO ${i+1} (${x.label})\n${x.text}`).join('\n\n');
-    const prompt=`Você recebe OCR de 3 painéis da MESMA rolagem do elenco no OSM 26 Android. O OCR já extraiu texto/tabela. NÃO invente dados ausentes e NÃO use conhecimento externo. Consolide duplicatas da rolagem.\n\nNo BLOCO 1 também existe o cabeçalho do time. cash é o dinheiro disponível (ex. 9,3M) e squadValue é o valor total do elenco (ex. 168M); nunca troque os dois.\n\nPara jogadores, retorne somente linhas que tenham nome, idade se visível, código de posição (GR/DD/DC/DE/MDC/MC/MCO/MD/ME/PL/ED/EE), força principal e valor monetário. Se training/forSale não estiver explicitamente reconhecível no OCR, use false.\n\nRetorne JSON puro: {"header":{"cash":null,"squadValue":null,"overall":null,"goalkeeper":null,"defence":null,"midfield":null,"attack":null,"formation":null},"players":[{"name":"","age":null,"posCode":null,"rating":null,"value":null,"training":false,"forSale":false}],"observedPlayerCount":null}.\n\n${joined}`;
-    const attempts=[];if(backupKeys().groq)attempts.push(groqTextJson(prompt));if(backupKeys().openrouter)attempts.push(openRouterTextJson(prompt));
-    if(attempts.length){try{return await Promise.any(attempts)}catch{}}
-    const rows=deterministicRowsFromOcr(joined),header=deterministicHeaderFromOcr(blocks[0]?.text||joined);
-    return {provider:'OCR.Space local',model:'parser determinístico',data:{header,players:rows,observedPlayerCount:rows.length}};
+    const prompt=`Você recebe OCR da rolagem COMPLETA do elenco no OSM 26 Android, em ordem temporal.
+
+REGRAS IMPORTANTES:
+- A lista é dividida em seções: Avançados, Médios, Defesas e Guarda-redes.
+- O título da seção define a posição ampla de TODOS os jogadores abaixo dele até o próximo título.
+- Portanto NÃO descarte uma linha só porque o código de posição individual foi mal reconhecido.
+- Consolide duplicatas da rolagem.
+- Não invente nome, idade, força ou valor.
+- cash é dinheiro disponível; squadValue é valor total do elenco.
+
+Para cada jogador retorne:
+name, age se visível, position ("ATA","MEI","DEF","GOL"), posCode se visível, rating principal e value.
+
+JSON puro:
+{"header":{"cash":null,"squadValue":null,"playerCount":null,"overall":null,"goalkeeper":null,"defence":null,"midfield":null,"attack":null,"formation":null},"players":[{"name":"","age":null,"position":null,"posCode":null,"rating":null,"value":null,"training":false,"forSale":false}],"observedPlayerCount":null}
+
+OCR:
+${joined}`;
+
+    const attempts=[];
+    if(backupKeys().groq)attempts.push(groqTextJson(prompt));
+    if(backupKeys().openrouter)attempts.push(openRouterTextJson(prompt));
+    if(attempts.length){
+      try{return await Promise.any(attempts)}catch{}
+    }
+
+    const parsed=deterministicRowsFromSectionedBlocks(blocks);
+    const header=deterministicHeaderFromOcr(blocks[0]?.text||joined);
+    return {
+      provider:'OCR.Space local',
+      model:'parser por seção',
+      data:{header,players:parsed.rows,observedPlayerCount:parsed.rows.length}
+    };
   }
+
 
   async function readRosterWithOcrSpace(frames){
     // V4.9: seleciona somente pausas visualmente diferentes da rolagem.
@@ -896,7 +1049,7 @@ Retorne JSON puro exatamente:
       source=`${result.provider||'OCR.Space'}:${result.model||'parser'}`;
       const diag=document.getElementById('analysisDiagnostics');
       const cov=result.positionCoverage||{};
-      if(diag)diag.textContent=`Elenco 5.4 · Engine 2 · ${result.tableBlocks}/${result.distinctFrames} quadros úteis · ATA/MEI/DEF/GOL ${cov.ATA||0}/${cov.MEI||0}/${cov.DEF||0}/${cov.GOL||0} · ${roster.length} únicos · ${Math.round((Date.now()-started)/1000)}s.`;
+      if(diag)diag.textContent=`Elenco 5.5 · Engine 2 · ${result.tableBlocks}/${result.distinctFrames} quadros úteis · ATA/MEI/DEF/GOL ${cov.ATA||0}/${cov.MEI||0}/${cov.DEF||0}/${cov.GOL||0} · ${roster.length} únicos · ${Math.round((Date.now()-started)/1000)}s.`;
       validationScan=result;
     }catch(err){
       technicalError=String(err?.message||err);
@@ -929,7 +1082,10 @@ Retorne JSON puro exatamente:
 
     if(sq!==null&&roster.length>0){
       const ratio=sum/sq;
-      if(ratio<.55||ratio>1.50)issues.push(`soma dos jogadores ${fmtMoney(sum)} incompatível com elenco ${fmtMoney(sq)}`);
+      if(ratio<.96||ratio>1.04){
+        const missing=Math.max(0,sq-sum);
+        issues.push(`valores lidos somam ${fmtMoney(sum)} de ${fmtMoney(sq)}${missing>0?` · ainda faltam cerca de ${fmtMoney(missing)} em jogadores`:''}`);
+      }
     }
     if(technicalError)issues.push(`falha técnica: ${technicalError}`);
 
@@ -941,14 +1097,14 @@ Retorne JSON puro exatamente:
       if(typeof renderMarket==='function')renderMarket();
       const msg=`${roster.length} jogadores validados · ${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL} · caixa ${fmtMoney(s.myTeam?.cash)} · elenco ${fmtMoney(s.myTeam?.squadValue)}.`;
       const el=document.getElementById('analysisContent');
-      if(el)el.innerHTML=`<div class="card" style="margin-top:12px"><span class="eyebrow">ELENCO VALIDADO · 5.4</span><h3>${roster.length} jogadores confirmados</h3><p class="small muted">${esc(msg)}</p><div class="fallback-kpis"><div><span>Caixa</span><b>${esc(fmtMoney(s.myTeam?.cash))}</b></div><div><span>Valor elenco</span><b>${esc(fmtMoney(s.myTeam?.squadValue))}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div></div><p class="small muted">Fonte: ${esc(source)} · Engine 2 + overlay de linhas · ${Math.round(validation.elapsedMs/1000)}s.</p></div>`;
+      if(el)el.innerHTML=`<div class="card" style="margin-top:12px"><span class="eyebrow">ELENCO VALIDADO · 5.5</span><h3>${roster.length} jogadores confirmados</h3><p class="small muted">${esc(msg)}</p><div class="fallback-kpis"><div><span>Caixa</span><b>${esc(fmtMoney(s.myTeam?.cash))}</b></div><div><span>Valor elenco</span><b>${esc(fmtMoney(s.myTeam?.squadValue))}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div></div><p class="small muted">Fonte: ${esc(source)} · Engine 2 + parser por seção + conferência pelo valor do elenco · ${Math.round(validation.elapsedMs/1000)}s.</p></div>`;
       setAnalysisRun(s,'market','success',msg,{version:VERSION,validation}); setProgress(100,'Elenco validado'); job('Elenco e finanças atualizados.','done'); return;
     }
 
     preserveFailed(s,validation,header); try{localStorage.setItem(STATE_KEY,JSON.stringify(state))}catch{}
     if(typeof renderMarket==='function')renderMarket();
     const el=document.getElementById('analysisContent');
-    if(el)el.innerHTML=`<div class="card ai-fallback-card" style="margin-top:12px"><span class="eyebrow">VALIDAÇÃO DE ELENCO · 5.4</span><h3>Leitura incompleta — não alterei seu elenco</h3><p class="small muted">${esc(validation.issues.join(' · '))}</p><div class="fallback-kpis"><div><span>Encontrados</span><b>${validation.count}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div><div><span>Tempo</span><b>${Math.round(validation.elapsedMs/1000)}s</b></div></div>${technicalError?`<p class="small muted" style="margin-top:10px">Erro técnico: ${esc(technicalError)}</p>`:''}</div>`;
+    if(el)el.innerHTML=`<div class="card ai-fallback-card" style="margin-top:12px"><span class="eyebrow">VALIDAÇÃO DE ELENCO · 5.5</span><h3>Leitura incompleta — não alterei seu elenco</h3><p class="small muted">${esc(validation.issues.join(' · '))}</p><div class="fallback-kpis"><div><span>Encontrados</span><b>${validation.count}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${comp.ATA}/${comp.MEI}/${comp.DEF}/${comp.GOL}</b></div><div><span>Tempo</span><b>${Math.round(validation.elapsedMs/1000)}s</b></div></div>${technicalError?`<p class="small muted" style="margin-top:10px">Erro técnico: ${esc(technicalError)}</p>`:''}</div>`;
     setAnalysisRun(s,'market','warning',`Leitura incompleta: ${validation.issues.join('; ')}`,{version:VERSION,validation}); setProgress(100,'Leitura incompleta'); job('Elenco não foi alterado porque a validação não fechou.','done');
   }
 
@@ -976,11 +1132,11 @@ Retorne JSON puro exatamente:
   }
   function directorHtml(s){
     const v=s?.rosterValidation42;
-    if(!v?.ok)return `<div class="card market40-card"><span class="eyebrow">DIRETOR IA · 5.4</span><h3>Plano bloqueado até ler o elenco completo</h3><p class="small muted">A versão 5.4 usa OCR.Space Engine 2, imagens abaixo de 1 MB e overlay de linhas; o Diretor só libera após cobertura completa.</p><div class="actions"><button class="btn" onclick="showView('analyze');setAnalysisMode('market')">Analisar elenco</button></div></div>`;
+    if(!v?.ok)return `<div class="card market40-card"><span class="eyebrow">DIRETOR IA · 5.5</span><h3>Plano bloqueado até ler o elenco completo</h3><p class="small muted">A versão 5.5 lê a posição pela seção da lista e só valida quando a soma dos jogadores fecha com o valor total do elenco.</p><div class="actions"><button class="btn" onclick="showView('analyze');setAnalysisMode('market')">Analisar elenco</button></div></div>`;
     const p=buildDirector(s),c={ATA:p.by.ATA.length,MEI:p.by.MEI.length,DEF:p.by.DEF.length,GOL:p.by.GOL.length};
     const sell=p.sells.length?p.sells.map((x,i)=>`<div class="radar-item"><div><b>${i+1}. ${esc(x.name)}</b><span>${esc(x.position)} · força ${esc(x.rating)} · valor ${esc(x.value)}${x.training?' · treinando':''}</span></div><span>${x.forSale?'Já à venda':'Excedente'}</span></div>`).join(''):'<p class="small muted">Nenhuma venda estrutural necessária agora.</p>';
     const weak=Object.entries(p.weakest).map(([k,x])=>x?`${k}: ${esc(x.name)} ${x.rating}`:`${k}: NI`).join(' · ');
-    return `<div class="card market40-card"><div class="section-head compact-head"><div><span class="eyebrow">DIRETOR IA · DADOS REAIS · 5.4</span><h3>Plano baseado somente no vídeo validado</h3></div></div>
+    return `<div class="card market40-card"><div class="section-head compact-head"><div><span class="eyebrow">DIRETOR IA · DADOS REAIS · 5.5</span><h3>Plano baseado somente no vídeo validado</h3></div></div>
       <div class="coach30-kpis"><div><span>Caixa</span><b>${esc(fmtMoney(p.cash))}</b></div><div><span>Valor do elenco</span><b>${esc(fmtMoney(p.sq))}</b></div><div><span>Jogadores</span><b>${p.rows.length}</b></div><div><span>ATA/MEI/DEF/GOL</span><b>${c.ATA}/${c.MEI}/${c.DEF}/${c.GOL}</b></div></div>
       <div class="reason-box"><b>Venda agora</b>${sell}${p.sells.length?`<p class="small muted">Referência de caixa se as ${p.sells.length} vendas ocorrerem pelo valor mostrado: ${esc(fmtMoney(p.afterSales))}. O preço efetivo de venda pode variar no OSM.</p>`:''}</div>
       <div class="reason-box"><b>Compra</b><p>Caixa imediato: <b>${esc(fmtMoney(p.cash))}</b>. ${p.sells.length?`Referência após vendas: <b>${esc(fmtMoney(p.afterSales))}</b>.`:''}</p><p class="small muted">Sem ler a lista de transferências, não inventarei nome/preço disponível. O Diretor usa este teto real para indicar quais opções observadas no mercado cabem no orçamento.</p></div>
@@ -1034,7 +1190,7 @@ Retorne JSON puro exatamente:
   function injectBackupSettings(){
     const view=document.getElementById('view-settings');if(!view||document.getElementById('multiAiBackupCard'))return;
     const card=document.createElement('div');card.id='multiAiBackupCard';card.className='card form';card.style.marginTop='12px';
-    card.innerHTML=`<span class="eyebrow">IA DE BACKUP · 5.4</span><h3>OCR especializado + IA de backup</h3><p class="small muted">Elenco: OCR.Space lê as tabelas; OpenRouter/Groq consolidam o texto. Gemini fica reservado para outras análises. As chaves ficam somente neste navegador.</p><label>OpenRouter API Key<input id="openrouterKey44" type="password" autocomplete="off" placeholder="sk-or-v1-..."></label><label>Groq API Key<input id="groqKey44" type="password" autocomplete="off" placeholder="gsk_..."></label><label>OCR.Space API Key<input id="ocrSpaceKey46" type="password" autocomplete="off" placeholder="Chave OCR.Space"></label><div class="actions"><button class="btn" id="saveBackupKeys44">Salvar chaves</button></div><p id="backupAiStatus44" class="small muted"></p>`;
+    card.innerHTML=`<span class="eyebrow">IA DE BACKUP · 5.5</span><h3>OCR especializado + IA de backup</h3><p class="small muted">Elenco: OCR.Space lê as tabelas; OpenRouter/Groq consolidam o texto. Gemini fica reservado para outras análises. As chaves ficam somente neste navegador.</p><label>OpenRouter API Key<input id="openrouterKey44" type="password" autocomplete="off" placeholder="sk-or-v1-..."></label><label>Groq API Key<input id="groqKey44" type="password" autocomplete="off" placeholder="gsk_..."></label><label>OCR.Space API Key<input id="ocrSpaceKey46" type="password" autocomplete="off" placeholder="Chave OCR.Space"></label><div class="actions"><button class="btn" id="saveBackupKeys44">Salvar chaves</button></div><p id="backupAiStatus44" class="small muted"></p>`;
     view.appendChild(card);
     const or=document.getElementById('openrouterKey44'),g=document.getElementById('groqKey44'),o=document.getElementById('ocrSpaceKey46');or.value=localStorage.getItem(OPENROUTER_KEY)||'';g.value=localStorage.getItem(GROQ_KEY)||'';o.value=localStorage.getItem(OCRSPACE_KEY)||'';
     const update=()=>{const k=backupKeys();document.getElementById('backupAiStatus44').textContent=`OCR.Space: ${ocrSpaceKey()?'configurado':'não configurado'} · OpenRouter: ${k.openrouter?'configurado':'não configurado'} · Groq: ${k.groq?'configurado':'não configurado'}${geminiCoolingDown()?' · Gemini em cooldown por cota':''}`};update();
@@ -1042,6 +1198,6 @@ Retorne JSON puro exatamente:
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(injectBackupSettings,250));else setTimeout(injectBackupSettings,250);
 
-  window.OSM_MARKET_ENGINE_54={version:VERSION,consolidate,validateRoster,buildDirector};
+  window.OSM_MARKET_ENGINE_55={version:VERSION,consolidate,validateRoster,buildDirector};
   try{console.info('[OSM] Market Engine '+VERSION+' ativo')}catch{}
 })();
