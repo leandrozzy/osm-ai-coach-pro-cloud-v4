@@ -1,5 +1,5 @@
-const CACHE='osm-pro-v4-hotfix-34-20261001-v1';
-const ASSETS=['./','./index.html','./styles.css','./clean-fix-v25.css','./coach-ai-30.css','./app.js','./clean-fix-v25.js','./coach-ai-30.js','./analysis-hotfix-33.js','./analysis-hotfix-34.js','director-hotfix-35.js','analysis-hotfix-35.js','./director-hotfix-34.js','./push-integrated.js','./manifest.webmanifest','./icon.svg'];
+const CACHE='osm-pro-v4-hotfix-36-20261001-v1';
+const ASSETS=['./','./index.html','./styles.css','./clean-fix-v25.css','./coach-ai-30.css','./app.js','./clean-fix-v25.js','./coach-ai-30.js','./analysis-hotfix-33.js','./analysis-hotfix-34.js','director-hotfix-35.js','analysis-hotfix-35.js','./director-hotfix-34.js','./push-integrated.js','./analysis-hotfix-36.js','./director-hotfix-36.js','./manifest.webmanifest','./icon.svg'];
 self.addEventListener('install',event=>{event.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)).catch(()=>null).then(()=>self.skipWaiting()));});
 self.addEventListener('activate',event=>{event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim()));});
 self.addEventListener('fetch',event=>{if(event.request.method!=='GET')return;event.respondWith(fetch(event.request).then(r=>{const copy=r.clone();caches.open(CACHE).then(c=>c.put(event.request,copy)).catch(()=>{});return r;}).catch(()=>caches.match(event.request).then(r=>r||caches.match('./index.html'))));});
