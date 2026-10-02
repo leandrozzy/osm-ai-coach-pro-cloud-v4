@@ -1,6 +1,7 @@
 import {extractFrames,imageToCanvas} from './frame-extractor.js';
 import {visualBatches} from './frame-selection.js';
 import {applyScreenEvidence} from './visual-evidence.js';
+import {refineSquadRoster} from './squad-roster.js';
 import {prepareOcrImages} from './ocr-image.js';
 import {localOCR} from './ocr.js';
 import {apiRequest,apiStatus,sessionProviders} from './ai-router.js';
@@ -27,7 +28,7 @@ function visualImage(source){
 }
 export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
  if(files.length>24||files.some(f=>f.size>150*1024*1024))throw Error('Máximo 24 arquivos, 150 MB por arquivo.');
- const started=Date.now(),limit=options.profile==='complete'?180000:90000,frames=[],errors=[],attempts=[],disabled=new Set();let data=blankExtraction();
+ const started=Date.now(),limit=options.profile==='complete'?180000:90000,frames=[],errors=[],attempts=[],rosterEvidence=[],readingTeams=[],disabled=new Set();let data=blankExtraction();
  const expired=()=>options.signal?.aborted||Date.now()-started>=limit;
  const context={username:options.username,myTeam:options.myTeam,rivalName:options.rivalName,competitionType:options.competitionType};
  const status=options.vision?await apiStatus():null;
@@ -52,6 +53,9 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
     const images=batch.map(f=>visualImage(f.canvas));
     const r=await apiRequest('analyze',{type,images,useVisual:visualSlots.has(Math.floor(index/2)),forceOCR:true,preferredProvider:disabled.has('google')?'groq':'google',ocrImages:batch.flatMap((f,frameIndex)=>prepareOcrImages(f.canvas,type).map(image=>({...image,frameIndex}))).sort((a,b)=>(a.region==='full'?0:1)-(b.region==='full'?0:1)),focusImages:batch.map((f,j)=>focusImage(f.canvas,type,index+j)).filter(Boolean),context,disabled:[...disabled],models:{groqVision:options.visionModel,groqText:options.model}},options.signal,35000);
     data=fuseExtraction(data,r.data);attempts.push(...r.attempts||[]);
+    for(const proof of r.teamEvidence||[])if(proof.verified===true&&typeof proof.team==='string'&&proof.team.trim()&&proof.team!=='NI')readingTeams.push(proof.team.trim());
+    if(type==='squad')for(const evidence of r.squadEvidence||[]){const frame=batch[evidence.frameIndex];if(frame)rosterEvidence.push(...(evidence.players||[]).map(row=>({...row,width:evidence.width,height:evidence.height,frameId:frame.name+':'+frame.time})));}
+
     const local=applyScreenEvidence(data,r,batch,type);data=local.data;attempts.push(...local.used);
     if(!coverage(type,data).complete)startVideo();
     for(const f of r.failures||[]){errors.push(f.provider+': '+(f.status===429?'Limite de cota atingido. Novas chamadas foram pausadas; aguarde a renovação do limite do provedor.':f.status===503?'Serviço sobrecarregado. A leitura continua com os outros serviços.':f.message||f.error||'indisponível'));if(f.provider==='groq'&&(f.code==='NO_SUPPORTED_MODEL'||f.status===404))disabled.add(f.stage==='text'?'groq-text':'groq-visual');else if([401,403,404,429,503].includes(f.status)||f.code==='PROVIDER_BUSY'||f.code==='PROVIDER_COOLDOWN'||f.code==='PROVIDER_TIMEOUT')disabled.add(f.provider);}
@@ -65,8 +69,9 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
  if(!coverage(type,data).complete)startVideo();
  if(videoJob)await videoJob;
  if(expired())errors.push('Limite atingido ou cancelado: revise os dados parciais.');
+ if(type==='squad'){const checked=refineSquadRoster(data,rosterEvidence);data=checked.data;data.warnings.push(...checked.warnings);}
  const quality=coverage(type,data);
  if(!quality.complete)errors.push('Leitura parcial: '+quality.missing.slice(0,12).join('; '));
  const unresolved=data.conflicts.filter(c=>!c.resolved);if(unresolved.length)errors.push(unresolved.length+' divergências entre leituras: confira os valores na mídia.');
- return {...data,files:[...files],type,previews,errors:[...new Set([...errors,...data.warnings])],mode:[...new Set(attempts)].join(' + ')||'Sem resposta',frames:frames.length,coverage:quality,elapsedMs:Date.now()-started,createdAt:new Date().toISOString()};
+ return {...data,rosterEvidence,readingTeams:[...new Set(readingTeams)],files:[...files],type,previews,errors:[...new Set([...errors,...data.warnings])],mode:[...new Set(attempts)].join(' + ')||'Sem resposta',frames:frames.length,coverage:quality,elapsedMs:Date.now()-started,createdAt:new Date().toISOString()};
 }

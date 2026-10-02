@@ -23,7 +23,7 @@ function evidenceFor(record,type,source,options={},prior={}){
  const kind=sourceKind(source,options);
  const preserve=options.preserveEvidence===true||!source||['pixels','ocr-layout','ocr-explicit','manual'].includes(kind);
  const sources=preserve?cleanFieldSources(prior):{};
- const allowed=kind==='pixels'?(type==='calendar'?['home','cup','result']:type==='squad'?['training','forSale']:['secretTraining','referee']):kind==='ocr-layout'?(type==='calendar'?['round','date','time','displayedScore']:type==='squad'?['position','strength','age','value']:[]):kind==='ocr-explicit'?matchFields.map(([key])=>key).filter(key=>!textIdentityFields.has(key)):Object.keys(record);
+ const allowed=kind==='pixels'?(type==='calendar'?['home','cup','result']:type==='squad'?['position','strength','training','forSale']:['secretTraining','referee']):kind==='ocr-layout'?(type==='calendar'?['round','date','time','displayedScore']:type==='squad'?['position','strength','age','value']:[]):kind==='ocr-explicit'?matchFields.map(([key])=>key).filter(key=>!textIdentityFields.has(key)):Object.keys(record);
  const selected=Array.isArray(options.fields)?options.fields:allowed;
  for(const key of Object.keys(record)){
  if(key.startsWith('_')||key==='id'||!known(record[key]))continue;
@@ -43,7 +43,7 @@ export function normalizeDate(v){
  return m[1].padStart(2,'0')+'/'+m[2].padStart(2,'0')+'/'+year;
 }
 export function cleanCalendar(rows=[],conflicts=null){
- return rows.filter(r=>r&&typeof r==='object'&&(known(r.round)||known(r.opponent))).slice(0,150).map(r=>{
+ return rows.filter(r=>r&&typeof r==='object'&&(known(r.round)||known(r.opponent)||(known(r.stage)&&(known(normalizeDate(r.date))||/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(r.time))))).slice(0,150).map(r=>{
  const fieldSources=cleanFieldSources(r._fieldSources);
  let result=['V','E','D'].includes(r.result)?r.result:'NI';
  const home=typeof r.home==='boolean'?r.home:null;
@@ -72,7 +72,7 @@ export function normalizeExtraction(raw={},type,source='',options={}){
  out.calendar=rows.filter(calendarHasSchedule);out.calendarFragments=rows.filter(r=>!calendarHasSchedule(r));
  }
  if(raw.meta&&typeof raw.meta==='object'){
- const m=raw.meta;out.meta={rivalReportLocked:m.rivalReportLocked===true,team:safeText(m.team),cash:safeText(m.cash),squadValue:safeText(m.squadValue),...Object.fromEntries(['strength','GK','DEF','MID','ATT'].map(k=>[k,num(m[k])!==null&&num(m[k])>0&&num(m[k])<=400?num(m[k]):null])),expectedPlayers:num(m.expectedPlayers),expectedRounds:num(m.expectedRounds),sawTop:m.sawTop===true,sawBottom:m.sawBottom===true,visibleNames:Array.isArray(m.visibleNames)?m.visibleNames.filter(n=>typeof n==='string').slice(0,80):[],hiddenFields:Array.isArray(m.hiddenFields)?m.hiddenFields.filter(k=>matchFields.some(([f])=>f===k)):[]};
+ const m=raw.meta;out.meta={rivalReportLocked:m.rivalReportLocked===true,team:safeText(m.team),teamVerified:m.teamVerified===true&&(sourceKind(source,options)==='ocr-layout'||!source||options.preserveEvidence===true),cash:safeText(m.cash),squadValue:safeText(m.squadValue),...Object.fromEntries(['strength','GK','DEF','MID','ATT'].map(k=>[k,num(m[k])!==null&&num(m[k])>0&&num(m[k])<=400?num(m[k]):null])),expectedPlayers:num(m.expectedPlayers),expectedRounds:num(m.expectedRounds),sawTop:m.sawTop===true,sawBottom:m.sawBottom===true,visibleNames:Array.isArray(m.visibleNames)?m.visibleNames.filter(n=>typeof n==='string').slice(0,80):[],hiddenFields:Array.isArray(m.hiddenFields)?m.hiddenFields.filter(k=>matchFields.some(([f])=>f===k)):[]};
  }
  if(type==='match'&&out.meta.rivalReportLocked)out.match.secretTraining='Sim';
  if(type==='match')out._matchFieldSources=evidenceFor(out.match,type,source,options,raw._matchFieldSources||raw.match?._fieldSources);
@@ -93,6 +93,28 @@ function mergeFields(a,b,conflicts,path){
 }
 const calendarHasSchedule=row=>['round','date','time'].some(key=>known(row[key]));
 const calendarValue=(key,value)=>['opponent','nickname','stage'].includes(key)?normalize(value).replace(/\s+/g,' '):String(value);
+const cupStage=value=>{const text=normalize(value).replace(/[- ]+/g,' ').trim();if(/^(?:meias? finais?|semi ?finais?)$/.test(text))return 'semifinal';if(/^(?:quartos?(?: de)? final)$/.test(text))return 'quarterfinal';if(/^(?:oitavos?(?: de)? final)$/.test(text))return 'last16';return /^(?:final|preliminar(?:es)?(?: (?:da |de )?copa)?|qualificacao)$/.test(text)?text:null;};
+function compatibleFixtureField(a,b,key){
+ if(!known(a[key])||!known(b[key])||calendarValue(key,a[key])===calendarValue(key,b[key]))return true;
+ if(known(a.round)&&known(b.round)&&a.round!==b.round)return false;
+ const firstRank=fieldRank(a,key),secondRank=fieldRank(b,key);
+ return Math.max(firstRank,secondRank)>=2&&firstRank!==secondRank;
+}
+function datedCalendarIdentity(a,b){
+ if(!known(a.date)||a.date!==b.date||!['time','home','cup'].every(key=>compatibleFixtureField(a,b,key)))return false;
+ if(known(a.round)&&known(b.round)&&a.round!==b.round&&Math.min(fieldRank(a,'round'),fieldRank(b,'round'))>=2)return false;
+ if(known(a.opponent)&&known(b.opponent)&&calendarValue('opponent',a.opponent)===calendarValue('opponent',b.opponent))return true;
+ // An undrawn cup fixture still has an observable date and phase. Its NI rival
+ // is expected; keep it once instead of requiring a fabricated opponent.
+ const phaseA=cupStage(a.stage),phaseB=cupStage(b.stage);
+ if(a.cup===true&&b.cup===true&&phaseA&&phaseA===phaseB&&(!known(a.opponent)||!known(b.opponent)))return true;
+ // OCR can read a round or club name incompletely. Match a uniquely dated card
+ // to its numbered counterpart only with a literal date and another matching
+ // venue/competition/time marker. Different explicit rounds remain distinct.
+ if(known(a.round)===known(b.round)||Math.max(fieldRank(a,'date'),fieldRank(b,'date'))<2)return false;
+ if(known(a.stage)&&known(b.stage)&&calendarValue('stage',a.stage)!==calendarValue('stage',b.stage))return false;
+ return ['home','cup','time'].some(key=>known(a[key])&&known(b[key])&&calendarValue(key,a[key])===calendarValue(key,b[key])&&Math.max(fieldRank(a,key),fieldRank(b,key))>=2);
+}
 const calendarCompatible=(a,b)=>['date','time','opponent','nickname','home','cup','score','displayedScore','result','stage'].every(key=>!known(a[key])||!known(b[key])||calendarValue(key,a[key])===calendarValue(key,b[key]));
 function calendarPartialIdentity(a,b){
  // An opponent can appear in both legs. Its name alone never identifies a game.
@@ -108,15 +130,8 @@ function fuseCalendar(rows,conflicts){
  if(!fragments.some(fragment=>fragment.key===key))fragments.push({key,row});
  continue;
  }
- const identity=known(row.date)&&known(row.opponent)?'date:'+row.date+'|'+normalize(row.opponent):null;
- const exactMatches=calendar.map((old,index)=>identity&&old.date===row.date&&calendarValue('opponent',old.opponent)===calendarValue('opponent',row.opponent)&&['time','home','cup'].every(key=>{
- if(!known(old[key])||!known(row[key])||calendarValue(key,old[key])===calendarValue(key,row[key]))return true;
- // Correct an uncertain field within the same fixture, while preserving two
- // explicitly different rounds whose venue/competition identifies separate games.
- if(known(old.round)&&known(row.round)&&old.round!==row.round)return false;
- const oldRank=fieldRank(old,key),newRank=fieldRank(row,key);
- return Math.max(oldRank,newRank)>=2&&oldRank!==newRank;
- })?index:-1).filter(index=>index>=0);
+ const identity=known(row.date)?'date:'+row.date+'|'+(known(row.opponent)?normalize(row.opponent):'stage:'+cupStage(row.stage)):null;
+ const exactMatches=calendar.map((old,index)=>datedCalendarIdentity(old,row)?index:-1).filter(index=>index>=0);
  const exact=exactMatches.length===1?exactMatches[0]:-1;
  const byRound=calendar.findIndex(old=>known(row.round)&&known(old.round)&&old.round===row.round);
  const partial=calendar.map((old,index)=>calendarPartialIdentity(old,row)?index:-1).filter(index=>index>=0);
@@ -134,7 +149,39 @@ function fuseCalendar(rows,conflicts){
  merged._source=[...new Set([old._source,row._source].filter(known))].join(' + ');
  calendar[index]=merged;
  }
- return {calendar:cleanCalendar(calendar,conflicts),calendarFragments:fragments.map(fragment=>fragment.row)};
+ const ordered=cleanCalendar(calendar,conflicts).sort((a,b)=>{
+ if(known(a.round)&&known(b.round))return a.round-b.round;
+ if(known(a.round)!==known(b.round))return known(a.round)?-1:1;
+ if(known(a.date)&&known(b.date))return a.date.split('/').reverse().join('').localeCompare(b.date.split('/').reverse().join(''));
+ return 0;
+ });
+ return {calendar:ordered,calendarFragments:fragments.map(fragment=>fragment.row)};
+}
+function oneCharacterApart(a,b){
+ if(Math.abs(a.length-b.length)>1||Math.min(a.length,b.length)<4)return false;
+ let i=0,j=0,difference=0;
+ while(i<a.length&&j<b.length){if(a[i]===b[j]){i++;j++;continue;}if(++difference>1)return false;if(a.length>=b.length)i++;if(b.length>=a.length)j++;}
+ return difference+(i<a.length||j<b.length?1:0)===1;
+}
+function playerOcrIdentity(a,b){
+ const name=value=>normalize(value).replace(/[^\p{L}\p{N}]/gu,'');
+ if(!known(a._source)||!known(b._source)||a._source===b._source)return false;
+ if(!oneCharacterApart(name(a.name),name(b.name)))return false;
+ const equal=(key,x,y)=>key==='value'?String(x).toLowerCase().replace(/\s/g,'').replace(',','.')===String(y).toLowerCase().replace(/\s/g,'').replace(',','.'):String(x)===String(y);
+ const keys=['age','value','strength','position'];
+ if(keys.some(key=>known(a[key])&&known(b[key])&&!equal(key,a[key],b[key])))return false;
+ const anchors=keys.filter(key=>key!=='position'&&known(a[key])&&known(b[key])&&equal(key,a[key],b[key]));
+ // A near-spelled name is not sufficient. Require two observed attributes and
+ // literal OCR for at least one, from separate readings. The differing name
+ // remains a review conflict; two names in the same source remain separate.
+ return anchors.length>=2&&anchors.some(key=>Math.max(fieldRank(a,key),fieldRank(b,key))>=2);
+}
+function uniqueConflicts(conflicts){
+ const records=new Map();
+ for(const conflict of conflicts){
+ const field=String(conflict.field||''),key=field+'|'+[conflict.first,conflict.second].map(value=>JSON.stringify(textIdentityFields.has(field.split('.').at(-1))?normalize(value).replace(/\s+/g,' '):value)).sort().join('|');
+ const prior=records.get(key);if(!prior||(!prior.resolved&&conflict.resolved))records.set(key,conflict);
+ }return [...records.values()];
 }
 export function fuseExtraction(first,second){
  const a=first||blankExtraction(),b=second||blankExtraction(),conflicts=[...(a.conflicts||[]),...(b.conflicts||[])].map(conflict=>({...conflict}));
@@ -142,8 +189,9 @@ export function fuseExtraction(first,second){
  const matchFieldSources=match._fieldSources;delete match._fieldSources;
  const out={...a,match,_matchFieldSources:matchFieldSources,players:[...(a.players||[])],calendar:[...(a.calendar||[])],calendarFragments:[...(a.calendarFragments||[])],sources:[...new Set([...(a.sources||[]),...(b.sources||[])])],warnings:[...new Set([...(a.warnings||[]),...(b.warnings||[])])],conflicts,meta:{...a.meta}};
  for(const type of ['players']){
- const map=new Map(out[type].map(r=>[rowKey(r,type),r]));
- for(const row of b[type]||[]){let key=rowKey(row,type);
+ const map=new Map();
+ for(const row of [...(a[type]||[]),...(b[type]||[])]){let key=rowKey(row,type);
+ if(!map.has(key)){const candidates=[...map].filter(([,old])=>playerOcrIdentity(old,row));if(candidates.length===1)key=candidates[0][0];}
  const old=map.get(key);if(!old)map.set(key,row);else{
  const merged=mergeFields(old,row,conflicts,key);
  merged._source=[old._source,row._source].filter(Boolean).join(' + ');map.delete(key);map.set(rowKey(merged,type),merged);}}
@@ -154,12 +202,14 @@ export function fuseExtraction(first,second){
  out.warnings=[...new Set(out.warnings)];
  const am=a.meta||{},bm=b.meta||{};
  for(const k of ['team','cash','squadValue','strength','GK','DEF','MID','ATT','expectedPlayers','expectedRounds'])if(!known(out.meta[k])&&known(bm[k]))out.meta[k]=bm[k];
+ if(bm.teamVerified===true&&known(bm.team)&&am.teamVerified!==true)out.meta.team=bm.team;
+ out.meta.teamVerified=(am.teamVerified===true&&known(am.team))||(bm.teamVerified===true&&known(bm.team)&&normalize(out.meta.team)===normalize(bm.team));
  out.meta.rivalReportLocked=am.rivalReportLocked===true||bm.rivalReportLocked===true;
  if(out.meta.rivalReportLocked&&!(out._matchFieldSources.secretTraining?.rank>=3&&out.match.secretTraining==='Não'))out.match.secretTraining='Sim';
  out.meta.sawTop=am.sawTop===true||bm.sawTop===true;out.meta.sawBottom=am.sawBottom===true||bm.sawBottom===true;
  out.meta.visibleNames=[...new Set([...(am.visibleNames||[]),...(bm.visibleNames||[])])];
  out.meta.hiddenFields=[...new Set([...(am.hiddenFields||[]),...(bm.hiddenFields||[])])];
- out.conflicts=[...new Map(conflicts.map(c=>[JSON.stringify(c),c])).values()];
+ out.conflicts=uniqueConflicts(conflicts);
  return out;
 }
 export function coverage(type,data){
@@ -173,7 +223,8 @@ export function coverage(type,data){
  for(const [i,row] of (rows||[]).entries())for(const f of fields){
  const played=known(row.result)||known(row.score)||known(row.displayedScore);
  if(type==='calendar'&&((['score','result'].includes(f)&&!played)||(f==='time'&&(played||known(row.date)))))continue;
- total++;if(known(row[f]))present++;else missing.push((type==='squad'?row.name:'Rodada '+(row.round??i+1))+': '+f);
+ if(type==='calendar'&&f==='opponent'&&!played&&row.cup===true&&cupStage(row.stage)&&!known(row.opponent))continue;
+ total++;if(known(row[f]))present++;else missing.push((type==='squad'?row.name:known(row.round)?'Rodada '+row.round:known(row.date)?'Jogo em '+row.date:'Jogo sem rodada '+(i+1))+': '+f);
  }
  if(!rows?.length)missing.push(type==='squad'?'Nenhum jogador reconhecido':'Nenhum jogo reconhecido');
  if(type==='calendar'&&data.calendarFragments?.length)missing.push(data.calendarFragments.length+' informações parciais sem rodada, data ou horário');
@@ -183,5 +234,5 @@ export function coverage(type,data){
  if(expected!==null&&expected!==(rows||[]).length)missing.push('Quantidade esperada '+expected+', capturada '+(rows||[]).length);
  }
  const unresolved=(data.conflicts||[]).filter(conflict=>!conflict.resolved).length,resolved=(data.conflicts||[]).length-unresolved;
- return {percent:total?Math.round(present/total*100):0,missing,conflicts:unresolved,resolvedConflicts:resolved,complete:missing.length===0&&!unresolved,fragmentCount:type==='calendar'?data.calendarFragments?.length||0:0,detectedCount:type==='calendar'?data.calendar.filter(calendarHasSchedule).length:type==='squad'?data.players.length:present,count:type==='squad'?data.players.length:type==='calendar'?data.calendar.filter(r=>calendarHasSchedule(r)&&['opponent','stage','date','time','result','displayedScore','score'].some(k=>known(r[k]))).length:present};
+ return {percent:total?Math.round(present/total*100):0,missing,conflicts:unresolved,resolvedConflicts:resolved,complete:missing.length===0&&!unresolved,fragmentCount:type==='calendar'?data.calendarFragments?.length||0:0,detectedCount:type==='calendar'?new Set(data.calendar.map(row=>row.round).filter(known)).size:type==='squad'?data.players.length:present,count:type==='squad'?data.players.length:type==='calendar'?data.calendar.filter(r=>calendarHasSchedule(r)&&['opponent','stage','date','time','result','displayedScore','score'].some(k=>known(r[k]))).length:present};
 }

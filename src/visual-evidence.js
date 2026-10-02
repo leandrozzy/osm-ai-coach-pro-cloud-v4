@@ -1,5 +1,6 @@
 import {detectCalendarPixels} from './calendar-icons.js';
 import {detectSquadPixels} from './squad-icons.js';
+import {detectSquadAttributePixels} from './squad-attributes.js';
 import {detectMatchIcons} from './match-icons.js';
 import {normalizeExtraction,fuseExtraction} from './extraction.js';
 import {known} from './domain.js';
@@ -21,13 +22,18 @@ export function applyScreenEvidence(initial,response,frames,type){
  }
  if(type==='squad')for(const evidence of response.squadEvidence||[]){
   const image=imageFor(evidence.frameIndex);if(!image)continue;
-  const players=[];
+  const icons=[];
   for(const row of evidence.players||[]){
    const facts=detectSquadPixels(image,{...row,width:evidence.width,height:evidence.height});
-   if(facts.training===null&&facts.forSale===null)continue;
-   players.push({...row,...facts});
+   if(facts.training!==null||facts.forSale!==null)icons.push({name:row.name,training:facts.training,forSale:facts.forSale});
+   const attributes=detectSquadAttributePixels(image,row);
+   const proved=Object.fromEntries(Object.entries(attributes).filter(([,value])=>value!==null));
+   if(Object.keys(proved).length){
+    data=fuseExtraction(data,normalizeExtraction({players:[{name:row.name,...proved}]},type,'Posições e atributos nas telas',{sourceKind:'pixels',fields:Object.keys(proved)}));
+    used.add('posições e atributos nas telas');
+   }
   }
-  if(players.length){data=fuseExtraction(data,normalizeExtraction({players},type,'Camisas e setas nas telas',{sourceKind:'pixels',fields:['training','forSale']}));used.add('camisas e setas locais');}
+  if(icons.length){data=fuseExtraction(data,normalizeExtraction({players:icons},type,'Camisas e setas nas telas',{sourceKind:'pixels',fields:['training','forSale']}));used.add('camisas e setas locais');}
  }
  if(type==='match')for(const evidence of response.matchEvidence||[]){
   const canvas=frames[evidence.frameIndex]?.canvas;if(!canvas)continue;

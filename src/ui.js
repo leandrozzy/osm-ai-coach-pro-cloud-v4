@@ -13,6 +13,8 @@ import {fuseExtraction,coverage} from './extraction.js';
 import {cleanCalendar} from './extraction.js';
 import {askAI,apiStatus,setSessionKey,hasSessionKey,sessionProviders,providerKey,apiRequest} from './ai-router.js';
 import {analyzeMedia} from './video.js';
+import {applyReading,slotTeam,readingTeam} from './review-application.js';
+import {refineSquadRoster} from './squad-roster.js';
 import {requestNotifications,pollNotifications} from './notifications.js';
 let root,tab='today',busy=false,progress='',analysisType='match',review=null,analysisController=null,api=null,installPrompt=null,apiChecks=null,checkingApis=false;
 const navs=[['today','Hoje','◷'],['pregame','Pré-jogo','⚑'],['analyze','Analisar','⊕'],['info','Informações','▤'],['director','Diretor','↗'],['learning','Aprendizado','◎'],['settings','Configurações','⚙']];
@@ -58,7 +60,9 @@ function analyze(){
  let body=pagehead('Transforme telas em preparação.','Vídeos e imagens do OSM, com revisão antes de salvar.');
  body+=card('O que vamos ler?','<div class="seg">'+Object.entries(labels).map(([k,l])=>btn(l,'type:'+k,true,'aria-pressed="'+(analysisType===k)+'" '+(busy?'disabled':'')+' data-selected="'+(analysisType===k)+'"')).join('')+'</div><label class="upload"><span class="upload-icon">↑</span><b>Escolha vídeos ou imagens</b><span>PNG, JPEG, WebP ou vídeo · até 24 arquivos · 150 MB por arquivo</span><input id="media" type="file" accept="image/*,video/*" multiple '+(busy?'disabled':'')+'><small id="fileCount">Nenhum arquivo selecionado</small></label>'+select('reader','Método de leitura','vision',[['vision','Automático · Google, Groq, OCR.space e TwelveLabs'],['local','Somente OCR local gratuito']])+note('Telas diferentes são selecionadas ao longo do vídeo, mantendo a resolução. Até três consultas visuais por análise reduzem o consumo de cota. A análise automática consulta os provedores configurados e completa dados parciais. OCR textual não identifica cores e ícones com segurança. Camisas, setas, cadeado e ícones são conferidos nas telas originais. Dados sem evidência continuam NI.')+'<div class="actions">'+btn(busy?'Lendo…':'Analisar mídia','analyze',false,busy?'disabled':'')+(busy?btn('Cancelar','cancel',true):'')+'</div><div class="progress" role="status" aria-live="polite">'+esc(progress||'Pronto para analisar. Seus dados atuais serão preservados.')+'</div>');
  if(review&&review.slot===getSlot().id){
- body+=card('Revise a leitura','<div class="reading-summary"><strong>'+review.coverage.count+' '+(review.type==='match'?'campos':review.type==='squad'?'jogadores':'jogos')+(review.type==='calendar'?' com dados · '+(review.coverage.detectedCount??review.calendar.length)+' rodadas detectadas':' reconhecidos')+'</strong><span>'+review.coverage.percent+'% dos campos · '+Math.round((review.elapsedMs||0)/1000)+'s</span></div><p class="muted">'+esc(review.mode)+' · '+review.frames+' telas. Edite os campos abaixo antes de salvar no S'+review.slot+'.</p>'+(review.errors.length?'<details class="reading-warnings" open><summary>Leitura incompleta / avisos ('+review.errors.length+')</summary><ul>'+review.errors.map(e=>'<li>'+esc(e)+'</li>').join('')+'</ul></details>':'')+'<details><summary>Ver telas extraídas</summary><div class="frames">'+review.previews.map(p=>'<figure><img src="'+p.url+'" alt="Tela extraída de '+esc(p.name)+'" loading="lazy"><figcaption>'+esc(p.name)+' · '+p.time.toFixed(1)+'s</figcaption></figure>').join('')+'</div></details>'+renderReview(review)+'<div class="actions">'+btn('Confirmar dados revisados','applyReview')+btn('Completar leitura','retryAnalysis',true)+btn('Descartar leitura','discardReview',true)+'</div>'+note('NI = não identificado. Confira os dados nas telas; valores desconhecidos preservam os dados válidos já salvos.'));
+ const club=readingTeam(review.type,review.type==='match'?review.match:review,review.meta);
+ const clubNotice=known(club)?note('Clube lido: '+esc(club)+'. Os dados serão salvos no slot escolhido abaixo.') : '';
+ body+=card('Revise a leitura','<div class="reading-summary"><strong>'+review.coverage.count+' '+(review.type==='match'?'campos':review.type==='squad'?'jogadores':'jogos')+(review.type==='calendar'?' com dados · '+(review.coverage.detectedCount??review.calendar.length)+' rodadas detectadas':' reconhecidos')+'</strong><span>'+review.coverage.percent+'% dos campos · '+Math.round((review.elapsedMs||0)/1000)+'s</span></div><p class="muted">'+esc(review.mode)+' · '+review.frames+' telas. Edite os campos abaixo antes de salvar no S'+review.slot+'.</p>'+(review.errors.length?'<details class="reading-warnings" open><summary>Leitura incompleta / avisos ('+review.errors.length+')</summary><ul>'+review.errors.map(e=>'<li>'+esc(e)+'</li>').join('')+'</ul></details>':'')+'<details><summary>Ver telas extraídas</summary><div class="frames">'+review.previews.map(p=>'<figure><img src="'+p.url+'" alt="Tela extraída de '+esc(p.name)+'" loading="lazy"><figcaption>'+esc(p.name)+' · '+p.time.toFixed(1)+'s</figcaption></figure>').join('')+'</div></details>'+clubNotice+select('reviewSlot','Salvar no slot',review.slot,getState().slots.map(s=>[s.id,'S'+s.id+' · '+(known(slotTeam(s))?slotTeam(s):'Sem time definido')]))+renderReview(review)+'<div class="actions">'+btn('Confirmar dados revisados','applyReview')+btn('Completar leitura','retryAnalysis',true)+btn('Descartar leitura','discardReview',true)+'</div>'+note('NI = não identificado. Confira os dados nas telas; valores desconhecidos preservam os dados válidos já salvos.'));
 
  }
  return body;
@@ -119,7 +123,7 @@ async function submit(form){
  if(form.dataset.form==='player'){
  const p={...d,id:form.dataset.id||crypto.randomUUID(),forSale:truth(d.forSale),training:truth(d.training)};
  const list=cleanPlayers([p]);if(!list.length||!positions.includes(p.position))throw Error('Informe nome e posição válidos.');
- updateSlot(s=>{const i=s.squad.players.findIndex(x=>x.id===p.id);if(i<0)s.squad.players=dedupePlayers([...s.squad.players,...list]);else s.squad.players[i]=list[0];s.squad.updatedAt=new Date().toISOString();const meta=parsed.meta||{};if(known(meta.cash))s.director.cash=String(meta.cash).slice(0,80);const header=cleanMatch({myName:meta.team,mySquadValue:meta.squadValue,myStrength:meta.strength,myGK:meta.GK,myDEF:meta.DEF,myMID:meta.MID,myATT:meta.ATT,myPlayers:meta.expectedPlayers});s.match=mergeBetter(s.match,header);s.tacticStale=!!s.tactics;});render();toast('Jogador salvo.');return;
+ updateSlot(s=>{const i=s.squad.players.findIndex(x=>x.id===p.id);if(i<0)s.squad.players=dedupePlayers([...s.squad.players,...list]);else s.squad.players[i]=list[0];s.squad.updatedAt=new Date().toISOString();s.tacticStale=!!s.tactics;});render();toast('Jogador salvo.');return;
  }
  if(form.dataset.form==='calendar'){
  const r={...d,id:form.dataset.id||crypto.randomUUID(),round:num(d.round),date:val(d.date),time:val(d.time),opponent:val(d.opponent),home:truth(d.home),cup:truth(d.cup),result:val(d.result),score:val(d.score)};
@@ -157,26 +161,17 @@ async function runAnalysis(retry=false){
  const files=retry?[...(review?.files||[])]:[...(root.querySelector('#media')?.files||[])];if(!files.length)throw Error('Escolha ao menos um vídeo ou imagem.');
  const slotId=getSlot().id,state=getState(),reader=retry?'vision':root.querySelector('[name=reader]').value;
  busy=true;review=null;progress='Preparando mídia…';analysisController=new AbortController();const controller=analysisController;let deadline;render();
- try{deadline=setTimeout(()=>controller.abort(),retry||state.settings.profile==='complete'?180000:90000);const operation=analyzeMedia(files,analysisType,{signal:controller.signal,vision:reader==='vision',fallback:state.settings.fallback,username:state.settings.username,myTeam:getSlot().myTeam,rivalName:getSlot().match.rivalName,competitionType:getSlot().competitionType,model:state.settings.model,visionModel:state.settings.visionModel,profile:retry?'complete':state.settings.profile},message=>{if(controller.signal.aborted)return;progress=message;const e=root.querySelector('.progress');if(e)e.textContent=message;});const result=await operation;const merged=previous?fuseExtraction(previous,result):result;review={...result,...merged,coverage:coverage(analysisType,merged),slot:slotId};progress=review.coverage?.complete?'Leitura pronta para revisão.':'Leitura parcial. Revise campos NI e avisos antes de aplicar.';}
+ try{deadline=setTimeout(()=>controller.abort(),retry||state.settings.profile==='complete'?180000:90000);const operation=analyzeMedia(files,analysisType,{signal:controller.signal,vision:reader==='vision',fallback:state.settings.fallback,username:state.settings.username,myTeam:getSlot().myTeam,rivalName:getSlot().match.rivalName,competitionType:getSlot().competitionType,model:state.settings.model,visionModel:state.settings.visionModel,profile:retry?'complete':state.settings.profile},message=>{if(controller.signal.aborted)return;progress=message;const e=root.querySelector('.progress');if(e)e.textContent=message;});const result=await operation;let merged=previous?fuseExtraction(previous,result):result;const evidence=[...(previous?.rosterEvidence||[]),...(result.rosterEvidence||[])];if(analysisType==='squad'){const checked=refineSquadRoster({...merged,playerCandidates:[...(previous?.playerCandidates||[]),...(result.playerCandidates||[])]},evidence);merged=checked.data;result.errors=[...new Set([...result.errors,...checked.warnings])];}review={...result,...merged,rosterEvidence:evidence,readingTeams:[...new Set([...(previous?.readingTeams||[]),...(result.readingTeams||[])])],coverage:coverage(analysisType,merged),slot:slotId};progress=review.coverage?.complete?'Leitura pronta para revisão.':'Leitura parcial. Revise campos NI e avisos antes de aplicar.';}
  catch(e){if(previous)review=previous;progress=e.message+' Dados existentes preservados.';}
  finally{clearTimeout(deadline);controller.abort();busy=false;render();}
 }
 async function applyReview(){
  if(!review||review.slot!==getSlot().id)throw Error('Leitura pertence a outro slot.');
  const parsed=readReview(review,root.querySelector('#reviewForm'));
- if(review.type==='match'){
- const match=cleanMatch(parsed);if(Object.keys(match).length<=1)throw Error('Nenhum dado válido identificado. Preencha manualmente.');
- updateSlot(s=>{s.match=mergeBetter(s.match,match);const h=rivalHuman(s.match.rivalNickname,s.competitionType);if(h!==null)s.match.human=h;s.match._lastReader=review.mode;s.match._lastReadAt=new Date().toISOString();s.tacticStale=!!s.tactics;});
- }else if(review.type==='squad'){
- const list=Array.isArray(parsed)?parsed:parsed.players;
- if(!Array.isArray(list))throw Error('O elenco precisa conter players em lista JSON.');
- const rows=cleanPlayers(list);if(!rows.length)throw Error('Nenhum jogador válido. Confira nomes e posições.');
- updateSlot(s=>{s.squad.players=dedupePlayers([...s.squad.players,...rows]);s.squad.updatedAt=new Date().toISOString();const meta=parsed.meta||{};if(known(meta.cash))s.director.cash=String(meta.cash).slice(0,80);const header=cleanMatch({myName:meta.team,mySquadValue:meta.squadValue,myStrength:meta.strength,myGK:meta.GK,myDEF:meta.DEF,myMID:meta.MID,myATT:meta.ATT,myPlayers:meta.expectedPlayers});s.match=mergeBetter(s.match,header);s.tacticStale=!!s.tactics;});
- }else{
- if(!Array.isArray(parsed)||!parsed.length)throw Error('Calendário vazio ou inválido.');
- const rows=cleanCalendar(parsed);if(!rows.length)throw Error('Nenhuma rodada ou rival válido.');
- updateSlot(s=>s.calendar=mergeCalendar(s.calendar,rows));
- }
+ const destination=Number(root.querySelector('[name=reviewSlot]')?.value||review.slot);
+ const slot=getState().slots.find(s=>s.id===destination);if(!slot)throw Error('Escolha um slot válido.');
+ const next=applyReading(slot,review.type,parsed,{meta:review.meta,teams:review.readingTeams||[],mode:review.mode});
+ updateSlot(s=>Object.assign(s,next),destination);setActiveSlot(destination);
  const target=review.type==='match'?'pregame':'info';review=null;go(target);toast('Leitura confirmada. Dados válidos preservados.');
 }
 async function importBackup(e){
@@ -190,7 +185,7 @@ async function action(name){
  if(a==='slot'){if(busy)return;setActiveSlot(+b);render();return;}
  if(a==='type'){analysisType=b;review=null;render();return;}
  if(a==='analyze')return runAnalysis();
- if(a==='retryAnalysis'){const draft=readReview(review,root.querySelector('#reviewForm'));if(review.type==='match'){review.match=draft;review._matchFieldSources=draft._fieldSources||review._matchFieldSources;}else if(review.type==='squad'){review.players=draft.players;review.meta=draft.meta;}else review.calendar=draft;return runAnalysis(true);}
+ if(a==='retryAnalysis'){const draft=readReview(review,root.querySelector('#reviewForm'));if(review.type==='match'){review.match=draft;review._matchFieldSources=draft._fieldSources||review._matchFieldSources;}else if(review.type==='squad'){review.players=draft.players;review.playerCandidates=draft.playerCandidates||[];review.meta=draft.meta;}else review.calendar=draft;return runAnalysis(true);}
  if(a==='cancel'){analysisController?.abort();progress='Cancelando operação atual…';const e=root.querySelector('.progress');if(e)e.textContent=progress;return;}
  if(a==='applyReview')return applyReview();
  if(a==='discardReview'){review=null;render();return;}
