@@ -93,8 +93,8 @@ export function parseCalendarWords(input,width,height,layout={}){
   const row=extractCard(rowWords,{round:anchor?.round??(card?layout.round:null)??null,anchorY,cardHeight,left,width:width/columns});
   if(!row)continue;
   // A visible round label by itself is not a recognized game.
-  if(['date','time','opponent','nickname','displayedScore','result','stage'].some(key=>row[key]!=='NI'))rows.push(row);
+  if(['date','time','opponent','nickname','displayedScore','result','stage'].some(key=>row[key]!=='NI'))rows.push({...row,_card:{left,right,anchorY,cardHeight,width,height}});
  }
  // Retain the home/away scoreboard as evidence; score stays NI until home is known.
- return rows.flatMap(evidence=>cleanCalendar([evidence]).map(row=>({...row,displayedScore:evidence.displayedScore})));
+ return rows.flatMap(evidence=>cleanCalendar([evidence]).map(row=>({...row,displayedScore:evidence.displayedScore,_card:evidence._card})));
 }

@@ -8,6 +8,9 @@ function control(path,label,value,type='text',options){
  return '<label class="'+(unknown?'review-ni':'')+'"><span>'+esc(label)+(unknown?' · NI':'')+'</span>'+html+'</label>';
 }
 const yn=[['true','Sim'],['false','Não']];
+function calendarReviewRow(r,path){
+ return '<article class="calendar-review"><header><span class="round-badge">'+esc(r.round??'?')+'</span><div><b>'+esc(r.opponent)+'</b><span>'+esc(r.stage==='NI'?'':r.stage)+' · '+(r.home===true?'Casa':r.home===false?'Fora':'Local NI')+'</span></div><strong class="result-badge">'+esc(r.result)+'</strong></header><div class="form-grid">'+[['round','Rodada','number'],['opponent','Rival'],['nickname','Nickname'],['date','Data DD/MM/AAAA'],['time','Horário HH:MM'],['score','Placar (meu time primeiro)'],['displayedScore','Placar exibido (casa primeiro)'],['stage','Fase']].map(([key,label,type])=>control(path+'.'+key,label,r[key],type)).join('')+control(path+'.home','Local',r.home,'boolean',[['true','Casa'],['false','Fora']])+control(path+'.cup','Competição',r.cup,'boolean',[['true','Copa'],['false','Liga']])+control(path+'.result','Resultado',r.result,'text',['V','E','D'])+'</div></article>';
+}
 export function renderReview(review){
  let content='';
  if(review.type==='match'){
@@ -15,14 +18,15 @@ export function renderReview(review){
  }else if(review.type==='squad'){
   content='<div class="form-grid">'+[['team','Time'],['cash','Caixa'],['squadValue','Valor do elenco'],['strength','Força geral'],['GK','GOL'],['DEF','DEF'],['MID','MEI'],['ATT','ATA'],['expectedPlayers','Quantidade total visível']].map(([key,label])=>control('meta.'+key,label,review.meta?.[key],['team','cash','squadValue'].includes(key)?'text':'number')).join('')+'</div><div class="review-list">'+review.players.map((p,i)=>'<article class="player-review"><header>'+shirt(p.training===true?'#f6a42e':'#3479df',p.strength??'?')+'<div><b>'+esc(p.name)+'</b><span>'+esc(p.position)+' · '+(p.training===true?'Treinando':p.training===false?'Disponível':'Treino NI')+(p.forSale===true?' · À venda':'')+'</span></div></header><div class="form-grid">'+control('players.'+i+'.name','Nome',p.name)+control('players.'+i+'.position','Posição',p.position,'text',positions)+control('players.'+i+'.strength','Força',p.strength,'number')+control('players.'+i+'.age','Idade',p.age,'number')+control('players.'+i+'.value','Valor',p.value)+control('players.'+i+'.training','Treinando',p.training,'boolean',yn)+control('players.'+i+'.forSale','À venda',p.forSale,'boolean',yn)+'</div></article>').join('')+'</div>';
  }else{
-  content='<div class="review-list">'+review.calendar.map((r,i)=>'<article class="calendar-review"><header><span class="round-badge">'+esc(r.round??'?')+'</span><div><b>'+esc(r.opponent)+'</b><span>'+esc(r.stage==='NI'?'':r.stage)+' · '+(r.home===true?'Casa':r.home===false?'Fora':'Local NI')+'</span></div><strong class="result-badge">'+esc(r.result)+'</strong></header><div class="form-grid">'+[['round','Rodada','number'],['opponent','Rival'],['nickname','Nickname'],['date','Data DD/MM/AAAA'],['time','Horário HH:MM'],['score','Placar (meu time primeiro)'],['displayedScore','Placar exibido (casa primeiro)'],['stage','Fase']].map(([key,label,type])=>control('calendar.'+i+'.'+key,label,r[key],type)).join('')+control('calendar.'+i+'.home','Local',r.home,'boolean',[['true','Casa'],['false','Fora']])+control('calendar.'+i+'.cup','Competição',r.cup,'boolean',[['true','Copa'],['false','Liga']])+control('calendar.'+i+'.result','Resultado',r.result,'text',['V','E','D'])+'</div></article>').join('')+'</div>';
+  content='<div class="review-list">'+review.calendar.map((r,i)=>calendarReviewRow(r,'calendar.'+i)).join('')+'</div>';
+  if(review.calendarFragments?.length)content+='<details class="reading-warnings"><summary>Trechos sem identificação do jogo ('+review.calendarFragments.length+')</summary><p>Esses trechos não entram na contagem de jogos. Complete a rodada, data ou horário comprovado para incluir ao confirmar.</p><div class="review-list">'+review.calendarFragments.map((r,i)=>calendarReviewRow(r,'calendarFragments.'+i)).join('')+'</div></details>';
  }
  if(review.type!=='match'&&!review[review.type==='squad'?'players':'calendar'].length)content+='<p class="warning">Nenhum registro reconhecido. Confira os avisos e tente completar a leitura.</p>';
  const conflicts=(review.conflicts||[]).map(c=>'<li><b>'+esc(c.field)+'</b>: '+esc(c.first)+' / '+esc(c.second)+'</li>').join('');
  return '<form id="reviewForm" onsubmit="return false">'+content+'</form>'+(conflicts?'<details open><summary>Valores divergentes: confira nas telas</summary><ul>'+conflicts+'</ul></details>':'');
 }
 export function readReview(review,container){
- const out={match:{...review.match},players:review.players.map(p=>({...p})),calendar:review.calendar.map(r=>({...r})),meta:{...review.meta}};
+ const out={match:{...review.match},players:review.players.map(p=>({...p})),calendar:review.calendar.map(r=>({...r})),calendarFragments:(review.calendarFragments||[]).map(r=>({...r})),meta:{...review.meta}};
  for(const el of container.querySelectorAll('[data-review-path]')){const path=el.dataset.reviewPath.split('.');let target=out;for(const segment of path.slice(0,-1))target=target[segment];const raw=el.value.trim();target[path.at(-1)]=el.dataset.kind==='boolean'?raw==='true'?true:raw==='false'?false:null:el.dataset.kind==='number'?raw===''?null:Number(raw):raw||'NI';}
- return review.type==='match'?out.match:review.type==='squad'?{players:out.players,meta:out.meta}:out.calendar;
+ return review.type==='match'?out.match:review.type==='squad'?{players:out.players,meta:out.meta}:[...out.calendar,...out.calendarFragments.filter(r=>['round','date','time'].some(key=>known(r[key])))];
 }

@@ -1,5 +1,6 @@
 import {extractFrames,imageToCanvas} from './frame-extractor.js';
 import {distinctFrames,visualBatches} from './frame-selection.js';
+import {detectCalendarIcons} from './calendar-icons.js';
 import {prepareOcrImages} from './ocr-image.js';
 import {localOCR} from './ocr.js';
 import {apiRequest,apiStatus,sessionProviders} from './ai-router.js';
@@ -49,9 +50,11 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
    if(options.vision&&[...providers].filter(p=>p!=='twelvelabs').every(p=>disabled.has(p))){startVideo();errors.push('Leitura por imagem indisponível: confira os avisos das APIs.');next=frames.length;break;}
    if(options.vision&&providers.size){
     const images=batch.map(f=>visualImage(f.canvas));
-    const r=await apiRequest('analyze',{type,images,useVisual:visualSlots.has(Math.floor(index/2)),forceOCR:true,preferredProvider:disabled.has('google')?'groq':'google',ocrImages:batch.flatMap(f=>prepareOcrImages(f.canvas,type)).sort((a,b)=>(a.region==='full'?0:1)-(b.region==='full'?0:1)),focusImages:batch.map((f,j)=>focusImage(f.canvas,type,index+j)).filter(Boolean),context,disabled:[...disabled],models:{groqVision:options.visionModel,groqText:options.model}},options.signal,35000);
-    data=fuseExtraction(data,r.data);attempts.push(...r.attempts||[]);if(!r.coverage?.complete)startVideo();
-    for(const f of r.failures||[]){errors.push(f.provider+': '+(f.status===429?'Limite de cota atingido. Novas chamadas foram pausadas; aguarde a renovação do limite do provedor.':f.status===503?'Serviço sobrecarregado. A leitura continua com os outros serviços.':f.message||f.error||'indisponível'));if(f.provider==='groq'&&(f.code==='NO_SUPPORTED_MODEL'||f.status===404))disabled.add(f.stage==='text'?'groq-text':'groq-visual');else if([401,403,404,429,503].includes(f.status)||f.code==='PROVIDER_BUSY'||f.code==='PROVIDER_COOLDOWN')disabled.add(f.provider);}
+    const r=await apiRequest('analyze',{type,images,useVisual:visualSlots.has(Math.floor(index/2)),forceOCR:true,preferredProvider:disabled.has('google')?'groq':'google',ocrImages:batch.flatMap((f,frameIndex)=>prepareOcrImages(f.canvas,type).map(image=>({...image,frameIndex}))).sort((a,b)=>(a.region==='full'?0:1)-(b.region==='full'?0:1)),focusImages:batch.map((f,j)=>focusImage(f.canvas,type,index+j)).filter(Boolean),context,disabled:[...disabled],models:{groqVision:options.visionModel,groqText:options.model}},options.signal,35000);
+    data=fuseExtraction(data,r.data);attempts.push(...r.attempts||[]);
+    if(type==='calendar')for(const evidence of r.calendarEvidence||[]){const frame=batch[evidence.frameIndex];if(!frame||!evidence.row?._card)continue;const icons=detectCalendarIcons(frame.canvas,evidence.row._card);if(icons.home!==null||icons.cup!==null||icons.result!=='NI'){data=fuseExtraction(data,normalizeExtraction({calendar:[{...evidence.row,...icons}]},type,'Ícones nas telas'));attempts.push('ícones locais');}}
+    if(!coverage(type,data).complete)startVideo();
+    for(const f of r.failures||[]){errors.push(f.provider+': '+(f.status===429?'Limite de cota atingido. Novas chamadas foram pausadas; aguarde a renovação do limite do provedor.':f.status===503?'Serviço sobrecarregado. A leitura continua com os outros serviços.':f.message||f.error||'indisponível'));if(f.provider==='groq'&&(f.code==='NO_SUPPORTED_MODEL'||f.status===404))disabled.add(f.stage==='text'?'groq-text':'groq-visual');else if([401,403,404,429,503].includes(f.status)||f.code==='PROVIDER_BUSY'||f.code==='PROVIDER_COOLDOWN'||f.code==='PROVIDER_TIMEOUT')disabled.add(f.provider);}
    }else if(!options.vision){
     for(const frame of batch){if(expired())break;onUpdate('OCR local: '+frame.name);const r=await localOCR(frame.canvas,{signal:options.signal});const raw=type==='match'?mergeMatchTexts([r.text]):type==='squad'?{players:parseSquadText(r.text)}:{calendar:parseCalendarText(r.text)};data=fuseExtraction(data,normalizeExtraction(raw,type,'OCR local'));attempts.push('OCR local');}
    }else errors.push('Nenhuma chave configurada.');
