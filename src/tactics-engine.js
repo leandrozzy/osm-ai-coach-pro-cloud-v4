@@ -1,20 +1,42 @@
-import {clamp,NI} from './utils.js';
-const TEMPLATES={
- '4-3-3 A':{style:'Jogar pelas alas',p:74,m:76,r:78,mark:'À zona',off:'Não',atk:'Atacar apenas',mid:'Pressionar na frente',def:'Defender atrás'},
- '4-3-3 B':{style:'Jogo de passes',p:72,m:74,r:76,mark:'À zona',off:'Não',atk:'Atacar apenas',mid:'Manter posição',def:'Defender atrás'},
- '4-5-1':{style:'Remate à vista',p:46,m:39,r:63,mark:'À zona',off:'Não',atk:'Ajudar meio-campo',mid:'Manter posição',def:'Defender atrás'},
- '5-3-2':{style:'Contra-ataque',p:38,m:32,r:67,mark:'À zona',off:'Não',atk:'Atacar apenas',mid:'Ajudar a defesa',def:'Defender atrás'},
- '5-4-1 A':{style:'Contra-ataque',p:34,m:28,r:61,mark:'À zona',off:'Não',atk:'Ajudar meio-campo',mid:'Ajudar a defesa',def:'Defender atrás'},
- '4-2-3-1':{style:'Remate à vista',p:51,m:46,r:69,mark:'À zona',off:'Não',atk:'Atacar apenas',mid:'Manter posição',def:'Defender atrás'}
+import {clamp} from './utils.js';
+import {num,known,formations,styles,tackles} from './domain.js';
+const templates={
+ '4-3-3 A':['Jogar pelas alas',74,76,78,'Atacar apenas','Pressionar na frente','Defender atrás'],
+ '4-3-3 B':['Jogo de passes',72,74,76,'Atacar apenas','Manter posição','Defender atrás'],
+ '4-4-2 B':['Jogo de passes',62,61,68,'Atacar apenas','Manter posição','Defender atrás'],
+ '4-5-1':['Remate à vista',46,39,63,'Ajudar meio-campo','Manter posição','Defender atrás'],
+ '5-3-2':['Contra-ataque',38,32,67,'Atacar apenas','Ajudar a defesa','Defender atrás'],
+ '5-4-1 A':['Contra-ataque',34,28,61,'Ajudar meio-campo','Ajudar a defesa','Defender atrás'],
+ '4-2-3-1':['Remate à vista',51,46,69,'Atacar apenas','Manter posição','Defender atrás']
 };
-function tackle(ref,map){return map?.[ref]||({Verde:'Agressivo',Azul:'Agressivo',Amarelo:'Normal',Laranja:'Cauteloso',Vermelho:'Cauteloso'}[ref]||'Normal');}
 export function generateTactic(match={},settings={},learning={}){
- const a=Number(match.myStrength), b=Number(match.rivalStrength); const diff=Number.isFinite(a)&&Number.isFinite(b)?a-b:0;
- const strong=diff>=13; let formation;
- if(strong)formation=diff>=25?'4-3-3 A':'4-3-3 B'; else if(diff<=-18)formation='5-4-1 A'; else if(diff<=-10)formation='5-3-2'; else if(diff<=-4)formation='4-5-1'; else formation=match.rivalFormation?.startsWith('4-3-3')?'4-2-3-1':'4-3-3 B';
- const t={...TEMPLATES[formation]}; const away=match.location==='Fora'; const human=match.human===true;
- t.p=clamp(t.p+(away?-4:2)+(human?-2:0)); t.m=clamp(t.m+(away?-3:2));
- if(match.rivalPlan==='Jogar pelas alas'&&formation==='4-5-1')t.mark='Individual';
- return {formation,style:t.style,pressure:t.p,mentality:t.m,tempo:t.r,marking:t.mark,offside:t.off,tackling:tackle(match.referee,settings.refereeMap),attack:t.atk,midfield:t.mid,defense:t.def,strongAvailable:strong,reason:`Diferença de força ${Number.isFinite(a)&&Number.isFinite(b)?diff:NI}; ${away?'fora':'casa'}; rival ${human?'humano':'CPU'}; árbitro ${match.referee||NI}.`};
+ const a=num(match.myStrength),b=num(match.rivalStrength);const diff=a!==null&&b!==null?a-b:null;
+ const advantage=diff===null?0:diff+(num(match.myBonus)??0)/4-(num(match.rivalBonus)??0)/4+(match.location==='Casa'?3:match.location==='Fora'?-3:0)+(match.myTrainingCamp==='Sim'?6:0)-(match.trainingCamp==='Sim'?6:0);
+ let formation=advantage<=-18?'5-4-1 A':advantage<=-10?'5-3-2':advantage<=-4?'4-5-1':advantage>=8?'4-4-2 B':'4-2-3-1';
+ const mid=num(match.myMID),rMid=num(match.rivalMID),att=num(match.myATT),rDef=num(match.rivalDEF);
+ if(mid!==null&&rMid!==null&&mid-rMid<-10&&advantage<8)formation='4-5-1';
+ if(match.rivalFormation?.startsWith('4-3-3')&&advantage>=-4&&advantage<8)formation='4-2-3-1';
+ const weights=learning.weights||{};
+ const allowed=advantage<-10?['5-4-1 A','5-3-2']:advantage<4?['4-5-1','4-2-3-1']:['4-4-2 B','4-2-3-1'];
+ let learned=false;
+ const score=f=>{const w=weights[f];return w?.games>=3?(w.wins-w.losses)/(w.games+4):0;};
+ const candidate=allowed.reduce((best,f)=>score(f)>score(best)?f:best,formation);
+ if(score(candidate)>score(formation)+.25){formation=candidate;learned=true;}
+ const [style,p,m,r,attack,midfield,defense]=templates[formation];
+ const secret=match.secretTraining==='Sim';const away=match.location==='Fora';
+ const missing=['myStrength','rivalStrength','referee','location'].filter(k=>!known(match[k]));
+ const sectorBoost=att!==null&&rDef!==null?clamp((att-rDef)/5,-4,4):0;
+ return {formation,style,pressure:clamp(p+(away?-4:0)-(secret?4:0)),mentality:clamp(m+(away?-3:0)+sectorBoost),tempo:r,marking:'À zona',offside:'Não',tackling:settings.refereeMap?.[match.referee]||({Verde:'Agressivo',Azul:'Agressivo',Amarelo:'Normal',Laranja:'Cauteloso',Vermelho:'Cauteloso'}[match.referee])||'Cauteloso',attack,midfield,defense,strongAvailable:diff!==null&&diff>=13,source:'Motor local',createdAt:new Date().toISOString(),provisional:missing.length>0,reason:`Diferença de força: ${diff??'NI'}. Local: ${match.location||'NI'}. Rival: ${match.human===true?'humano':match.human===false?'CPU':'NI'}. Árbitro: ${match.referee||'NI'}. ${secret?'Treino secreto: maior cautela. ':''}${match.trainingCamp==='Sim'?'Campo rival considerado. ':''}${learned?'Histórico compartilhado favoreceu esta formação. ':''}${missing.length?'Provisória: faltam força, árbitro ou local. ':''}Recomendação heurística; vitória não é garantida.`};
 }
-export function generateStrong433(match={},settings={}){const base=generateTactic({...match,myStrength:100,rivalStrength:80},settings);const formation=match.rivalFormation==='4-3-3 A'?'4-3-3 B':'4-3-3 A';return {...base,...TEMPLATES[formation],formation,style:TEMPLATES[formation].style,pressure:TEMPLATES[formation].p,mentality:TEMPLATES[formation].m,tempo:TEMPLATES[formation].r,marking:TEMPLATES[formation].mark,offside:TEMPLATES[formation].off,attack:TEMPLATES[formation].atk,midfield:TEMPLATES[formation].mid,defense:TEMPLATES[formation].def,tackling:tackle(match.referee,settings.refereeMap),strongAvailable:true,reason:'Tática forte 4-3-3 solicitada manualmente; ajustada ao árbitro e contexto.'};}
+export function generateStrong433(match={},settings={}){
+ const a=num(match.myStrength),b=num(match.rivalStrength);if(a===null||b===null||a-b<13)throw Error('A tática forte requer vantagem de força confirmada de pelo menos 13.');
+ const base=generateTactic(match,settings);const formation=num(match.myATT)!==null&&num(match.myMID)!==null&&num(match.myATT)>num(match.myMID)?'4-3-3 A':'4-3-3 B';
+ const [style,p,m,r,attack,midfield,defense]=templates[formation];
+ return {...base,formation,style,pressure:p+(match.location==='Fora'?-4:0),mentality:m+(match.location==='Fora'?-3:0),tempo:r,attack,midfield,defense,reason:`Tática forte solicitada: vantagem real de ${a-b}. ${base.reason}`};
+}
+export function validateTactic(t){
+ if(!t||!formations.includes(t.formation)||!styles.includes(t.style)||!['À zona','Individual'].includes(t.marking)||!['Sim','Não'].includes(t.offside)||!tackles.includes(t.tackling))return false;
+ if(!['pressure','mentality','tempo'].every(k=>typeof t[k]==='number'&&Number.isFinite(t[k])&&t[k]>=0&&t[k]<=100))return false;
+ return ['Atacar apenas','Ajudar meio-campo','Ajudar a defesa'].includes(t.attack)&&['Pressionar na frente','Manter posição','Ajudar a defesa'].includes(t.midfield)&&['Defender atrás','Laterais ofensivos','Apoiar meio-campo'].includes(t.defense);
+}
+

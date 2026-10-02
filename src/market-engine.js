@@ -1,3 +1,12 @@
 import {squadSummary} from './parser-squad.js';
-const TARGET={ATA:4,MEI:6,DEF:6,GOL:2};
-export function buildMarketPlan(squad={players:[]}, cash=null, teamStrength=null){const s=squadSummary(squad.players);const gaps={};Object.keys(TARGET).forEach(p=>gaps[p]=TARGET[p]-(s.by[p]||0));const weakest=[...squad.players].filter(p=>p.strength).sort((a,b)=>a.strength-b.strength).slice(0,4);return {createdAt:new Date().toISOString(),currentStrength:teamStrength??null,targetStrength:teamStrength?Math.min(teamStrength+16,200):null,horizon:'2–4 rodadas',cash,summary:s,gaps,sell:weakest.map(p=>({name:p.name,position:p.position,strength:p.strength,reason:'liberar caixa/elevar média'})),buy:Object.entries(gaps).filter(([,v])=>v>0).map(([position,count])=>({position,count,profile:`${position} acima da média atual, priorizar jovem e bom custo/força`})),rules:['Manter alvo 4 ATA / 6 MEI / 6 DEF / 2 GOL','Máximo de 4 jogadores simultaneamente à venda','Camisa laranja = treinando; setas = à venda']};}
+import {num} from './domain.js';
+export const TARGET={ATA:4,MEI:6,DEF:6,GOL:2};
+export function buildMarketPlan(squad={players:[]},cash=null,teamStrength=null){
+ const players=squad.players||[],summary=squadSummary(players),gaps={};
+ for(const p of Object.keys(TARGET))gaps[p]=TARGET[p]-(summary.by[p]||0);
+ const available=Math.max(0,4-summary.forSale);
+ const excess={...summary.by};
+ const sell=[...players].filter(p=>num(p.strength)!==null&&!p.forSale&&p.training!==true).sort((a,b)=>a.strength-b.strength).filter(p=>{if(excess[p.position]<=TARGET[p.position])return false;excess[p.position]--;return true;}).slice(0,available);
+ return {createdAt:new Date().toISOString(),currentStrength:num(teamStrength),cash,summary,gaps,sell:sell.map(p=>({...p,reason:'Excedente na posição; menor força entre os disponíveis'})),buy:Object.entries(gaps).filter(([,count])=>count>0).map(([position,count])=>({position,count,profile:'Comparar força/preço e priorizar jovens; preço do mercado = NI'})),rules:['Meta 4 ATA / 6 MEI / 6 DEF / 2 GOL','Máximo de 4 simultaneamente à venda','Não vender abaixo da meta; revisar orçamento antes de comprar']};
+}
+

@@ -1,3 +1,4 @@
 export function dhash(canvas){const c=document.createElement('canvas');c.width=9;c.height=8;const x=c.getContext('2d',{willReadFrequently:true});x.drawImage(canvas,0,0,9,8);const d=x.getImageData(0,0,9,8).data;let bits='';for(let y=0;y<8;y++)for(let xx=0;xx<8;xx++){const i=(y*9+xx)*4,j=(y*9+xx+1)*4;const a=d[i]+d[i+1]+d[i+2],b=d[j]+d[j+1]+d[j+2];bits+=a>b?'1':'0';}return bits;}
 export function distance(a,b){if(!a||!b)return 64;let n=0;for(let i=0;i<Math.min(a.length,b.length);i++)if(a[i]!==b[i])n++;return n;}
 export function uniqueFrames(frames,threshold=7){const out=[];let last=null;for(const f of frames){if(!last||distance(last.hash,f.hash)>threshold){out.push(f);last=f.hash;}}return out;}
+

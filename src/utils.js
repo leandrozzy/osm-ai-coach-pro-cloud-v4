@@ -14,3 +14,4 @@ export function timeout(promise, ms=8000, label='Operação'){
   return Promise.race([promise(c.signal),new Promise((_,rej)=>setTimeout(()=>rej(new Error(`${label} excedeu ${ms}ms`)),ms))]).finally(()=>clearTimeout(t));
 }
 export const fmtDateTime = iso => iso ? new Intl.DateTimeFormat('pt-BR',{dateStyle:'short',timeStyle:'short'}).format(new Date(iso)) : NI;
+

@@ -1,4 +1,20 @@
-export async function requestNotifications(){if(!('Notification'in window))return 'unsupported';return Notification.requestPermission();}
-export function notify(title,body){if(Notification.permission==='granted')new Notification(title,{body,icon:'/assets/icon-192.png'});}
-export function scheduleLocal(slot){const rows=slot.calendar||[];const now=Date.now();for(const r of rows){if(!r.date||!r.time)continue;const [d,m,y]=r.date.split('/').map(Number);const [hh,mm]=r.time.split(':').map(Number);const t=new Date(y,m-1,d,hh,mm).getTime();for(const mins of [20,10]){const delay=t-now-mins*60000;if(delay>0&&delay<2147483647)setTimeout(()=>notify(`S${slot.id}: jogo em ${mins} min`,`${r.opponent||'Adversário'} • ${r.home?'Casa':'Fora'}`),delay);}}
+import {rowTime,known,pending} from './domain.js';
+const sent=new Set();
+export async function requestNotifications(){if(!('Notification' in window))return 'unsupported';return Notification.requestPermission();}
+export async function notify(title,body,tag){
+ if(!('Notification' in window)||Notification.permission!=='granted')return;
+ const registration=await navigator.serviceWorker?.getRegistration();
+ if(registration)await registration.showNotification(title,{body,tag,icon:'/assets/icon-192.png',data:{url:'/'}});else new Notification(title,{body,tag});
 }
+export function pollNotifications(state){
+ if(!state.settings.notifications)return;
+ const slots=[...state.slots].sort((a,b)=>(b.competitionType==='Batalha')-(a.competitionType==='Batalha'));
+ for(const slot of slots){
+  for(const row of slot.calendar){
+   if(known(row.result)||known(row.score))continue;
+   const time=rowTime(row);if(time===null)continue;const left=(time-Date.now())/60000;
+   for(const minutes of [20,10]){const key=slot.id+'|'+row.id+'|'+time+'|'+minutes;if(left>minutes-1&&left<=minutes&&!sent.has(key)){sent.add(key);notify('S'+slot.id+': jogo em '+minutes+' min',(row.opponent||'NI')+' • '+(slot.competitionType==='Batalha'?'Batalha • ':'')+pending(slot).map(p=>p.label).join(', '),key).catch(()=>{});}}
+  }
+ }
+}
+

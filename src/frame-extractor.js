@@ -12,6 +12,7 @@ function waitEvent(target,event,timeoutMs=8000){
 }
 
 function noveltySelect(frames,maxFrames=9){
+  if(maxFrames===1)return frames.slice(0,1);
   if(frames.length<=maxFrames)return frames;
   const selected=[frames[0]];
   const remaining=frames.slice(1,-1);
@@ -41,8 +42,8 @@ export async function extractFrames(file,{maxFrames=9,candidates=26}={}){
     const frames=[];
     let lastHash=null;
     for(let i=0;i<targetCount;i++){
-      const time=targetCount===1?0:Math.max(0,Math.min(duration-.03,(duration-.03)*i/(targetCount-1)));
-      if(Math.abs(video.currentTime-time)>.02){
+      const time=targetCount===1?0.01:Math.max(0.01,Math.min(duration-.03,(duration-.03)*i/(targetCount-1)));
+      if(Math.abs(video.currentTime-time)>.001){
         video.currentTime=time;
         await waitEvent(video,'seeked',6000);
       }

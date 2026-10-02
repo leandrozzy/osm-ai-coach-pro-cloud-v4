@@ -12,3 +12,4 @@ export function validateMatch(m={}){
 }
 export function chooseBetter(oldValue,newValue){if(newValue==null||newValue===''||newValue===NI)return oldValue??NI;return newValue;}
 export function mergeBetter(oldObj={},newObj={}){const out={...oldObj};for(const [k,v] of Object.entries(newObj)){if(k==='_sources'){out._sources={...(oldObj._sources||{}),...(v||{})};continue;}out[k]=chooseBetter(oldObj[k],v);}return out;}
+

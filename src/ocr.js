@@ -1,14 +1,23 @@
 import {canvasBlob} from './image-preprocess.js';
 let workerPromise;
-async function worker(){if(!globalThis.Tesseract?.createWorker) throw new Error('Tesseract.js indisponível');if(!workerPromise)workerPromise=globalThis.Tesseract.createWorker('por+eng').catch(()=>globalThis.Tesseract.createWorker('eng'));return workerPromise;}
-export async function localOCR(canvas,onProgress=()=>{}){const w=await worker();onProgress(0.15);const {data}=await w.recognize(canvas);onProgress(1);return {text:data.text||'',confidence:data.confidence||0,provider:'tesseract'};}
-export async function remoteOCR(canvas){const blob=await canvasBlob(canvas);const base64=await new Promise((res,rej)=>{const fr=new FileReader();fr.onload=()=>res(String(fr.result).split(',')[1]);fr.onerror=rej;fr.readAsDataURL(blob)});const r=await fetch('/api/ocr',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({imageBase64:base64})});if(!r.ok)throw new Error(`OCR remoto HTTP ${r.status}`);return r.json();}
-export async function layeredOCR(canvas,onProgress=()=>{}){
- const local=await localOCR(canvas,onProgress); let remote=null;
- // OCR local pode ter confiança alta e ainda omitir colunas; usa remoto quando o conteúdo é curto/incompleto.
- const useful=(local.text||'').trim(); const needsRemote=local.confidence<82||useful.length<180||!/força|valor|elenco|formação|marcação|treino|bônus|advers/i.test(useful);
- if(needsRemote){try{remote=await remoteOCR(canvas);}catch{}}
- const parts=[local.text,remote?.text].filter(Boolean).map(x=>x.trim()).filter(Boolean);
- const text=[...new Set(parts)].join('\n');
- return {text,confidence:Math.max(local.confidence||0,remote?.confidence||0),provider:remote?'tesseract+ocr.space':'tesseract'};
+function deadline(p,ms,label){let t;return Promise.race([p,new Promise((_,reject)=>{t=setTimeout(()=>reject(Error(label)),ms);})]).finally(()=>clearTimeout(t));}
+async function worker(){
+ if(!globalThis.Tesseract){
+ await deadline(new Promise((resolve,reject)=>{let script=document.querySelector('#ocr-script');if(!script){script=document.createElement('script');script.id='ocr-script';script.src='https://cdn.jsdelivr.net/npm/tesseract.js@6/dist/tesseract.min.js';document.head.append(script);}script.onload=resolve;script.onerror=()=>reject(Error('Não foi possível carregar o OCR. Verifique a internet.'));}),10000,'Download do OCR excedeu 10 segundos.');
+ }
+ if(!globalThis.Tesseract?.createWorker)throw Error('OCR local indisponível.');
+ if(!workerPromise)workerPromise=deadline(globalThis.Tesseract.createWorker('por+eng'),20000,'Inicialização do OCR excedeu 20 segundos.').catch(e=>{workerPromise=null;throw e;});
+ return workerPromise;
 }
+export async function localOCR(canvas){const w=await worker();try{const {data}=await deadline(w.recognize(canvas),20000,'Leitura OCR excedeu 20 segundos.');return {text:data.text||'',confidence:data.confidence||0,provider:'tesseract'};}catch(e){w.terminate().catch(()=>{});workerPromise=null;throw e;}}
+export async function remoteOCR(canvas){
+ const blob=await canvasBlob(canvas);const imageBase64=await new Promise((res,rej)=>{const fr=new FileReader();fr.onload=()=>res(String(fr.result).split(',')[1]);fr.onerror=rej;fr.readAsDataURL(blob);});
+ const controller=new AbortController();const t=setTimeout(()=>controller.abort(),12000);
+ try{const r=await fetch('/api/ocr',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({imageBase64}),signal:controller.signal});if(!r.ok)throw Error('OCR remoto indisponível');return r.json();}finally{clearTimeout(t);}
+}
+export async function layeredOCR(canvas){
+ let local;try{local=await localOCR(canvas);}catch{local={text:'',confidence:0};}
+ if(local.text.trim())return local;
+ const remote=await remoteOCR(canvas);if(!remote.text?.trim())throw Error('Nenhum texto reconhecido. Use mídia mais nítida ou edição manual.');return remote;
+}
+
