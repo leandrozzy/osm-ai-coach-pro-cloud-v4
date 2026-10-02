@@ -1,7 +1,7 @@
 import {allowed,requestBody,keyFor,errorInfo} from '../lib/http.js';
 import {groqRead,ocrRead,googleRead} from '../lib/providers.js';
 import {blankExtraction,normalizeExtraction,fuseExtraction,coverage} from '../src/extraction.js';
-import {overlayExtraction,structuredOcr} from '../src/ocr-layout.js';
+import {overlayExtraction,structuredOcr,parseCalendarOverlay} from '../src/ocr-layout.js';
 import {mergeMatchTexts} from '../src/parser-match.js';
 import {normalize} from '../src/utils.js';
 import {known} from '../src/domain.js';
@@ -33,7 +33,7 @@ export default async function handler(req,res){
  if(google)readers.google=()=>googleRead({key:google,type,images:visualImages,context,model:body.models?.google});
  if(groq&&!body.disabled?.includes('groq-visual'))readers.groq=()=>groqRead({key:groq,type,images:visualImages,context,model:body.models?.groqVision});
  const order=body.preferredProvider==='groq'?['groq','google']:['google','groq'];
- let ocrResults=[];
+ let ocrResults=[];const calendarEvidence=[];
  const visual=async()=>{
   if(body.useVisual===false)return;
   const provider=order.find(name=>readers[name]);if(!provider)return;
@@ -47,7 +47,10 @@ export default async function handler(req,res){
  // Two useful crops suffice per batch; keep OCR quota for the next screen.
  const selected=ocrImages.slice(0,2);
  const results=await Promise.allSettled(selected.map(i=>ocrRead({key:ocr,image:i.url,budgetMs:remaining})));let read=blankExtraction();attempts.push('ocrspace');
- results.forEach((r,index)=>{if(r.status==='fulfilled'){ocrResults.push({index,...r.value});read.warnings.push(...r.value.warnings||[]);if(ocrImages[index].region==='full')read=fuseExtraction(read,overlayExtraction(type,r.value,ocrImages[index].width,ocrImages[index].height));}else failures.push(errorInfo('ocrspace',r.reason));});
+ results.forEach((r,index)=>{if(r.status==='fulfilled'){ocrResults.push({index,...r.value});read.warnings.push(...r.value.warnings||[]);if(ocrImages[index].region==='full'){
+ read=fuseExtraction(read,overlayExtraction(type,r.value,ocrImages[index].width,ocrImages[index].height));
+ if(type==='calendar')for(const row of parseCalendarOverlay(r.value.lines,ocrImages[index].width,ocrImages[index].height))calendarEvidence.push({frameIndex:Number.isInteger(ocrImages[index].frameIndex)?ocrImages[index].frameIndex:index,row});
+ }}else failures.push(errorInfo('ocrspace',r.reason));});
  if(type==='match'&&ocrResults.length)read=fuseExtraction(read,normalizeExtraction(mergeMatchTexts(ocrResults.map(r=>r.text),{myTeam:context.myTeam,rivalName:context.rivalName}),'match','OCR.space explícito'));
  return read;
  };
@@ -68,6 +71,6 @@ export default async function handler(req,res){
  output.warnings.push('Time lido '+output.meta.team+' é diferente do time selecionado '+context.myTeam+'. Dados não aplicados.');output.players=[];output.calendar=[];
  }
  const quality=coverage(type,output);
- return res.status(200).json({data:output,coverage:quality,attempts,failures,preferredProvider,elapsedMs:Date.now()-started,needsVideo:!quality.complete});
+ return res.status(200).json({data:output,coverage:quality,attempts,failures,preferredProvider,elapsedMs:Date.now()-started,needsVideo:!quality.complete,...(type==='calendar'?{calendarEvidence}:{})});
  }catch(e){return res.status(400).json({error:'Solicitação inválida: '+e.message});}
 }

@@ -3,6 +3,26 @@ import {twelveRead} from '../lib/providers.js';
 import {coverage} from '../src/extraction.js';
 const base='https://api.twelvelabs.io/v1.3';
 const identifier=s=>typeof s==='string'&&/^[A-Za-z0-9_-]{8,100}$/.test(s);
+const stages={create:'preparação do upload',chunk:'envio do bloco',urls:'preparação dos blocos',report:'confirmação do upload',status:'preparação do vídeo',analyze:'análise do vídeo'};
+function failure(error,key,action){
+ const detail=errorInfo('twelvelabs',error);
+ let message=error.name==='SyntaxError'?'JSON inválido':String(error.message||detail.error);
+ if(key)message=message.split(key).join('[chave oculta]');
+ message=message.replace(/https?:\/\/\S+/g,'[endereço]').replace(/[A-Za-z0-9+/]{100,}={0,2}/g,'[conteúdo oculto]').replace(/[\r\n]+/g,' ').slice(0,280);
+ const providerStatus=Number.isInteger(error.status)&&error.status>=400&&error.status<=599?error.status:null;
+ const timeout=/tempo limite|timeout|timed out/i.test(message);
+ const input=/^(?:JSON inválido|Chave inválida)\./.test(message);
+ let description='TwelveLabs não concluiu '+(stages[action]||'a consulta');
+ if(providerStatus===400)description='TwelveLabs recusou o vídeo ou pedido (HTTP 400)';
+ else if(providerStatus===401||providerStatus===403)description='TwelveLabs recusou a chave ou o acesso (HTTP '+providerStatus+')';
+ else if(providerStatus===404)description='TwelveLabs não encontrou o recurso ou modelo (HTTP 404)';
+ else if(providerStatus===429)description='TwelveLabs atingiu um limite ou cota (HTTP 429)';
+ else if(providerStatus>=500)description='TwelveLabs apresentou falha no serviço (HTTP '+providerStatus+')';
+ else if(timeout)description='TwelveLabs não respondeu no prazo';
+ const safeCode=typeof detail.code==='string'&&/^[A-Za-z0-9_.-]{1,80}$/.test(detail.code)&&(!key||!detail.code.includes(key))?detail.code:null;
+ const status=providerStatus||(input?400:timeout?504:error.name==='SyntaxError'?502:503);
+ return {status,body:{error:description+': '+message,provider:'twelvelabs',providerStatus,stage:action||null,details:[{...detail,error:message,code:safeCode,stage:action||null}]}};
+}
 async function relayChunk(uploadId,index,bytes,key){
  // Obtain the destination from the authenticated TwelveLabs API on every call.
  // Serverless instances need no shared state, and callers cannot choose a URL.
@@ -22,8 +42,9 @@ async function relayChunk(uploadId,index,bytes,key){
 }
 export default async function handler(req,res){
  if(!allowed(req,res))return;
+ let key='',action;
  try{
- const body=requestBody(req),key=keyFor('twelvelabs',body);
+ const body=requestBody(req);action=typeof body.action==='string'&&Object.hasOwn(stages,body.action)?body.action:null;key=keyFor('twelvelabs',body);
  if(!key)return res.status(503).json({error:'Chave TwelveLabs não configurada.'});
  const headers={'x-api-key':key,'content-type':'application/json'};
  if(body.action==='create'){
@@ -62,5 +83,5 @@ export default async function handler(req,res){
  return res.status(200).json({data,coverage:coverage(body.type,data),provider:'twelvelabs'});
  }
  return res.status(400).json({error:'Ação inválida.'});
- }catch(e){return res.status(503).json({error:'TwelveLabs indisponível; prossiga com Groq/OCR.space.',details:[errorInfo('twelvelabs',e)]});}
+ }catch(e){const result=failure(e,key,action);return res.status(result.status).json(result.body);}
 }
