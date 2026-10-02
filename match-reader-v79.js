@@ -1,7 +1,7 @@
 
 (function(){
 'use strict';
-var V79='7.9.1', GROQ_KEY='osm_ai_coach_groq_key';
+var V79='7.10.0', GROQ_KEY='osm_ai_coach_groq_key', OCR_KEY79='osm_ai_coach_ocrspace_key';
 var prevAnalyze79=(typeof v21Analyze==='function')?v21Analyze:null;
 var REF79=['Verde','Azul','Amarelo','Laranja','Vermelho'];
 var STYLE79=['Jogar pelas alas','Jogo de passes','Bola longa','Contra-ataque','Remate à vista'];
@@ -72,6 +72,58 @@ async function visionBatch79(frames){
   }catch(e){if(e&&e.name==='AbortError')throw new Error('Groq visão: timeout');throw e}
   finally{clearTimeout(tm)}
 }
+
+async function ocrText79(frame){
+  var key=String(localStorage.getItem(OCR_KEY79)||'').trim();if(!key)throw new Error('OCR.Space não configurado');
+  var f=await slim79(frame),fd=new FormData();
+  fd.append('base64Image','data:image/jpeg;base64,'+f.base64);
+  fd.append('language','auto');fd.append('OCREngine','2');fd.append('isTable','true');fd.append('scale','true');
+  var ctl=new AbortController(),tm=setTimeout(function(){ctl.abort()},15000);
+  try{
+    var r=await fetch('https://api.ocr.space/parse/image',{method:'POST',signal:ctl.signal,headers:{apikey:key},body:fd});
+    var raw=await r.text();if(!r.ok)throw new Error('OCR.Space HTTP '+r.status);
+    var j=JSON.parse(raw);if(j&&j.IsErroredOnProcessing)throw new Error('OCR.Space falhou');
+    var t=(j.ParsedResults||[]).map(function(p){return p.ParsedText||''}).join('\n').trim();
+    if(!t)throw new Error('OCR.Space sem texto');return t;
+  }catch(e){if(e&&e.name==='AbortError')throw new Error('OCR.Space timeout');throw e}
+  finally{clearTimeout(tm)}
+}
+function firstNumAfter79(text,label){
+  var n=norm79(text),l=norm79(label),i=n.indexOf(l);if(i<0)return null;
+  var m=n.slice(i+l.length,i+l.length+30).match(/\d{2,3}/);if(!m)return null;
+  var v=Number(m[0]);return v>=20&&v<=200?v:null
+}
+function textStruct79(text){
+  var t=String(text||''),n=norm79(t),o={myTeam:{},opponent:{},match:{}};
+  o.myTeam.goalkeeper=firstNumAfter79(t,'gol');
+  o.myTeam.defence=firstNumAfter79(t,'def');
+  o.myTeam.midfield=firstNumAfter79(t,'mei');
+  o.myTeam.attack=firstNumAfter79(t,'ata');
+  var forms=(Array.isArray(FORMATIONS)?FORMATIONS:[]);
+  for(var i=0;i<forms.length;i++){if(n.indexOf(norm79(forms[i]))>=0){o.opponent.formation=forms[i];break}}
+  STYLE79.forEach(function(x){if(!o.opponent.style&&n.indexOf(norm79(x))>=0)o.opponent.style=x});
+  MARK79.forEach(function(x){if(!o.opponent.marking&&n.indexOf(norm79(x))>=0)o.opponent.marking=x});
+  if(n.indexOf('treino secreto')>=0)o.opponent.secretTraining=!(n.indexOf('treino secreto nao')>=0);
+  if(n.indexOf('campo de treinamento')>=0)o.opponent.trainingCamp=!(n.indexOf('campo de treinamento nao')>=0);
+  if(n.indexOf('impedimento')>=0||n.indexOf('fora de jogo')>=0){
+    if(n.indexOf('impedimento nao')>=0||n.indexOf('fora de jogo nao')>=0)o.opponent.offside=false;
+    else if(n.indexOf('impedimento sim')>=0||n.indexOf('fora de jogo sim')>=0)o.opponent.offside=true;
+  }
+  REF79.forEach(function(x){if(!o.match.refereeColor&&n.indexOf(norm79(x))>=0)o.match.refereeColor=x});
+  return o;
+}
+async function ocrFallback79(frames){
+  var chosen=await diverse79(frames,6),results=[],errors=[];
+  for(var i=0;i<chosen.length;i++){
+    try{
+      setProgress(82+Math.min(10,i),'V7.10 · OCR.Space '+(i+1)+'/'+chosen.length+'…');
+      results.push(textStruct79(await ocrText79(chosen[i])));
+    }catch(e){errors.push(safe79(e))}
+  }
+  if(!results.length)throw new Error('OCR.Space não conseguiu ler os quadros: '+errors.join(' | '));
+  return {results:results,frames:chosen.length,batches:results.length,errors:errors,provider:'OCR.Space'};
+}
+
 function vals79(results,path){
   var p=path.split('.');
   return results.map(function(r){return p.reduce(function(a,k){return a?a[k]:undefined},r)}).filter(function(v){return v!==null&&v!==undefined&&v!==''});
@@ -103,23 +155,27 @@ async function fullScan79(files){
 
   var diverse=await diverse79(frames,12),batches=[];
   for(var j=0;j<diverse.length;j+=3)batches.push(diverse.slice(j,j+3));
-  var results=[],errors=[];
+  var results=[],errors=[],groqBlocked=false;
+
   for(var b=0;b<batches.length;b++){
+    if(groqBlocked)break;
     try{
-      setProgress(80+Math.min(12,b*3),'V7.9.1 · lendo tela '+(b+1)+'/'+batches.length+'…');
+      setProgress(80+Math.min(8,b*2),'V7.10 · visão '+(b+1)+'/'+batches.length+'…');
       results.push(await visionBatch79(batches[b]));
-      await new Promise(function(r){setTimeout(r,350)});
+      await new Promise(function(r){setTimeout(r,500)});
     }catch(e){
       var msg=safe79(e);errors.push(msg);
-      // Free tier/rate limit: aguarda e tenta uma vez com lote menor.
-      if(/429|rate|quota|too many/i.test(msg)){
-        await new Promise(function(r){setTimeout(r,1800)});
-        try{results.push(await visionBatch79(batches[b].slice(0,2)))}catch(e2){errors.push(safe79(e2))}
-      }
+      if(/429|rate|quota|too many/i.test(msg)){groqBlocked=true;break}
     }
   }
-  if(!results.length)throw new Error('Groq não conseguiu ler os quadros: '+errors.join(' | '));
-  return {results:results,frames:diverse.length,batches:results.length,errors:errors};
+
+  if(results.length){
+    return {results:results,frames:diverse.length,batches:results.length,errors:errors,provider:'Groq'};
+  }
+
+  var fb=await ocrFallback79(diverse);
+  fb.errors=(errors||[]).concat(fb.errors||[]);
+  return fb;
 }
 function apply79(slot,pack){
   var R=pack.results,now=new Date().toISOString();slot.fieldMeta=slot.fieldMeta||{};
@@ -168,29 +224,29 @@ v21Analyze=async function(files){
 
   var slot=selectedSlot(),pack=null;
   try{
-    setProgress(78,'V7.9.1 · varrendo todo o vídeo e removendo quadros repetidos…');
+    setProgress(78,'V7.10 · varrendo todo o vídeo e removendo quadros repetidos…');
     pack=await fullScan79(files);
     apply79(slot,pack);
     calcQuality(slot);saveState();renderCoverage(slot);renderAnalysisSummary(slot);renderPregame();
 
     var missing=missingRequired(slot);
     setAnalysisRun(slot,'tactic',missing.length?'warning':'success',
-      'V7.9.1: varredura completa em '+pack.frames+' telas distintas; '+(missing.length?missing.length+' campo(s) essencial(is) ainda NI':'dados essenciais completos'),
+      'V7.10: varredura completa em '+pack.frames+' telas distintas; '+(missing.length?missing.length+' campo(s) essencial(is) ainda NI':'dados essenciais completos'),
       {quality:slot.analysisQuality,currentRunValidated:true,fullVideoScan:true});
 
     if(!missing.length&&document.getElementById('autoTactic')&&document.getElementById('autoTactic').checked){
-      setProgress(94,'V7.9.1 · gerando tática com leitura completa…');
+      setProgress(94,'V7.10 · gerando tática com leitura completa…');
       await generateTactic(state.selectedSlot);
     }
     setProgress(100,missing.length?'Leitura completa com pendências':'Partida pronta');
   }catch(e){
     var msg79=safe79(e);
-    setAnalysisRun(slot,'tactic','warning','V7.9.1: leitura principal mantida; complemento visual falhou: '+msg79,{quality:slot.analysisQuality,currentRunValidated:true,fullVideoScan:false});
+    setAnalysisRun(slot,'tactic','warning','V7.10: leitura principal mantida; complemento visual falhou: '+msg79,{quality:slot.analysisQuality,currentRunValidated:true,fullVideoScan:false});
     var d=document.getElementById('analysisDiagnostics');
-    if(d)d.textContent='V7.9.1 COMPLETE SCAN · complemento visual: '+msg79;
+    if(d)d.textContent='V7.10 COMPLETE SCAN · complemento visual: '+msg79;
   }
   var d2=document.getElementById('analysisDiagnostics');
-  if(d2&&pack)d2.textContent='V7.9.1 COMPLETE SCAN · '+pack.frames+' quadros distintos · '+pack.batches+' lotes lidos'+(pack.errors&&pack.errors.length?' · '+pack.errors.length+' tentativa(s) recuperada(s)':'')+' · setores próprios + Data Analyst';
+  if(d2&&pack)d2.textContent='V7.10 COMPLETE SCAN · '+pack.frames+' quadros distintos · '+pack.batches+' lotes lidos'+(pack.errors&&pack.errors.length?' · '+pack.errors.length+' tentativa(s) recuperada(s)':'')+' · setores próprios + Data Analyst';
 };
 window.v21Analyze=v21Analyze;
 window.OSM_COMPLETE_MATCH_SCAN_VERSION=V79;
