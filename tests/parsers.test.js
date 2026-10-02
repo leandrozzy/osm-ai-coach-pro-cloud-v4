@@ -1,0 +1,12 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {parseReferee,parseFormation,parsePlan,parseMarking,parseOffside,parseMatchText} from '../src/parser-match.js';
+import {dedupePlayers} from '../src/parser-squad.js';import {mergeBetter,validateMatch} from '../src/validator.js';import {rivalHuman} from '../src/slots.js';
+test('árbitro',()=>assert.equal(parseReferee('Árbitro Vermelho'),'Vermelho'));
+test('formação',()=>assert.equal(parseFormation('Rival 4-3-3 B'),'4-3-3 B'));
+test('plano',()=>assert.equal(parsePlan('Jogar pelas alas'),'Jogar pelas alas'));
+test('marcação',()=>assert.equal(parseMarking('Marcação à zona'),'À zona'));
+test('impedimento',()=>assert.equal(parseOffside('Impedimento: Não'),'Não'));
+test('treino secreto oculta',()=>assert.ok(validateMatch({...parseMatchText('Treino secreto: Sim\nÁrbitro Amarelo'),rivalStrength:'NI'}).hiddenByGame.length>0));
+test('preserva dado bom',()=>assert.equal(mergeBetter({referee:'Vermelho'},{referee:'NI'}).referee,'Vermelho'));
+test('humano cpu batalha',()=>{assert.equal(rivalHuman('fulano','Liga normal','leandrozzy'),true);assert.equal(rivalHuman('','Liga normal','leandrozzy'),false);assert.equal(rivalHuman('','Batalha','leandrozzy'),true)});
+test('dedup elenco',()=>assert.equal(dedupePlayers([{name:'A',position:'ATA',strength:80},{name:'A',position:'ATA',strength:82}])[0].strength,82));
