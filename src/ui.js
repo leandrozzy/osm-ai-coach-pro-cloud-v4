@@ -1,5 +1,5 @@
 import {getState,getSlot,setActiveSlot,subscribe,updateSlot} from './state.js';
-import {mediaToTexts} from './video.js';
+import {mediaToTexts,analyzeMatchVision} from './video.js';
 import {mergeMatchTexts} from './parser-match.js';
 import {parseSquadText,dedupePlayers,squadSummary} from './parser-squad.js';
 import {parseCalendarText,mergeCalendar} from './parser-calendar.js';
@@ -31,7 +31,7 @@ function matchFields(m={}){
 }
 function manualForm(m={}){
  return input('mMyName','Meu time',m.myName)+input('mRivalName','Rival',m.rivalName)+input('mNickname','Nickname rival',m.rivalNickname)+
- input('mMyStrength','Minha força',m.myStrength,'number')+input('mRivalStrength','Força rival',m.rivalStrength,'number')+input('mMyValue','Meu elenco',m.mySquadValue,'number')+input('mRivalValue','Elenco rival',m.rivalSquadValue,'number')+
+ input('mMyStrength','Minha força',m.myStrength,'number')+input('mRivalStrength','Força rival',m.rivalStrength,'number')+input('mMyValue','Meu elenco',m.mySquadValue)+input('mRivalValue','Elenco rival',m.rivalSquadValue)+
  input('mMyPlayers','Meus jogadores',m.myPlayers,'number')+input('mRivalPlayers','Jogadores rival',m.rivalPlayers,'number')+
  input('mMyGK','Meu GOL',m.myGK,'number')+input('mRivalGK','Rival GOL',m.rivalGK,'number')+input('mMyDEF','Meu DEF',m.myDEF,'number')+input('mRivalDEF','Rival DEF',m.rivalDEF,'number')+
  input('mMyMID','Meu MEI',m.myMID,'number')+input('mRivalMID','Rival MEI',m.rivalMID,'number')+input('mMyATT','Meu ATA',m.myATT,'number')+input('mRivalATT','Rival ATA',m.rivalATT,'number')+
@@ -42,7 +42,7 @@ function manualForm(m={}){
  '<button id="saveManual">Salvar correções</button>';
 }
 function pregame(slot){const v=validateMatch(slot.match||{});return card('Dados da partida',`${matchFields(slot.match)}<div class="quality"><b>Cobertura real:</b> ${v.coverage}%${v.hiddenByGame.length?' • campos ocultos pelo jogo excluídos do cálculo':''}</div>${v.issues.length?`<p class="ni">${esc(v.issues.join(' • '))}</p>`:''}<details><summary>Corrigir / preencher manualmente</summary><div class="manual">${manualForm(slot.match)}</div></details>`,`<button id="genTactic">Gerar melhor tática</button>${Number(slot.match?.myStrength)-Number(slot.match?.rivalStrength)>=13?'<button class="secondary" id="genStrong">Gerar tática forte 4-3-3</button>':''}`)+card('Tática',tacticView(slot.tactics),slot.tactics?'<button class="secondary" id="registerResult">Registrar resultado</button>':'');}
-function analyze(){return card('Analisar mídia',`<div class="seg"><button class="analysisType ${analysisType==='match'?'active':''}" data-type="match">Partida</button><button class="analysisType ${analysisType==='squad'?'active':''}" data-type="squad">Elenco</button><button class="analysisType ${analysisType==='calendar'?'active':''}" data-type="calendar">Calendário</button></div><input id="media" type="file" accept="image/*,video/*" multiple><p class="muted">Partida: percorra a tela inicial, relatório/análise do rival e demais telas onde aparecem árbitro, treino secreto, campo, formação, plano, marcação e impedimento. O app mantém NI quando não houver evidência.</p><div id="progress">${esc(statusText)}</div>`,`<button id="runAnalysis" ${busy?'disabled':''}>${busy?'Analisando…':'Analisar'}</button>`);}
+function analyze(){return card('Analisar mídia',`<div class="seg"><button class="analysisType ${analysisType==='match'?'active':''}" data-type="match">Partida</button><button class="analysisType ${analysisType==='squad'?'active':''}" data-type="squad">Elenco</button><button class="analysisType ${analysisType==='calendar'?'active':''}" data-type="calendar">Calendário</button></div><input id="media" type="file" accept="image/*,video/*" multiple><p class="muted">${analysisType==='match'?'Partida usa visão multimodal: o vídeo é reduzido a até 9 telas úteis e a IA lê as imagens diretamente. OCR só entra se todas as IAs visuais falharem.':'Elenco e calendário continuam com OCR/parsers nesta etapa.'}</p><div id="progress">${esc(statusText)}</div>`,`<button id="runAnalysis" ${busy?'disabled':''}>${busy?'Analisando…':'Analisar'}</button>`);}
 function info(slot){const s=squadSummary(slot.squad?.players||[]);return card('Elenco',`${field('Total',s.total)}${field('ATA',s.by.ATA)}${field('MEI',s.by.MEI)}${field('DEF',s.by.DEF)}${field('GOL',s.by.GOL)}${field('Treinando',s.training)}${field('À venda',s.forSale)}`)+card('Calendário',`<div class="list">${(slot.calendar||[]).map(r=>`<div><b>${esc(r.date)}</b> ${esc(r.time||'')} • ${esc(r.opponent||'NI')} • ${r.home?'Casa':'Fora'} ${r.cup?'• Copa':''} ${r.result?`• ${r.result}`:''}</div>`).join('')||'<span class="muted">Sem dados.</span>'}</div>`);}
 function director(slot){const p=slot.director?.plan;return card('Diretor IA',p?`${field('Força atual',p.currentStrength)}${field('Meta estimada',p.targetStrength)}${field('Horizonte',p.horizon)}<h4>Vendas prioritárias</h4><div class="list">${p.sell.map(x=>`<div>${esc(x.name)} • ${x.position} • ${x.strength}</div>`).join('')||'Nenhuma'}</div><h4>Compras</h4><div class="list">${p.buy.map(x=>`<div>${x.count}× ${x.position}: ${esc(x.profile)}</div>`).join('')||'Completar qualidade, sem inventar nomes do mercado.'}</div>`:'<p class="muted">Gere o plano usando o elenco lido.</p>',`<button id="marketPlan">Atualizar plano do mercado</button>`);}
 function learning(slot){return card('Aprendizado IA',`<div class="list">${Object.entries(slot.learning?.weights||{}).map(([k,w])=>`<div><b>${k}</b> • ${w.games} jogos • ${w.wins}V ${w.draws}E ${w.losses}D • peso ${w.weight}</div>`).join('')||'<span class="muted">Registre resultados para aprender.</span>'}</div>`)+card('Histórico',`<div class="list">${(slot.learning?.matches||[]).slice(0,10).map(m=>`<div>${new Date(m.at).toLocaleDateString('pt-BR')} • ${m.outcome} • ${esc(m.tactic?.formation||'NI')}</div>`).join('')||'<span class="muted">Sem resultados.</span>'}</div>`);}
@@ -52,14 +52,65 @@ function read(id){return document.querySelector(id)?.value?.trim()||'NI';}
 function bind(){
  document.querySelectorAll('.analysisType').forEach(b=>b.onclick=()=>{analysisType=b.dataset.type;render();});
  document.querySelectorAll('[data-slot]').forEach(b=>b.onclick=()=>{setActiveSlot(Number(b.dataset.slot));render();});
- document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{tab=b.dataset.tab;render();});document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>{tab=b.dataset.go;render();});
+ document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{tab=b.dataset.tab;render();});
+ document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>{tab=b.dataset.go;render();});
  const nb=document.querySelector('#notifyBtn');if(nb)nb.onclick=async()=>{await requestNotifications();getState().slots.forEach(scheduleLocal);alert('Notificações locais configuradas para jogos conhecidos.');};
- const sm=document.querySelector('#saveManual');if(sm)sm.onclick=()=>{updateSlot(s=>{const h=read('#mHuman');s.match={...s.match,_schemaVersion:2,_manualUpdatedAt:new Date().toISOString(),myName:read('#mMyName'),rivalName:read('#mRivalName'),rivalNickname:read('#mNickname'),myStrength:read('#mMyStrength'),rivalStrength:read('#mRivalStrength'),mySquadValue:read('#mMyValue'),rivalSquadValue:read('#mRivalValue'),myPlayers:read('#mMyPlayers'),rivalPlayers:read('#mRivalPlayers'),myGK:read('#mMyGK'),rivalGK:read('#mRivalGK'),myDEF:read('#mMyDEF'),rivalDEF:read('#mRivalDEF'),myMID:read('#mMyMID'),rivalMID:read('#mRivalMID'),myATT:read('#mMyATT'),rivalATT:read('#mRivalATT'),stadium:read('#mStadium'),myBonus:read('#mMyBonus'),rivalBonus:read('#mRivalBonus'),location:read('#mLocation'),human:h==='Humano'?true:h==='CPU'?false:null,referee:read('#mReferee'),secretTraining:read('#mSecret'),trainingCamp:read('#mCamp'),rivalFormation:read('#mFormation'),rivalPlan:read('#mPlan'),rivalMarking:read('#mMarking'),rivalOffside:read('#mOffside'),rivalTackling:read('#mTackling')}});render();};
+ const sm=document.querySelector('#saveManual');if(sm)sm.onclick=()=>{updateSlot(s=>{const h=read('#mHuman');s.match={...s.match,_manualUpdatedAt:new Date().toISOString(),myName:read('#mMyName'),rivalName:read('#mRivalName'),rivalNickname:read('#mNickname'),myStrength:read('#mMyStrength'),rivalStrength:read('#mRivalStrength'),mySquadValue:read('#mMyValue'),rivalSquadValue:read('#mRivalValue'),myPlayers:read('#mMyPlayers'),rivalPlayers:read('#mRivalPlayers'),myGK:read('#mMyGK'),rivalGK:read('#mRivalGK'),myDEF:read('#mMyDEF'),rivalDEF:read('#mRivalDEF'),myMID:read('#mMyMID'),rivalMID:read('#mRivalMID'),myATT:read('#mMyATT'),rivalATT:read('#mRivalATT'),stadium:read('#mStadium'),myBonus:read('#mMyBonus'),rivalBonus:read('#mRivalBonus'),location:read('#mLocation'),human:h==='Humano'?true:h==='CPU'?false:null,referee:read('#mReferee'),secretTraining:read('#mSecret'),trainingCamp:read('#mCamp'),rivalFormation:read('#mFormation'),rivalPlan:read('#mPlan'),rivalMarking:read('#mMarking'),rivalOffside:read('#mOffside'),rivalTackling:read('#mTackling')}});render();};
  const g=document.querySelector('#genTactic');if(g)g.onclick=()=>{updateSlot((s,state)=>{const inferred=rivalHuman(s.match.rivalNickname,s.competitionType,state.settings.username);if(s.match.human==null&&inferred!==null)s.match.human=inferred;s.tactics=generateTactic(s.match,state.settings,s.learning)});render();};
  const gs=document.querySelector('#genStrong');if(gs)gs.onclick=()=>{updateSlot((s,state)=>s.tactics=generateStrong433(s.match,state.settings));render();};
  const mp=document.querySelector('#marketPlan');if(mp)mp.onclick=()=>{updateSlot(s=>s.director.plan=buildMarketPlan(s.squad,null,s.match?.myStrength==='NI'?null:Number(s.match?.myStrength)));render();};
  const rr=document.querySelector('#registerResult');if(rr)rr.onclick=()=>{const score=prompt('Placar (ex.: 2x1):','');if(!score)return;const outcome=prompt('Resultado: V, E ou D','V')?.toUpperCase();if(!['V','E','D'].includes(outcome))return;updateSlot(s=>recordResult(s,{score,outcome}));tab='learning';render();};
  const ra=document.querySelector('#runAnalysis');if(ra)ra.onclick=runAnalysis;
 }
-async function runAnalysis(){const input=document.querySelector('#media');if(!input?.files?.length)return alert('Selecione ao menos um vídeo ou imagem.');const type=analysisType;busy=true;statusText='Preparando mídia…';render();try{const result=await mediaToTexts([...input.files],u=>{statusText=`OCR ${u.current}/${u.total}`;const p=document.querySelector('#progress');if(p)p.textContent=statusText;});const text=result.texts.join('\n');updateSlot((s,state)=>{if(type==='match'){const parsed=mergeMatchTexts(result.texts);const human=rivalHuman(parsed.rivalNickname,s.competitionType,state.settings.username);if(human!==null)parsed.human=human;s.match=mergeBetter(s.match,parsed);}else if(type==='squad'){s.squad={players:dedupePlayers([...(s.squad?.players||[]),...parseSquadText(text)]),updatedAt:new Date().toISOString()};}else{s.calendar=mergeCalendar(s.calendar||[],parseCalendarText(text));}});const found=type==='match'?Object.entries(mergeMatchTexts(result.texts)).filter(([k,v])=>!k.startsWith('_')&&v!=='NI'&&v!=null).length:null;statusText=`Concluído: ${result.frameCount} telas processadas${found!=null?` • ${found} campos identificados`:''}${result.failures?` • ${result.failures} falhas isoladas`:''}.`;tab=type==='match'?'pregame':'info';}catch(e){console.error(e);statusText=`Falha parcial: ${e.message}. Dados válidos anteriores foram preservados.`;alert(statusText);}finally{busy=false;render();}}
+
+async function runAnalysis(){
+ const input=document.querySelector('#media');
+ if(!input?.files?.length)return alert('Selecione ao menos um vídeo ou imagem.');
+ const type=analysisType;
+ busy=true;statusText='Preparando mídia…';render();
+ try{
+   if(type==='match'){
+     const result=await analyzeMatchVision([...input.files],u=>{
+       if(u.stage==='vision')statusText=`Visão IA ${u.current}/${u.total} • ${u.frames} telas úteis`;
+       else statusText=`Fallback OCR ${u.current}/${u.total}`;
+       const p=document.querySelector('#progress');if(p)p.textContent=statusText;
+     });
+     let parsed=result.vision;
+     if(!parsed){
+       parsed=mergeMatchTexts(result.texts||[]);
+     }
+     updateSlot((s,state)=>{
+       const human=rivalHuman(parsed.rivalNickname,s.competitionType,state.settings.username);
+       if(human!==null)parsed.human=human;
+       s.match=mergeBetter(s.match,parsed);
+       s.match._lastReader=result.mode;
+       s.match._lastFrames=result.frames;
+     });
+     const found=Object.entries(parsed||{}).filter(([k,v])=>!k.startsWith('_')&&v!=='NI'&&v!=null&&v!=='').length;
+     statusText=`Concluído por ${result.mode==='vision'?'visão multimodal':'OCR de contingência'}: ${result.frames} telas úteis • ${found} campos identificados${result.errors?.length?` • ${result.errors.length} fallback(s)`:''}.`;
+     tab='pregame';
+   }else{
+     const result=await mediaToTexts([...input.files],u=>{
+       statusText=`OCR ${u.current}/${u.total}`;
+       const p=document.querySelector('#progress');if(p)p.textContent=statusText;
+     });
+     const text=result.texts.join('\n');
+     updateSlot(s=>{
+       if(type==='squad'){
+         s.squad={players:dedupePlayers([...(s.squad?.players||[]),...parseSquadText(text)]),updatedAt:new Date().toISOString()};
+       }else{
+         s.calendar=mergeCalendar(s.calendar||[],parseCalendarText(text));
+       }
+     });
+     statusText=`Concluído: ${result.frameCount} telas processadas.`;
+     tab='info';
+   }
+ }catch(e){
+   console.error(e);
+   statusText=`Falha: ${e.message}. Dados antigos foram preservados.`;
+   alert(statusText);
+ }finally{
+   busy=false;render();
+ }
+}
 export function initApp(el){root=el;subscribe(()=>{});render();}
