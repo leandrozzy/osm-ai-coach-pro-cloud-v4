@@ -1,7 +1,7 @@
 
 (function(){
 'use strict';
-var V79='7.9.0', GROQ_KEY='osm_ai_coach_groq_key';
+var V79='7.9.1', GROQ_KEY='osm_ai_coach_groq_key';
 var prevAnalyze79=(typeof v21Analyze==='function')?v21Analyze:null;
 var REF79=['Verde','Azul','Amarelo','Laranja','Vermelho'];
 var STYLE79=['Jogar pelas alas','Jogo de passes','Bola longa','Contra-ataque','Remate à vista'];
@@ -103,10 +103,23 @@ async function fullScan79(files){
 
   var diverse=await diverse79(frames,12),batches=[];
   for(var j=0;j<diverse.length;j+=3)batches.push(diverse.slice(j,j+3));
-  var settled=await Promise.allSettled(batches.map(visionBatch79));
-  var results=settled.filter(function(x){return x.status==='fulfilled'}).map(function(x){return x.value});
-  if(!results.length)throw new Error('leitura visual falhou');
-  return {results:results,frames:diverse.length,batches:results.length};
+  var results=[],errors=[];
+  for(var b=0;b<batches.length;b++){
+    try{
+      setProgress(80+Math.min(12,b*3),'V7.9.1 · lendo tela '+(b+1)+'/'+batches.length+'…');
+      results.push(await visionBatch79(batches[b]));
+      await new Promise(function(r){setTimeout(r,350)});
+    }catch(e){
+      var msg=safe79(e);errors.push(msg);
+      // Free tier/rate limit: aguarda e tenta uma vez com lote menor.
+      if(/429|rate|quota|too many/i.test(msg)){
+        await new Promise(function(r){setTimeout(r,1800)});
+        try{results.push(await visionBatch79(batches[b].slice(0,2)))}catch(e2){errors.push(safe79(e2))}
+      }
+    }
+  }
+  if(!results.length)throw new Error('Groq não conseguiu ler os quadros: '+errors.join(' | '));
+  return {results:results,frames:diverse.length,batches:results.length,errors:errors};
 }
 function apply79(slot,pack){
   var R=pack.results,now=new Date().toISOString();slot.fieldMeta=slot.fieldMeta||{};
@@ -155,27 +168,29 @@ v21Analyze=async function(files){
 
   var slot=selectedSlot(),pack=null;
   try{
-    setProgress(78,'V7.9 · varrendo todo o vídeo e removendo quadros repetidos…');
+    setProgress(78,'V7.9.1 · varrendo todo o vídeo e removendo quadros repetidos…');
     pack=await fullScan79(files);
     apply79(slot,pack);
     calcQuality(slot);saveState();renderCoverage(slot);renderAnalysisSummary(slot);renderPregame();
 
     var missing=missingRequired(slot);
     setAnalysisRun(slot,'tactic',missing.length?'warning':'success',
-      'V7.9: varredura completa em '+pack.frames+' telas distintas; '+(missing.length?missing.length+' campo(s) essencial(is) ainda NI':'dados essenciais completos'),
+      'V7.9.1: varredura completa em '+pack.frames+' telas distintas; '+(missing.length?missing.length+' campo(s) essencial(is) ainda NI':'dados essenciais completos'),
       {quality:slot.analysisQuality,currentRunValidated:true,fullVideoScan:true});
 
     if(!missing.length&&document.getElementById('autoTactic')&&document.getElementById('autoTactic').checked){
-      setProgress(94,'V7.9 · gerando tática com leitura completa…');
+      setProgress(94,'V7.9.1 · gerando tática com leitura completa…');
       await generateTactic(state.selectedSlot);
     }
     setProgress(100,missing.length?'Leitura completa com pendências':'Partida pronta');
   }catch(e){
+    var msg79=safe79(e);
+    setAnalysisRun(slot,'tactic','warning','V7.9.1: leitura principal mantida; complemento visual falhou: '+msg79,{quality:slot.analysisQuality,currentRunValidated:true,fullVideoScan:false});
     var d=document.getElementById('analysisDiagnostics');
-    if(d)d.textContent='V7.9 varredura complementar: '+safe79(e);
+    if(d)d.textContent='V7.9.1 COMPLETE SCAN · complemento visual: '+msg79;
   }
   var d2=document.getElementById('analysisDiagnostics');
-  if(d2&&pack)d2.textContent='V7.9 COMPLETE SCAN · '+pack.frames+' quadros distintos · '+pack.batches+' lotes · setores próprios + Data Analyst';
+  if(d2&&pack)d2.textContent='V7.9.1 COMPLETE SCAN · '+pack.frames+' quadros distintos · '+pack.batches+' lotes lidos'+(pack.errors&&pack.errors.length?' · '+pack.errors.length+' tentativa(s) recuperada(s)':'')+' · setores próprios + Data Analyst';
 };
 window.v21Analyze=v21Analyze;
 window.OSM_COMPLETE_MATCH_SCAN_VERSION=V79;
