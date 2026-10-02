@@ -2,7 +2,7 @@
 (function(){
 'use strict';
 
-var V711='7.12.0';
+var V711='7.13.0';
 var OCR_KEY='osm_ai_coach_ocrspace_key';
 var OR_KEY='osm_ai_coach_openrouter_key';
 var previousAnalyze=(typeof v21Analyze==='function')?v21Analyze:null;
@@ -284,26 +284,76 @@ async function renderHiRes(frame, crop){
   return {base64:dataUrl.split(',')[1],mimeType:'image/jpeg'};
 }
 
-async function ocrImage(frame,label,crop){
+
+var _tessPromise=null;
+async function ensureTesseract(){
+  if(window.Tesseract)return window.Tesseract;
+  if(_tessPromise)return _tessPromise;
+  _tessPromise=new Promise(function(resolve,reject){
+    var s=document.createElement('script');
+    s.src='https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+    s.async=true;
+    s.onload=function(){window.Tesseract?resolve(window.Tesseract):reject(new Error('Tesseract indisponível'));};
+    s.onerror=function(){reject(new Error('Falha ao carregar OCR local'));};
+    document.head.appendChild(s);
+  });
+  return _tessPromise;
+}
+
+async function renderLocalOCR(frame,crop){
+  var img=await v21LoadImage(frame.dataUrl);
+  var W=img.naturalWidth,H=img.naturalHeight;
+  var sx=0,sy=0,sw=W,sh=H;
+  if(crop==='top'){ sy=0; sh=Math.round(H*.68); }
+  else if(crop==='bottom'){ sy=Math.round(H*.22); sh=Math.round(H*.78); }
+  var outW=Math.min(1400,Math.max(1000,W));
+  var outH=Math.round(sh*(outW/sw));
+  var cv=document.createElement('canvas');cv.width=outW;cv.height=outH;
+  var x=cv.getContext('2d');
+  x.imageSmoothingEnabled=true;x.imageSmoothingQuality='high';
+  x.drawImage(img,sx,sy,sw,sh,0,0,outW,outH);
+  return cv;
+}
+
+async function ocrLocal(frame,label,crop){
+  var T=await ensureTesseract();
+  var cv=await renderLocalOCR(frame,crop);
+  var r=await T.recognize(cv,'por+eng',{
+    logger:function(m){
+      if(m&&m.status==='recognizing text'&&typeof m.progress==='number'){
+        setProgress(76+Math.round(m.progress*10),'OCR local '+label+' '+Math.round(m.progress*100)+'%…');
+      }
+    }
+  });
+  var t=r&&r.data&&r.data.text?String(r.data.text).trim():'';
+  if(!t)throw new Error('OCR local '+label+' sem texto');
+  return '### '+label+' [local]\n'+t;
+}
+
+async function remoteOCRRequest(frame,label,crop,engine){
   var key=String(localStorage.getItem(OCR_KEY)||'').trim();
   if(!key)throw new Error('OCR.Space não configurado');
   var im=await renderHiRes(frame,crop);
   var fd=new FormData();
   fd.append('base64Image','data:image/jpeg;base64,'+im.base64);
   fd.append('language','auto');
-  fd.append('OCREngine','2');
+  fd.append('OCREngine',String(engine||2));
   fd.append('isTable','false');
   fd.append('isOverlayRequired','false');
   fd.append('detectOrientation','true');
   fd.append('scale','true');
 
-  var ctl=new AbortController(),tm=setTimeout(function(){ctl.abort()},18000);
+  var ctl=new AbortController(),tm=setTimeout(function(){ctl.abort()},15000);
   try{
     var r=await fetch('https://api.ocr.space/parse/image',{
       method:'POST',signal:ctl.signal,headers:{apikey:key},body:fd
     });
     var raw=await r.text();
-    if(!r.ok)throw new Error('OCR.Space HTTP '+r.status);
+    if(!r.ok){
+      var err=new Error('OCR.Space HTTP '+r.status);
+      err.httpStatus=r.status;
+      throw err;
+    }
     var j=JSON.parse(raw);
     if(j&&j.IsErroredOnProcessing){
       var em=Array.isArray(j.ErrorMessage)?j.ErrorMessage.join(' | '):(j.ErrorMessage||j.ErrorDetails||'falhou');
@@ -311,33 +361,67 @@ async function ocrImage(frame,label,crop){
     }
     var t=(j.ParsedResults||[]).map(function(p){return p.ParsedText||''}).join('\n').trim();
     if(!t)throw new Error('OCR.Space '+label+' sem texto');
-    return '### '+label+'\n'+t;
+    return '### '+label+' [OCR.Space E'+engine+']\n'+t;
   }catch(e){
     if(e&&e.name==='AbortError')throw new Error('OCR.Space '+label+' timeout');
     throw e;
   }finally{clearTimeout(tm)}
 }
 
+async function ocrImage(frame,label,crop){
+  var errs=[];
+  // 1) tenta engine 2
+  try{
+    return {text:await remoteOCRRequest(frame,label,crop,2),source:'remote'};
+  }catch(e){errs.push(safe(e));}
+  // 2) em indisponibilidade do serviço, tenta engine 1 uma vez
+  try{
+    await new Promise(function(r){setTimeout(r,450);});
+    return {text:await remoteOCRRequest(frame,label,crop,1),source:'remote'};
+  }catch(e){errs.push(safe(e));}
+  // 3) fallback gratuito no próprio Android/navegador
+  try{
+    return {text:await ocrLocal(frame,label,crop),source:'local'};
+  }catch(e){errs.push(safe(e));}
+  throw new Error(errs.join(' | '));
+}
+
 async function collectOCR(files){
   var video=(files||[]).find(function(f){return String(f.type||'').indexOf('video/')===0});
   var images=(files||[]).filter(function(f){return String(f.type||'').indexOf('image/')===0});
   var frames=[];
-  if(video)frames=await v21ExtractVideoFrames(video,42);
+  if(video)frames=await v21ExtractVideoFrames(video,36);
   else for(var i=0;i<images.length;i++)frames.push(await v21ImageToFrame(images[i]));
   if(!frames.length)throw new Error('nenhum quadro disponível');
 
-  var chosen=await diverse(frames,10);
-  var texts=[],errors=[];
+  var chosen=await diverse(frames,8);
+  var texts=[],errors=[],remoteCount=0,localCount=0;
+
   for(var j=0;j<chosen.length;j++){
-    setProgress(72+Math.min(16,j),'V7.12 · OCR alta resolução '+(j+1)+'/'+chosen.length+'…');
+    setProgress(72+Math.min(14,j),'V7.13 · lendo quadro '+(j+1)+'/'+chosen.length+'…');
+    var crop=(j%2===0)?'top':'bottom';
     try{
-      // Alterna topo/baixo para aumentar a chance de capturar a tela inicial e Data Analyst.
-      var crop=(j%2===0)?'top':'bottom';
-      texts.push(await ocrImage(chosen[j],'quadro '+(j+1),crop));
-    }catch(e){errors.push(safe(e))}
+      var res=await ocrImage(chosen[j],'quadro '+(j+1),crop);
+      texts.push(res.text);
+      if(res.source==='local')localCount++; else remoteCount++;
+    }catch(e){errors.push(safe(e));}
   }
-  if(!texts.length)throw new Error('OCR.Space não retornou texto útil: '+errors.join(' | '));
-  return {texts:texts,frames:chosen.length,errors:errors};
+
+  // Segunda passada local em poucos quadros, somente se a primeira ficou pobre.
+  var compact=texts.join('\n');
+  if(compact.length<1200 && chosen.length){
+    var indexes=[0,Math.floor(chosen.length/2),chosen.length-1]
+      .filter(function(v,i,a){return a.indexOf(v)===i;});
+    for(var q=0;q<indexes.length;q++){
+      try{
+        var txt=await ocrLocal(chosen[indexes[q]],'reforço '+(q+1),'bottom');
+        texts.push(txt);localCount++;
+      }catch(e){errors.push(safe(e));}
+    }
+  }
+
+  if(!texts.length)throw new Error('OCR remoto e OCR local não retornaram texto útil: '+errors.join(' | '));
+  return {texts:texts,frames:chosen.length,errors:errors,remoteCount:remoteCount,localCount:localCount};
 }
 
 var PROMPT=[
@@ -468,11 +552,11 @@ function apply(slot,data){
   var v=norm(data.match&&data.match.venue);if(v==='casa')set('match.venue','Casa',.96);else if(v==='fora')set('match.venue','Fora',.96);
 }
 
-async function analyze711(files){
+async function analyze713(files){
   var slot=selectedSlot();
-  setProgress(68,'V7.11 · lendo quadros reais em alta resolução…');
+  setProgress(68,'V7.13 · lendo quadros; OCR local entra automaticamente se a API falhar…');
   var pack=await collectOCR(files);
-  setProgress(90,'V7.12 · consolidando OCR; IA é apenas complemento…');
+  setProgress(90,'V7.13 · consolidando OCR; IA é apenas complemento…');
   var data=await structureWithOpenRouter(pack);
   if(usefulCountData(data)===0)throw new Error('OCR sem campos reconhecíveis');
   apply(slot,data);
@@ -481,11 +565,11 @@ async function analyze711(files){
 
   var missing=missingRequired(slot);
   setAnalysisRun(slot,'tactic',missing.length?'warning':'success',
-    'V7.12: OCR alta resolução em '+pack.frames+' telas; '+(missing.length?missing.length+' campo(s) essencial(is) ainda NI':'dados essenciais completos'),
+    'V7.13: '+pack.frames+' telas; OCR.Space '+pack.remoteCount+' / OCR local '+pack.localCount+'; '+(missing.length?missing.length+' campo(s) essencial(is) ainda NI':'dados essenciais completos'),
     {quality:slot.analysisQuality,currentRunValidated:true,fullVideoScan:true});
 
   var d=document.getElementById('analysisDiagnostics');
-  if(d)d.textContent='V7.12 RESILIENT · OCR.Space alta resolução + OpenRouter texto · '+pack.frames+' telas'+(pack.errors.length?' · '+pack.errors.length+' quadro(s) sem OCR':'');
+  if(d)d.textContent='V7.13 LOCAL FALLBACK · '+pack.frames+' telas · OCR.Space '+pack.remoteCount+' · OCR local '+pack.localCount+(pack.errors.length?' · '+pack.errors.length+' tentativa(s) falharam':'');
   setProgress(100,missing.length?'Leitura concluída com pendências':'Partida pronta');
 
   if(!missing.length&&document.getElementById('autoTactic')&&document.getElementById('autoTactic').checked){
@@ -504,19 +588,19 @@ v21Analyze=async function(files){
   try{
     // Não executa a cadeia antiga da partida: ela é justamente o que vinha contaminando
     // o slot e desperdiçando chamadas em Groq. Para Partida, V7.11 é o leitor principal.
-    await analyze711(files);
+    await analyze713(files);
   }catch(e){
     // Mantém os dados anteriores se a tentativa nova falhar.
     Object.keys(slot).forEach(function(k){delete slot[k]});
     Object.assign(slot,snapshot);
     saveState();
-    setAnalysisRun(slot,'tactic','error','V7.12: '+safe(e)+'. Dados anteriores preservados.',{currentRunValidated:false});
+    setAnalysisRun(slot,'tactic','error','V7.13: '+safe(e)+'. Dados anteriores preservados.',{currentRunValidated:false});
     setProgress(100,'Falha sem apagar dados anteriores');
-    var d=document.getElementById('analysisDiagnostics');if(d)d.textContent='V7.12 RESILIENT · '+safe(e);
+    var d=document.getElementById('analysisDiagnostics');if(d)d.textContent='V7.13 RESILIENT · '+safe(e);
   }
 };
 
 window.v21Analyze=v21Analyze;
 window.OSM_COMPLETE_MATCH_SCAN_VERSION=V711;
-try{console.info('[OSM] V7.12 Resilient Match Reader ativo')}catch(_){}
+try{console.info('[OSM] V7.13 Local Fallback Match Reader ativo')}catch(_){}
 })();
