@@ -12,7 +12,7 @@ export async function analyzeVideo(file,type,context,signal,onUpdate){
   if(!part){const urls=await apiRequest('twelvelabs',{action:'urls',uploadId:u.upload_id,start:index,count:1},signal,12000);part=urls.upload_urls?.[0];}
   if(!part?.url)throw Error('URL de upload ausente.');
   const blob=file.slice((index-1)*u.chunk_size,index*u.chunk_size),c=new AbortController(),stop=()=>c.abort(),timer=setTimeout(stop,15000);signal?.addEventListener('abort',stop,{once:true});
-  try{const r=await fetch(part.url,{method:'PUT',headers:u.upload_headers||{},body:blob,signal:c.signal});if(!r.ok)throw Error('Upload HTTP '+r.status);const proof=r.headers.get('etag');if(!proof)throw Error('Upload sem ETag acessível.');chunks.push({chunk_index:index,proof,proof_type:'etag',chunk_size:blob.size});}finally{clearTimeout(timer);signal?.removeEventListener('abort',stop);}
+  try{const r=await fetch(part.url,{method:'PUT',headers:u.upload_headers||{},body:blob,signal:c.signal});if(!r.ok)throw Error('Upload HTTP '+r.status);const proof=r.headers.get('etag');if(!proof)throw Error('Upload sem ETag acessível.');chunks.push({chunk_index:index,proof,proof_type:'etag',chunk_size:blob.size});}catch(e){throw Error(e.name==='TypeError'?'Falha no envio direto ao TwelveLabs. Confira conexão e permissão CORS do upload; o app preservou a leitura das outras APIs.':e.message);}finally{clearTimeout(timer);signal?.removeEventListener('abort',stop);}
  }
  await apiRequest('twelvelabs',{action:'report',uploadId:u.upload_id,chunks},signal,12000);
  const until=Date.now()+20000;
