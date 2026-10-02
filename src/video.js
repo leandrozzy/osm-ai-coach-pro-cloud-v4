@@ -2,6 +2,7 @@ import {extractFrames,imageToCanvas} from './frame-extractor.js';
 import {visualBatches} from './frame-selection.js';
 import {applyScreenEvidence} from './visual-evidence.js';
 import {refineSquadRoster} from './squad-roster.js';
+import {sanitizeProviderMatch} from './match-grounding.js';
 import {prepareOcrImages} from './ocr-image.js';
 import {localOCR} from './ocr.js';
 import {apiRequest,apiStatus,sessionProviders} from './ai-router.js';
@@ -30,7 +31,7 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
  if(files.length>24||files.some(f=>f.size>150*1024*1024))throw Error('Máximo 24 arquivos, 150 MB por arquivo.');
  const started=Date.now(),limit=options.profile==='complete'?180000:90000,frames=[],errors=[],attempts=[],rosterEvidence=[],readingTeams=[],disabled=new Set();let data=blankExtraction();
  const expired=()=>options.signal?.aborted||Date.now()-started>=limit;
- const context={username:options.username,myTeam:options.myTeam,rivalName:options.rivalName,competitionType:options.competitionType};
+ const context={username:options.username,myTeam:options.myTeam||'NI',rivalName:options.rivalName,competitionType:options.competitionType};
  const status=options.vision?await apiStatus():null;
  const providers=new Set([...sessionProviders(),...Object.entries(status?.providers||{}).filter(([,v])=>v===true||v?.configured).map(([k])=>k)]);
  if(options.vision&&!providers.size)throw Error('Nenhuma chave detectada. Abra Configurações, salve uma chave Google/Groq/OCR.space/TwelveLabs e tente novamente. A análise automática não usa OCR local.');
@@ -42,7 +43,7 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
  if(!frames.length)throw Error('Nenhuma tela extraída.');
  const previews=frames.map(f=>({url:f.canvas.toDataURL('image/jpeg',.25),name:f.name,time:f.time}));
  let next=0,done=0,videoJob=null;const visualSlots=visualBatches(frames.length,3);
- const startVideo=()=>{if(videoJob||!options.vision||!providers.has('twelvelabs'))return;videoJob=(async()=>{for(const file of files.filter(f=>f.type.startsWith('video/'))){if(expired())break;try{const r=await analyzeVideo(file,type,context,options.signal,onUpdate,{frames:frames.filter(f=>f.name===file.name)});data=fuseExtraction(data,r.data);attempts.push('twelvelabs');if(r.transport==='sampled-video')errors.push('TwelveLabs leu um vídeo das '+r.sampledFrames+' telas selecionadas, mantendo a resolução. Confira as telas e os campos pendentes.');}catch(e){errors.push('TwelveLabs: '+e.message);}}})();};
+ const startVideo=()=>{if(videoJob||!options.vision||!providers.has('twelvelabs'))return;videoJob=(async()=>{for(const file of files.filter(f=>f.type.startsWith('video/'))){if(expired())break;try{const r=await analyzeVideo(file,type,context,options.signal,onUpdate,{frames:frames.filter(f=>f.name===file.name)});data=fuseExtraction(data,type==='match'?sanitizeProviderMatch(r.data,context):r.data);attempts.push('twelvelabs');if(r.transport==='sampled-video')errors.push('TwelveLabs leu um vídeo das '+r.sampledFrames+' telas selecionadas, mantendo a resolução. Confira as telas e os campos pendentes.');}catch(e){errors.push('TwelveLabs: '+e.message);}}})();};
  if(providers.has('twelvelabs')&&!providers.has('groq')&&!providers.has('ocrspace')&&!providers.has('google'))startVideo();
  const worker=async()=>{while(next<frames.length&&!expired()){
   const index=next;next+=2;const batch=frames.slice(index,index+2);
@@ -52,7 +53,7 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
    if(options.vision&&providers.size){
     const images=batch.map(f=>visualImage(f.canvas));
     const r=await apiRequest('analyze',{type,images,useVisual:visualSlots.has(Math.floor(index/2)),forceOCR:true,preferredProvider:disabled.has('google')?'groq':'google',ocrImages:batch.flatMap((f,frameIndex)=>prepareOcrImages(f.canvas,type).map(image=>({...image,frameIndex}))).sort((a,b)=>(a.region==='full'?0:1)-(b.region==='full'?0:1)),focusImages:batch.map((f,j)=>focusImage(f.canvas,type,index+j)).filter(Boolean),context,disabled:[...disabled],models:{groqVision:options.visionModel,groqText:options.model}},options.signal,35000);
-    data=fuseExtraction(data,r.data);attempts.push(...r.attempts||[]);
+    data=fuseExtraction(data,type==='match'?sanitizeProviderMatch(r.data,context):r.data);attempts.push(...r.attempts||[]);
     for(const proof of r.teamEvidence||[])if(proof.verified===true&&typeof proof.team==='string'&&proof.team.trim()&&proof.team!=='NI')readingTeams.push(proof.team.trim());
     if(type==='squad')for(const evidence of r.squadEvidence||[]){const frame=batch[evidence.frameIndex];if(frame)rosterEvidence.push(...(evidence.players||[]).map(row=>({...row,width:evidence.width,height:evidence.height,frameId:frame.name+':'+frame.time})));}
 

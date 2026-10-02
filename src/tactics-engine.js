@@ -25,7 +25,7 @@ export function generateTactic(match={},settings={},learning={}){
  const [style,p,m,r,attack,midfield,defense]=templates[formation];
  const secret=match.secretTraining==='Sim';const away=match.location==='Fora';
  const missing=['myStrength','rivalStrength','referee','location'].filter(k=>!known(match[k]));
- const sectorBoost=att!==null&&rDef!==null?clamp((att-rDef)/5,-4,4):0;
+ const sectorBoost=att!==null&&rDef!==null?Math.round(clamp((att-rDef)/5,-4,4)):0;
  return {formation,style,pressure:clamp(p+(away?-4:0)-(secret?4:0)),mentality:clamp(m+(away?-3:0)+sectorBoost),tempo:r,marking:'À zona',offside:'Não',tackling:settings.refereeMap?.[match.referee]||({Verde:'Agressivo',Azul:'Agressivo',Amarelo:'Normal',Laranja:'Cauteloso',Vermelho:'Cauteloso'}[match.referee])||'Cauteloso',attack,midfield,defense,strongAvailable:diff!==null&&diff>=13,source:'Motor local',createdAt:new Date().toISOString(),provisional:missing.length>0,reason:`Diferença de força: ${diff??'NI'}. Local: ${match.location||'NI'}. Rival: ${match.human===true?'humano':match.human===false?'CPU':'NI'}. Árbitro: ${match.referee||'NI'}. ${secret?'Treino secreto: maior cautela. ':''}${match.trainingCamp==='Sim'?'Campo rival considerado. ':''}${learned?'Histórico compartilhado favoreceu esta formação. ':''}${missing.length?'Provisória: faltam força, árbitro ou local. ':''}Recomendação heurística; vitória não é garantida.`};
 }
 export function generateStrong433(match={},settings={}){
@@ -36,7 +36,12 @@ export function generateStrong433(match={},settings={}){
 }
 export function validateTactic(t){
  if(!t||!formations.includes(t.formation)||!styles.includes(t.style)||!['À zona','Individual'].includes(t.marking)||!['Sim','Não'].includes(t.offside)||!tackles.includes(t.tackling))return false;
- if(!['pressure','mentality','tempo'].every(k=>typeof t[k]==='number'&&Number.isFinite(t[k])&&t[k]>=0&&t[k]<=100))return false;
+ if(!['pressure','mentality','tempo'].every(k=>Number.isInteger(t[k])&&t[k]>=0&&t[k]<=100))return false;
  return ['Atacar apenas','Ajudar meio-campo','Ajudar a defesa'].includes(t.attack)&&['Pressionar na frente','Manter posição','Ajudar a defesa'].includes(t.midfield)&&['Defender atrás','Laterais ofensivos','Apoiar meio-campo'].includes(t.defense);
 }
 
+export function updateTacticSliders(tactic,values={}){
+ if(!tactic||!['pressure','mentality','tempo'].every(key=>Number.isInteger(values[key])&&values[key]>=0&&values[key]<=100))throw Error('Os sliders precisam ser números inteiros de 0 a 100.');
+ const changed=['pressure','mentality','tempo'].some(key=>tactic[key]!==values[key]);
+ return changed?{...tactic,...Object.fromEntries(['pressure','mentality','tempo'].map(key=>[key,values[key]])),source:'Ajuste manual'}:{...tactic};
+}

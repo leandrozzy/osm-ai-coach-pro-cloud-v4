@@ -4,7 +4,24 @@ const safeText=(v,max=100)=>known(v)&&['string','number'].includes(typeof v)?Str
 export const blankExtraction=()=>({match:{},_matchFieldSources:{},players:[],calendar:[],calendarFragments:[],meta:{},sources:[],conflicts:[],warnings:[]});
 const evidenceKinds={visual:1,'ocr-layout':2,'ocr-explicit':2,pixels:3,manual:4};
 const textIdentityFields=new Set(['name','opponent','nickname','stage','myName','rivalName','rivalNickname']);
-function equivalentField(key,a,b){return textIdentityFields.has(key)?normalize(a).replace(/\s+/g,' ')===normalize(b).replace(/\s+/g,' '):String(a)===String(b);}
+const monetaryFields=new Set(['value','cash','squadValue','mySquadValue','rivalSquadValue']);
+const matchHeaderFields=['myName','rivalName','rivalNickname','human','myStrength','rivalStrength','myGK','rivalGK','myDEF','rivalDEF','myMID','rivalMID','myATT','rivalATT','mySquadValue','rivalSquadValue','myPlayers','rivalPlayers','myBonus','rivalBonus','location'];
+const reportTacticFields=['rivalFormation','rivalPlan','rivalMarking','rivalOffside','rivalTackling'];
+function monetaryAmount(value){
+ const text=String(value).trim().replace(/^(?:R\$|US\$|EUR|USD|[€$£])\s*/i,'').replace(/\s+/g,'');
+ const match=text.match(/^(\d+(?:[.,]\d+)*)([KMB])?$/i);if(!match)return null;
+ let digits=match[1];
+ if(digits.includes(',')&&digits.includes('.')){const decimal=digits.lastIndexOf(',')>digits.lastIndexOf('.')?',':'.';digits=digits.replace(new RegExp('\\'+(decimal===','?'.':','),'g'),'').replace(decimal,'.');}
+ else if(!match[2]&&/^\d{1,3}(?:[.,]\d{3})+$/.test(digits))digits=digits.replace(/[.,]/g,'');
+ else digits=digits.replace(',','.');
+ const amount=Number(digits)*({K:1e3,M:1e6,B:1e9}[match[2]?.toUpperCase()]||1);
+ return Number.isFinite(amount)?amount:null;
+}
+function equivalentField(key,a,b){
+ if(textIdentityFields.has(key))return normalize(a).replace(/\s+/g,' ')===normalize(b).replace(/\s+/g,' ');
+ if(monetaryFields.has(key)){const first=monetaryAmount(a),second=monetaryAmount(b);if(first!==null&&second!==null)return first===second;}
+ return String(a)===String(b);
+}
 function cleanFieldSources(raw={}){
  const out={};if(!raw||typeof raw!=='object')return out;
  for(const [key,value]of Object.entries(raw)){if(!value||typeof value!=='object'||key.startsWith('_'))continue;
@@ -23,8 +40,8 @@ function evidenceFor(record,type,source,options={},prior={}){
  const kind=sourceKind(source,options);
  const preserve=options.preserveEvidence===true||!source||['pixels','ocr-layout','ocr-explicit','manual'].includes(kind);
  const sources=preserve?cleanFieldSources(prior):{};
- const allowed=kind==='pixels'?(type==='calendar'?['home','cup','result']:type==='squad'?['position','strength','training','forSale']:['secretTraining','referee']):kind==='ocr-layout'?(type==='calendar'?['round','date','time','displayedScore']:type==='squad'?['position','strength','age','value']:[]):kind==='ocr-explicit'?matchFields.map(([key])=>key).filter(key=>!textIdentityFields.has(key)):Object.keys(record);
- const selected=Array.isArray(options.fields)?options.fields:allowed;
+ const allowed=kind==='pixels'?(type==='calendar'?['home','cup','result']:type==='squad'?['position','strength','training','forSale']:['secretTraining','referee']):kind==='ocr-layout'?(type==='calendar'?['round','date','time','displayedScore']:type==='squad'?['position','strength','age','value']:matchHeaderFields):kind==='ocr-explicit'?matchFields.map(([key])=>key).filter(key=>!textIdentityFields.has(key)):Object.keys(record);
+ const selected=Array.isArray(options.fields)?options.fields:type==='match'&&kind==='ocr-layout'?[]:allowed;
  for(const key of Object.keys(record)){
  if(key.startsWith('_')||key==='id'||!known(record[key]))continue;
  const trusted=kind&&allowed.includes(key)&&selected.includes(key);
@@ -35,6 +52,18 @@ function evidenceFor(record,type,source,options={},prior={}){
 }
 const fieldRank=(row,key)=>Number(row?._fieldSources?.[key]?.rank)||0;
 const derivedSource=(rank,source)=>({kind:'derived',rank,source});
+function confirmedReportLock(data){return data.meta?.rivalReportLocked===true&&data.match?.secretTraining==='Sim'&&data._matchFieldSources?.secretTraining?.kind==='pixels'&&data._matchFieldSources.secretTraining.rank===3;}
+function enforceReportPrivacy(data){
+ if(!confirmedReportLock(data))return data;
+ const hidden=reportTacticFields.filter(key=>(data._matchFieldSources?.[key]?.rank||0)<4);
+ for(const key of hidden){delete data.match[key];delete data._matchFieldSources[key];}
+ data.meta.hiddenFields=[...new Set([...(data.meta.hiddenFields||[]).filter(key=>!reportTacticFields.includes(key)),...hidden])];
+ // No tactic can be confirmed from a currently locked report. Conflicting old
+ // readings of those hidden fields stay unavailable instead of selecting one.
+ data.conflicts=(data.conflicts||[]).filter(conflict=>!hidden.some(key=>conflict.field==='match.'+key));
+ if(hidden.length)data.warnings=[...new Set([...(data.warnings||[]),'Treino secreto comprovado: os dados táticos do relatório rival estão ocultos e permanecem NI.'])];
+ return data;
+}
 export function normalizeDate(v){
  const m=String(v||'').match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2}|\d{4})$/);
  if(!m)return 'NI';
@@ -76,7 +105,7 @@ export function normalizeExtraction(raw={},type,source='',options={}){
  }
  if(type==='match'&&out.meta.rivalReportLocked)out.match.secretTraining='Sim';
  if(type==='match')out._matchFieldSources=evidenceFor(out.match,type,source,options,raw._matchFieldSources||raw.match?._fieldSources);
- if(source)out.sources=[source];return out;
+ if(source)out.sources=[source];return type==='match'?enforceReportPrivacy(out):out;
 }
 const rowKey=(r,type)=>type==='players'?normalize(r.name).replace(/[\s.]/g,''):known(r.round)?'round:'+r.round:'date:'+r.date+'|'+normalize(r.opponent);
 function mergeFields(a,b,conflicts,path){
@@ -179,9 +208,23 @@ function playerOcrIdentity(a,b){
 function uniqueConflicts(conflicts){
  const records=new Map();
  for(const conflict of conflicts){
- const field=String(conflict.field||''),key=field+'|'+[conflict.first,conflict.second].map(value=>JSON.stringify(textIdentityFields.has(field.split('.').at(-1))?normalize(value).replace(/\s+/g,' '):value)).sort().join('|');
- const prior=records.get(key);if(!prior||(!prior.resolved&&conflict.resolved))records.set(key,conflict);
+ const field=String(conflict.field||''),fieldKey=field.split('.').at(-1);if(equivalentField(fieldKey,conflict.first,conflict.second))continue;
+ const key=field+'|'+[conflict.first,conflict.second].map(value=>JSON.stringify(textIdentityFields.has(fieldKey)?normalize(value).replace(/\s+/g,' '):value)).sort().join('|');
+ const prior=records.get(key),ranks=entry=>[Math.max(entry.firstRank||0,entry.secondRank||0),Math.min(entry.firstRank||0,entry.secondRank||0)];
+ const currentRanks=ranks(conflict),priorRanks=prior?ranks(prior):[-1,-1];
+ // A newly conflicting pair of literal readings must reopen an earlier weak
+ // disagreement even when both pairs happen to contain the same two values.
+ if(!prior||currentRanks[0]>priorRanks[0]||currentRanks[0]===priorRanks[0]&&currentRanks[1]>priorRanks[1]||currentRanks[0]===priorRanks[0]&&currentRanks[1]===priorRanks[1]&&!prior.resolved&&conflict.resolved)records.set(key,conflict);
  }return [...records.values()];
+}
+function settleMatchConflicts(data){
+ for(const conflict of data.conflicts||[]){
+ if(!conflict.field?.startsWith('match.'))continue;
+ const key=conflict.field.slice(6),value=data.match[key],source=data._matchFieldSources[key];
+ if(!known(value)||!source||source.rank<2||source.rank<=Math.max(conflict.firstRank||0,conflict.secondRank||0))continue;
+ if(!equivalentField(key,value,conflict.first)&&!equivalentField(key,value,conflict.second))continue;
+ conflict.resolved=true;conflict.preferred=value;conflict.resolutionSource=source.source;
+ }return data;
 }
 export function fuseExtraction(first,second){
  const a=first||blankExtraction(),b=second||blankExtraction(),conflicts=[...(a.conflicts||[]),...(b.conflicts||[])].map(conflict=>({...conflict}));
@@ -205,16 +248,16 @@ export function fuseExtraction(first,second){
  if(bm.teamVerified===true&&known(bm.team)&&am.teamVerified!==true)out.meta.team=bm.team;
  out.meta.teamVerified=(am.teamVerified===true&&known(am.team))||(bm.teamVerified===true&&known(bm.team)&&normalize(out.meta.team)===normalize(bm.team));
  out.meta.rivalReportLocked=am.rivalReportLocked===true||bm.rivalReportLocked===true;
- if(out.meta.rivalReportLocked&&!(out._matchFieldSources.secretTraining?.rank>=3&&out.match.secretTraining==='Não'))out.match.secretTraining='Sim';
+ if(out.meta.rivalReportLocked&&(!known(out.match.secretTraining)||(out._matchFieldSources.secretTraining?.rank||0)<2))out.match.secretTraining='Sim';
  out.meta.sawTop=am.sawTop===true||bm.sawTop===true;out.meta.sawBottom=am.sawBottom===true||bm.sawBottom===true;
  out.meta.visibleNames=[...new Set([...(am.visibleNames||[]),...(bm.visibleNames||[])])];
  out.meta.hiddenFields=[...new Set([...(am.hiddenFields||[]),...(bm.hiddenFields||[])])];
  out.conflicts=uniqueConflicts(conflicts);
- return out;
+ return enforceReportPrivacy(settleMatchConflicts(out));
 }
 export function coverage(type,data){
- const missing=[];let present=0,total=0;
- if(type==='match'){for(const [key,label] of matchFields){total++;if(known(data.match?.[key]))present++;else missing.push(label);}}
+ const missing=[],hidden=[];let present=0,total=0;
+ if(type==='match'){for(const [key,label] of matchFields){if(confirmedReportLock(data)&&reportTacticFields.includes(key)&&!known(data.match?.[key])){hidden.push(label);continue;}total++;if(known(data.match?.[key]))present++;else missing.push(label);}}
  else{
  const rows=type==='squad'?data.players:data.calendar;
  const fields=type==='squad'?['name','position','strength','age','value','forSale','training']:['round','date','time','opponent','home','cup','score','result'];
@@ -234,5 +277,5 @@ export function coverage(type,data){
  if(expected!==null&&expected!==(rows||[]).length)missing.push('Quantidade esperada '+expected+', capturada '+(rows||[]).length);
  }
  const unresolved=(data.conflicts||[]).filter(conflict=>!conflict.resolved).length,resolved=(data.conflicts||[]).length-unresolved;
- return {percent:total?Math.round(present/total*100):0,missing,conflicts:unresolved,resolvedConflicts:resolved,complete:missing.length===0&&!unresolved,fragmentCount:type==='calendar'?data.calendarFragments?.length||0:0,detectedCount:type==='calendar'?new Set(data.calendar.map(row=>row.round).filter(known)).size:type==='squad'?data.players.length:present,count:type==='squad'?data.players.length:type==='calendar'?data.calendar.filter(r=>calendarHasSchedule(r)&&['opponent','stage','date','time','result','displayedScore','score'].some(k=>known(r[k]))).length:present};
+ return {percent:total?Math.round(present/total*100):0,missing,hidden,conflicts:unresolved,resolvedConflicts:resolved,complete:missing.length===0&&!unresolved,fragmentCount:type==='calendar'?data.calendarFragments?.length||0:0,detectedCount:type==='calendar'?new Set(data.calendar.map(row=>row.round).filter(known)).size:type==='squad'?data.players.length:present,count:type==='squad'?data.players.length:type==='calendar'?data.calendar.filter(r=>calendarHasSchedule(r)&&['opponent','stage','date','time','result','displayedScore','score'].some(k=>known(r[k]))).length:present};
 }

@@ -5,7 +5,7 @@ import {mergeBetter,validateMatch} from './validator.js';
 import {rivalHuman} from './slots.js';
 import {dedupePlayers,squadSummary} from './parser-squad.js';
 import {mergeCalendar} from './parser-calendar.js';
-import {generateTactic,generateStrong433,validateTactic} from './tactics-engine.js';
+import {generateTactic,generateStrong433,validateTactic,updateTacticSliders} from './tactics-engine.js';
 import {buildMarketPlan,TARGET} from './market-engine.js';
 import {recordResult} from './learning-engine.js';
 import {renderReview,readReview,shirt} from './review-ui.js';
@@ -161,7 +161,7 @@ async function runAnalysis(retry=false){
  const files=retry?[...(review?.files||[])]:[...(root.querySelector('#media')?.files||[])];if(!files.length)throw Error('Escolha ao menos um vídeo ou imagem.');
  const slotId=getSlot().id,state=getState(),reader=retry?'vision':root.querySelector('[name=reader]').value;
  busy=true;review=null;progress='Preparando mídia…';analysisController=new AbortController();const controller=analysisController;let deadline;render();
- try{deadline=setTimeout(()=>controller.abort(),retry||state.settings.profile==='complete'?180000:90000);const operation=analyzeMedia(files,analysisType,{signal:controller.signal,vision:reader==='vision',fallback:state.settings.fallback,username:state.settings.username,myTeam:getSlot().myTeam,rivalName:getSlot().match.rivalName,competitionType:getSlot().competitionType,model:state.settings.model,visionModel:state.settings.visionModel,profile:retry?'complete':state.settings.profile},message=>{if(controller.signal.aborted)return;progress=message;const e=root.querySelector('.progress');if(e)e.textContent=message;});const result=await operation;let merged=previous?fuseExtraction(previous,result):result;const evidence=[...(previous?.rosterEvidence||[]),...(result.rosterEvidence||[])];if(analysisType==='squad'){const checked=refineSquadRoster({...merged,playerCandidates:[...(previous?.playerCandidates||[]),...(result.playerCandidates||[])]},evidence);merged=checked.data;result.errors=[...new Set([...result.errors,...checked.warnings])];}review={...result,...merged,rosterEvidence:evidence,readingTeams:[...new Set([...(previous?.readingTeams||[]),...(result.readingTeams||[])])],coverage:coverage(analysisType,merged),slot:slotId};progress=review.coverage?.complete?'Leitura pronta para revisão.':'Leitura parcial. Revise campos NI e avisos antes de aplicar.';}
+ try{deadline=setTimeout(()=>controller.abort(),retry||state.settings.profile==='complete'?180000:90000);const operation=analyzeMedia(files,analysisType,{signal:controller.signal,vision:reader==='vision',fallback:state.settings.fallback,username:state.settings.username,myTeam:slotTeam(getSlot()),rivalName:getSlot().match.rivalName,competitionType:getSlot().competitionType,model:state.settings.model,visionModel:state.settings.visionModel,profile:retry?'complete':state.settings.profile},message=>{if(controller.signal.aborted)return;progress=message;const e=root.querySelector('.progress');if(e)e.textContent=message;});const result=await operation;let merged=previous?fuseExtraction(previous,result):result;const evidence=[...(previous?.rosterEvidence||[]),...(result.rosterEvidence||[])];if(analysisType==='squad'){const checked=refineSquadRoster({...merged,playerCandidates:[...(previous?.playerCandidates||[]),...(result.playerCandidates||[])]},evidence);merged=checked.data;result.errors=[...new Set([...result.errors,...checked.warnings])];}review={...result,...merged,rosterEvidence:evidence,readingTeams:[...new Set([...(previous?.readingTeams||[]),...(result.readingTeams||[])])],coverage:coverage(analysisType,merged),slot:slotId};progress=review.coverage?.complete?'Leitura pronta para revisão.':'Leitura parcial. Revise campos NI e avisos antes de aplicar.';}
  catch(e){if(previous)review=previous;progress=e.message+' Dados existentes preservados.';}
  finally{clearTimeout(deadline);controller.abort();busy=false;render();}
 }
@@ -170,7 +170,7 @@ async function applyReview(){
  const parsed=readReview(review,root.querySelector('#reviewForm'));
  const destination=Number(root.querySelector('[name=reviewSlot]')?.value||review.slot);
  const slot=getState().slots.find(s=>s.id===destination);if(!slot)throw Error('Escolha um slot válido.');
- const next=applyReading(slot,review.type,parsed,{meta:review.meta,teams:review.readingTeams||[],mode:review.mode});
+ const next=applyReading(slot,review.type,parsed,{meta:review.meta,teams:review.readingTeams||[],conflicts:review.conflicts||[],username:getState().settings.username,mode:review.mode});
  updateSlot(s=>Object.assign(s,next),destination);setActiveSlot(destination);
  const target=review.type==='match'?'pregame':'info';review=null;go(target);toast('Leitura confirmada. Dados válidos preservados.');
 }
@@ -187,12 +187,22 @@ async function action(name){
  if(a==='analyze')return runAnalysis();
  if(a==='retryAnalysis'){const draft=readReview(review,root.querySelector('#reviewForm'));if(review.type==='match'){review.match=draft;review._matchFieldSources=draft._fieldSources||review._matchFieldSources;}else if(review.type==='squad'){review.players=draft.players;review.playerCandidates=draft.playerCandidates||[];review.meta=draft.meta;}else review.calendar=draft;return runAnalysis(true);}
  if(a==='cancel'){analysisController?.abort();progress='Cancelando operação atual…';const e=root.querySelector('.progress');if(e)e.textContent=progress;return;}
+ if(a==='resolveConflict'){
+  if(!review||review.type!=='match')return;
+  const conflict=review.conflicts?.[Number(b)];if(!conflict||conflict.resolved||!conflict.field.startsWith('match.'))return;
+  const field=conflict.field.slice(6);if(!matchFields.some(([key])=>key===field))return;
+  const destination=root.querySelector('[name=reviewSlot]')?.value,parsed=readReview(review,root.querySelector('#reviewForm'));
+  const value=c==='unknown'?'NI':c==='first'?conflict.first:conflict.second;
+  parsed[field]=value;parsed._fieldSources[field]={kind:'manual',rank:4,source:'Escolhido na revisão'};review.match=parsed;review._matchFieldSources=parsed._fieldSources;
+  for(const item of review.conflicts||[])if(item.field===conflict.field){item.resolved=true;item.preferred=value;item.resolutionSource='Escolhido na revisão';}
+  review.coverage=coverage('match',review);render();const select=root.querySelector('[name=reviewSlot]');if(select&&destination)select.value=destination;return;
+ }
  if(a==='applyReview')return applyReview();
  if(a==='discardReview'){review=null;render();return;}
  if(a==='aiTactic')return makeTactic(true);
  if(a==='localTactic')return makeTactic(false);
  if(a==='strong'){updateSlot(s=>{s.tactics=generateStrong433(s.match,getState().settings);s.tacticStale=false;});render();return;}
- if(a==='saveSliders'){const values={};for(const key of ['pressure','mentality','tempo'])values[key]=+root.querySelector('[name='+key+']').value;updateSlot(s=>{Object.assign(s.tactics,values);s.tactics.source='Ajuste manual';});render();toast('Sliders salvos.');return;}
+ if(a==='saveSliders'){const values={};for(const key of ['pressure','mentality','tempo'])values[key]=+root.querySelector('[name='+key+']').value;updateSlot(s=>{s.tactics=updateTacticSliders(s.tactics,values);});render();toast('Sliders salvos.');return;}
  if(a==='newMatch'){if(!confirm('Iniciar nova partida neste slot? Dados da partida e tática serão limpos. Elenco, calendário e histórico serão preservados.'))return;updateSlot(s=>{s.match={_schemaVersion:3,myName:s.myTeam||s.match.myName||'NI',human:s.competitionType==='Batalha'?true:null};s.tactics=null;s.tacticStale=false;});render();return;}
  if(a==='market'){updateSlot(s=>s.director.plan=buildMarketPlan(s.squad,s.director.cash,s.match.myStrength));render();toast('Recomendações atualizadas; suas anotações foram preservadas.');return;}
  if(a==='snapshot'){updateSlot(s=>{const nums=s.squad.players.map(p=>num(p.strength));s.director.snapshots.unshift({at:new Date().toISOString(),total:nums.length,strength:nums.length&&nums.every(n=>n!==null)?Math.round(nums.reduce((a,b)=>a+b,0)/nums.length):'NI'});s.director.snapshots=s.director.snapshots.slice(0,100);});render();return;}

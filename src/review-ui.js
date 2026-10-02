@@ -11,12 +11,13 @@ const yn=[['true','Sim'],['false','Não']];
 function calendarReviewRow(r,path){
  return '<article class="calendar-review"><header><span class="round-badge">'+esc(r.round??'?')+'</span><div><b>'+esc(r.opponent)+'</b><span>'+esc(r.stage==='NI'?'':r.stage)+' · '+(r.home===true?'Casa':r.home===false?'Fora':'Local NI')+'</span></div><strong class="result-badge">'+esc(r.result)+'</strong></header><div class="form-grid">'+[['round','Rodada','number'],['opponent','Rival'],['nickname','Nickname'],['date','Data DD/MM/AAAA'],['time','Horário HH:MM'],['score','Placar (meu time primeiro)'],['displayedScore','Placar exibido (casa primeiro)'],['stage','Fase']].map(([key,label,type])=>control(path+'.'+key,label,r[key],type)).join('')+control(path+'.home','Local',r.home,'boolean',[['true','Casa'],['false','Fora']])+control(path+'.cup','Competição',r.cup,'boolean',[['true','Copa'],['false','Liga']])+control(path+'.result','Resultado',r.result,'text',['V','E','D'])+'</div></article>';
 }
-function conflictItem(c){
+function conflictItem(c,index,review){
  const key=c.field.split('.').at(-1),labels={home:'Local',cup:'Competição',opponent:'Rival',nickname:'Nickname',result:'Resultado',round:'Rodada',date:'Data',time:'Horário',score:'Placar',displayedScore:'Placar exibido',name:'Jogador',position:'Posição',strength:'Força',age:'Idade',value:'Valor',training:'Treino',forSale:'Venda',...Object.fromEntries(matchFields.map(([field,label])=>[field,label]))};
  const round=c.field.match(/round:(\d+)/)?.[1],date=c.field.match(/date:(\d{2}\/\d{2}\/\d{4})/)?.[1];
  const context=round?'Rodada '+round:date||'';
  const show=value=>key==='home'&&typeof value==='boolean'?(value?'Casa':'Fora'):key==='cup'&&typeof value==='boolean'?(value?'Copa':'Liga'):typeof value==='boolean'?(value?'Sim':'Não'):value;
- return '<li><b>'+esc((context?context+' · ':'')+(labels[key]||'Campo'))+'</b>: '+esc(show(c.first))+' / '+esc(show(c.second))+(c.resolved?' · Confirmado: '+esc(show(c.preferred)):'')+'</li>';
+ const choices=review?.type==='match'&&!c.resolved?'<div class="actions"><button type="button" class="secondary" data-action="resolveConflict:'+index+':first">Usar '+esc(show(c.first))+'</button><button type="button" class="secondary" data-action="resolveConflict:'+index+':second">Usar '+esc(show(c.second))+'</button><button type="button" class="secondary" data-action="resolveConflict:'+index+':unknown">Marcar NI</button></div>':'';
+ return '<li><b>'+esc((context?context+' · ':'')+(labels[key]||'Campo'))+'</b>: '+esc(show(c.first))+' / '+esc(show(c.second))+(c.resolved?' · Confirmado: '+esc(show(c.preferred)):'')+choices+'</li>';
 }
 function playerReviewRow(p,path,pending=false){
  const include=pending?'<label><input type="checkbox" data-review-path="'+path+'._include" data-kind="include"> Confirmo este jogador nas telas e quero incluir</label>':'';
@@ -34,7 +35,7 @@ export function renderReview(review){
   if(review.calendarFragments?.length)content+='<details class="reading-warnings"><summary>Trechos sem identificação do jogo ('+review.calendarFragments.length+')</summary><p>Esses trechos não entram na contagem de jogos. Complete a rodada, data ou horário comprovado para incluir ao confirmar.</p><div class="review-list">'+review.calendarFragments.map((r,i)=>calendarReviewRow(r,'calendarFragments.'+i)).join('')+'</div></details>';
  }
  if(review.type!=='match'&&!review[review.type==='squad'?'players':'calendar'].length)content+='<p class="warning">Nenhum registro reconhecido. Confira os avisos e tente completar a leitura.</p>';
- const conflicts=(review.conflicts||[]).filter(c=>!c.resolved).map(conflictItem).join(''),resolved=(review.conflicts||[]).filter(c=>c.resolved).map(conflictItem).join('');
+ const conflicts=(review.conflicts||[]).map((c,i)=>!c.resolved?conflictItem(c,i,review):'').join(''),resolved=(review.conflicts||[]).map((c,i)=>c.resolved?conflictItem(c,i,review):'').join('');
  return '<form id="reviewForm" onsubmit="return false">'+content+'</form>'+(conflicts?'<details open><summary>Valores divergentes: confira nas telas</summary><ul>'+conflicts+'</ul></details>':'')+(resolved?'<details><summary>Diferenças resolvidas pela leitura comprovada</summary><ul>'+resolved+'</ul></details>':'');
 }
 export function readReview(review,container){

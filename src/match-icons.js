@@ -52,7 +52,7 @@ export function detectMatchPixels(image,evidence={}){
  if(!image?.data||!image.width||!image.height||image.width/image.height<1.8||image.width/image.height>2.6||evidence.region&&evidence.region!=='full')return empty;
  const width=Number(evidence.width||image.width),height=Number(evidence.height||image.height),ocr=evidence.ocr||{},context=evidence.context||{};
  const parsed=parseMatchOverlay(ocr,width,height,context),match={};for(const [field,value] of Object.entries(parsed))if(!field.startsWith('_')&&value!==null&&value!=='NI'&&value!=='')match[field]=value;
- const meta={_ocrFields:Object.keys(match)},sx=image.width/width,sy=image.height/height;
+ const meta={_ocrFields:Object.keys(match),_headerFields:(parsed._headerFields||[]).filter(field=>Object.hasOwn(match,field))},sx=image.width/width,sy=image.height/height;
  const rows=matchOcrRows(ocr).map(row=>({...row,left:row.left*sx,right:row.right*sx,top:row.top*sy,bottom:row.bottom*sy}));
  const label=rows.find(row=>/analista de dados/.test(normalize(row.text))&&row.left>image.width*.65&&row.right<image.width*.83&&row.top>image.height*.20&&row.bottom<image.height*.37);
  if(label&&match.rivalName&&(!context.myTeam||normalize(match.rivalName)!==normalize(context.myTeam))){

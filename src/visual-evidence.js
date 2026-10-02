@@ -40,7 +40,9 @@ export function applyScreenEvidence(initial,response,frames,type){
   const local=detectMatchIcons(canvas,evidence);
   if(!Object.entries(local.match||{}).some(([key,value])=>!key.startsWith('_')&&known(value)))continue;
   const pixelFields=[];if(local.meta?.iconEvidence?.some(e=>e.kind==='padlock'))pixelFields.push('secretTraining');if(local.meta?.iconEvidence?.some(e=>e.kind==='referee-thermometer'))pixelFields.push('referee');
-  const literalMatch={...local.match};for(const key of pixelFields)delete literalMatch[key];
+  const headerFields=(local.meta?._headerFields||[]).filter(key=>known(local.match[key])&&!pixelFields.includes(key));
+  if(headerFields.length)data=fuseExtraction(data,normalizeExtraction({match:Object.fromEntries(headerFields.map(key=>[key,local.match[key]]))},type,'Cabeçalhos identificados nas telas',{sourceKind:'ocr-layout',fields:headerFields}));
+  const literalMatch={...local.match};for(const key of [...pixelFields,...headerFields])delete literalMatch[key];
   if(Object.keys(literalMatch).length)data=fuseExtraction(data,normalizeExtraction({match:literalMatch,meta:{...local.meta,rivalReportLocked:false}},type,'Relatório e cabeçalhos nas telas',{sourceKind:'ocr-explicit',fields:['myStrength','rivalStrength','myGK','rivalGK','myDEF','rivalDEF','myMID','rivalMID','myATT','rivalATT','mySquadValue','rivalSquadValue','myPlayers','rivalPlayers','rivalFormation','rivalPlan','rivalMarking','rivalOffside','rivalTackling','stadium','trainingCamp','secretTraining','referee']}));
   if(pixelFields.length)data=fuseExtraction(data,normalizeExtraction({match:Object.fromEntries(pixelFields.map(key=>[key,local.match[key]])),meta:{rivalReportLocked:local.meta?.rivalReportLocked===true}},type,'Cadeado e árbitro nas telas',{sourceKind:'pixels',fields:pixelFields}));used.add('leitura local da partida');
  }
