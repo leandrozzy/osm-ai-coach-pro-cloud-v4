@@ -1,7 +1,7 @@
 import {allowed,requestBody,keyFor,errorInfo} from '../lib/http.js';
 import {groqRead,ocrRead,googleRead} from '../lib/providers.js';
 import {blankExtraction,normalizeExtraction,fuseExtraction,coverage} from '../src/extraction.js';
-import {overlayExtraction,structuredOcr,parseCalendarOverlay} from '../src/ocr-layout.js';
+import {overlayExtraction,structuredOcr,parseCalendarOverlay,parseSquadOverlay} from '../src/ocr-layout.js';
 import {mergeMatchTexts} from '../src/parser-match.js';
 import {normalize} from '../src/utils.js';
 import {known} from '../src/domain.js';
@@ -33,7 +33,7 @@ export default async function handler(req,res){
  if(google)readers.google=()=>googleRead({key:google,type,images:visualImages,context,model:body.models?.google});
  if(groq&&!body.disabled?.includes('groq-visual'))readers.groq=()=>groqRead({key:groq,type,images:visualImages,context,model:body.models?.groqVision});
  const order=body.preferredProvider==='groq'?['groq','google']:['google','groq'];
- let ocrResults=[];const calendarEvidence=[];
+ let ocrResults=[];const calendarEvidence=[],squadEvidence=[],matchEvidence=[];
  const visual=async()=>{
   if(body.useVisual===false)return;
   const provider=order.find(name=>readers[name]);if(!provider)return;
@@ -44,14 +44,18 @@ export default async function handler(req,res){
  };
  const readOCR=async()=>{
  const remaining=30000-(Date.now()-started);if(!ocr||remaining<500)return;
- // Two useful crops suffice per batch; keep OCR quota for the next screen.
- const selected=ocrImages.slice(0,2);
+ // Scout report crops have faint text and must not be dropped behind full screens.
+ const selected=ocrImages.map((image,index)=>({...image,index})).slice(0,type==='match'?4:2);
  const results=await Promise.allSettled(selected.map(i=>ocrRead({key:ocr,image:i.url,budgetMs:remaining})));let read=blankExtraction();attempts.push('ocrspace');
- results.forEach((r,index)=>{if(r.status==='fulfilled'){ocrResults.push({index,...r.value});read.warnings.push(...r.value.warnings||[]);if(ocrImages[index].region==='full'){
- read=fuseExtraction(read,overlayExtraction(type,r.value,ocrImages[index].width,ocrImages[index].height));
- if(type==='calendar')for(const row of parseCalendarOverlay(r.value.lines,ocrImages[index].width,ocrImages[index].height))calendarEvidence.push({frameIndex:Number.isInteger(ocrImages[index].frameIndex)?ocrImages[index].frameIndex:index,row});
+ results.forEach((r,selectedIndex)=>{const image=selected[selectedIndex],index=image.index;if(r.status==='fulfilled'){ocrResults.push({index,...r.value});read.warnings.push(...r.value.warnings||[]);if(image.region==='full'){
+ const literal=overlayExtraction(type,r.value,image.width,image.height);
+ read=fuseExtraction(read,normalizeExtraction(literal,type,type==='squad'?'OCR.space posição da linha':'OCR.space card',{sourceKind:'ocr-layout',fields:type==='squad'?['position','strength','age','value']:['round','date','time','displayedScore']}));
+ const frameIndex=Number.isInteger(image.frameIndex)?image.frameIndex:index;
+ if(type==='calendar')for(const row of parseCalendarOverlay(r.value.lines,image.width,image.height)){const literalRow=normalizeExtraction({calendar:[row]},'calendar','OCR.space card',{sourceKind:'ocr-layout',fields:['round','date','time','displayedScore']});const normalized=literalRow.calendar[0]||literalRow.calendarFragments[0];if(normalized)calendarEvidence.push({frameIndex,row:{...normalized,_card:row._card}});}
+ if(type==='squad')squadEvidence.push({frameIndex,players:parseSquadOverlay(r.value.lines,image.width,image.height),width:image.width,height:image.height});
+ if(type==='match')matchEvidence.push({frameIndex,ocr:{text:r.value.text,lines:r.value.lines},width:image.width,height:image.height,region:'full',context});
  }}else failures.push(errorInfo('ocrspace',r.reason));});
- if(type==='match'&&ocrResults.length)read=fuseExtraction(read,normalizeExtraction(mergeMatchTexts(ocrResults.map(r=>r.text),{myTeam:context.myTeam,rivalName:context.rivalName}),'match','OCR.space explícito'));
+ if(type==='match'&&ocrResults.length)read=fuseExtraction(read,normalizeExtraction(mergeMatchTexts(ocrResults.map(r=>r.text),{myTeam:context.myTeam,rivalName:context.rivalName}),'match','OCR.space explícito',{sourceKind:'ocr-explicit',fields:['rivalFormation','rivalPlan','rivalMarking','rivalOffside','rivalTackling','stadium','trainingCamp','myTrainingCamp']}));
  return read;
  };
  if(body.forceOCR===true){const results=await Promise.allSettled([visual(),readOCR()]);for(const result of results)if(result.status==='fulfilled'&&result.value)output=fuseExtraction(output,result.value);}
@@ -67,10 +71,10 @@ export default async function handler(req,res){
  }catch(e){failures.push({...errorInfo('groq',e),stage:'text'});}
  }
  // Do not let a rival squad or another slot's calendar contaminate the selected team.
- if(type!=='match'&&context.myTeam&&output.meta.team&&output.meta.team!=='NI'&&normalize(context.myTeam)!==normalize(output.meta.team)){
- output.warnings.push('Time lido '+output.meta.team+' é diferente do time selecionado '+context.myTeam+'. Dados não aplicados.');output.players=[];output.calendar=[];
+ if(type!=='match'&&known(context.myTeam)&&output.meta.team&&output.meta.team!=='NI'&&normalize(context.myTeam)!==normalize(output.meta.team)){
+ output.warnings.push('Time lido '+output.meta.team+' é diferente do time selecionado '+context.myTeam+'. Dados não aplicados.');output.players=[];output.calendar=[];output.calendarFragments=[];squadEvidence.length=0;calendarEvidence.length=0;
  }
  const quality=coverage(type,output);
- return res.status(200).json({data:output,coverage:quality,attempts,failures,preferredProvider,elapsedMs:Date.now()-started,needsVideo:!quality.complete,...(type==='calendar'?{calendarEvidence}:{})});
+ return res.status(200).json({data:output,coverage:quality,attempts,failures,preferredProvider,elapsedMs:Date.now()-started,needsVideo:!quality.complete,...(type==='calendar'?{calendarEvidence}:type==='squad'?{squadEvidence}:{matchEvidence})});
  }catch(e){return res.status(400).json({error:'Solicitação inválida: '+e.message});}
 }
