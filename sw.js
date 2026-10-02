@@ -1,5 +1,5 @@
-const CACHE='osm-pro-v714-stable-scan-20261001';
-const ASSETS=['./','./index.html','./styles.css','./clean-fix-v25.css','./coach-ai-30.css','./app.js','./clean-fix-v25.js','./coach-ai-30.js','./analysis-hotfix-33.js','./market-engine.js','./match-reader-v79.js','./stable-hotfix-v714.js','./push-integrated.js','./manifest.webmanifest','./icon.svg'];
+const CACHE='osm-pro-v715-gemini-vision-20261001';
+const ASSETS=['./','./index.html','./styles.css','./clean-fix-v25.css','./coach-ai-30.css','./app.js','./clean-fix-v25.js','./coach-ai-30.js','./analysis-hotfix-33.js','./market-engine.js','./match-reader-v79.js','./stable-hotfix-v714.js','./match-vision-v715.js','./push-integrated.js','./manifest.webmanifest','./icon.svg'];
 self.addEventListener('install',event=>{event.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)).catch(()=>null).then(()=>self.skipWaiting()))});
 self.addEventListener('activate',event=>{event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim()))});
 self.addEventListener('fetch',event=>{if(event.request.method!=='GET')return;event.respondWith(fetch(event.request).then(r=>{const copy=r.clone();caches.open(CACHE).then(c=>c.put(event.request,copy)).catch(()=>{});return r}).catch(()=>caches.match(event.request).then(r=>r||caches.match('./index.html'))))});

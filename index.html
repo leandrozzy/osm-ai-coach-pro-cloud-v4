@@ -16,13 +16,10 @@
   <header class="topbar">
     <div class="brand">
       <img src="icon.svg" alt="" class="brand-icon">
-      <div>
-        <h1>OSM AI Coach Pro</h1>
-        <p>V2 · Manager Assistant</p>
-      </div>
+      <div><h1>OSM AI Coach Pro</h1><p>V2 · Manager Assistant</p></div>
     </div>
     <div class="top-actions">
-      <span class="env-pill">7.14 STABLE SCAN</span>
+      <span class="env-pill">7.15 GEMINI VISION</span>
       <button id="apiBtn" class="btn ghost">API Gemini</button>
     </div>
   </header>
@@ -48,8 +45,7 @@
         <div><span class="eyebrow">SLOT SELECIONADO</span><h2>Resumo do slot</h2></div>
         <button id="refreshBtn" class="icon-btn" title="Atualizar">↻</button>
       </div>
-      <div id="slotsGrid" class="slots-grid"></div>
-      <div id="radarPanel"></div>
+      <div id="slotsGrid" class="slots-grid"></div><div id="radarPanel"></div>
     </section>
 
     <section id="view-pregame" class="view">
@@ -59,13 +55,11 @@
 
     <section id="view-analyze" class="view">
       <div class="section-head"><div><span class="eyebrow">COLETA INTELIGENTE</span><h2>Ler vídeo ou imagens</h2></div></div>
-
       <div class="mode-grid">
         <button class="mode-card active" data-mode="tactic"><b>⚽ Partida</b><span>Adversário, árbitro, Data Analyst e tática</span></button>
         <button class="mode-card" data-mode="market"><b>👥 Elenco</b><span>Jogadores, posições, força, treino e evolução</span></button>
         <button class="mode-card" data-mode="calendar"><b>📅 Calendário</b><span>Rodadas, horários e próximos jogos</span></button>
       </div>
-
       <div class="card upload-card">
         <div id="uploadZone" class="upload-zone">
           <input id="mediaInput" type="file" accept="video/*,image/*" multiple hidden>
@@ -75,11 +69,7 @@
           <button id="chooseMediaBtn" class="btn">Escolher mídia</button>
         </div>
         <div class="upload-options">
-          <label>Slot
-            <select id="analysisSlot">
-              <option value="1">Slot 1</option><option value="2">Slot 2</option><option value="3">Slot 3</option><option value="4">Slot 4</option>
-            </select>
-          </label>
+          <label>Slot<select id="analysisSlot"><option value="1">Slot 1</option><option value="2">Slot 2</option><option value="3">Slot 3</option><option value="4">Slot 4</option></select></label>
           <label class="check"><input id="autoTactic" type="checkbox" checked><span>Gerar tática automaticamente quando a leitura estiver suficiente</span></label>
         </div>
         <div class="analyze-now-wrap">
@@ -91,67 +81,36 @@
         <div id="mediaPreview" class="preview-grid"></div>
       </div>
       <div id="analysisDiagnostics" class="small muted" style="padding:8px 4px"></div>
-      <div id="coverageContent"></div>
-      <div id="analysisContent"></div>
+      <div id="coverageContent"></div><div id="analysisContent"></div>
     </section>
 
     <section id="view-info" class="view">
-      <div class="section-head">
-        <div><span class="eyebrow">INFORMAÇÕES</span><h2>Liga, time e calendário</h2></div>
-        <button id="infoEditBtn" class="btn ghost">Editar informações</button>
-      </div>
+      <div class="section-head"><div><span class="eyebrow">INFORMAÇÕES</span><h2>Liga, time e calendário</h2></div><button id="infoEditBtn" class="btn ghost">Editar informações</button></div>
       <div id="infoContent"></div>
     </section>
 
     <section id="view-market" class="view">
-      <div class="section-head">
-        <div><span class="eyebrow">DIRETOR</span><h2>Elenco, evolução e plano</h2></div>
-        <button id="marketAnalyzeBtn" class="btn ghost">Recalcular plano</button>
-      </div>
+      <div class="section-head"><div><span class="eyebrow">DIRETOR</span><h2>Elenco, evolução e plano</h2></div><button id="marketAnalyzeBtn" class="btn ghost">Recalcular plano</button></div>
       <div id="marketContent"></div>
     </section>
 
-    <section id="view-learning" class="view">
-      <div class="section-head"><div><span class="eyebrow">APRENDIZADO</span><h2>O que a IA aprendeu</h2></div></div>
-      <div id="learningContent"></div>
-    </section>
-
-    <section id="view-history" class="view">
-      <div class="section-head"><div><span class="eyebrow">HISTÓRICO</span><h2>Desempenho e decisões</h2></div></div>
-      <div id="historyContent"></div>
-    </section>
+    <section id="view-learning" class="view"><div class="section-head"><div><span class="eyebrow">APRENDIZADO</span><h2>O que a IA aprendeu</h2></div></div><div id="learningContent"></div></section>
+    <section id="view-history" class="view"><div class="section-head"><div><span class="eyebrow">HISTÓRICO</span><h2>Desempenho e decisões</h2></div></div><div id="historyContent"></div></section>
 
     <section id="view-settings" class="view">
       <div class="section-head"><div><span class="eyebrow">CONFIGURAÇÃO</span><h2>Preferências</h2></div></div>
       <div class="card form">
         <label>Seu nick no OSM<input id="userNick" value="leandrozzy"></label>
-        <label>Modelo Gemini
-          <select id="modelSelect">
-            <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
-            <option value="gemini-flash-latest">Gemini Flash Latest</option>
-            <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite</option>
-            <option value="gemini-3.8-flash">Gemini 3.8 Flash</option>
-          </select>
-        </label>
+        <label>Modelo Gemini<select id="modelSelect"><option value="gemini-3.5-flash">Gemini 3.5 Flash</option><option value="gemini-flash-latest">Gemini Flash Latest</option><option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite</option><option value="gemini-3.8-flash">Gemini 3.8 Flash</option></select></label>
         <label>Alerta antes da partida (min)<input id="notifyMinutes" type="number" min="1" max="180" value="20"></label>
         <label class="check"><input id="notifyEnabled" type="checkbox" checked><span>Notificações enquanto o app estiver aberto/instalado</span></label>
         <div class="actions"><button id="saveSettingsBtn" class="btn">Salvar</button><button id="notifyBtn" class="btn ghost">Permitir notificações</button></div>
       </div>
-
-      <div class="card">
-        <h3>Backup</h3>
-        <div class="actions">
-          <button id="migrateBtn" class="btn ghost">Importar backup da V1</button><input id="v1ImportInput" type="file" accept="application/json" hidden>
-          <button id="exportBtn" class="btn ghost">Exportar backup V2</button>
-          <label class="btn ghost file-label">Importar backup<input id="importInput" type="file" accept="application/json" hidden></label>
-        </div>
-      </div>
+      <div class="card"><h3>Backup</h3><div class="actions"><button id="migrateBtn" class="btn ghost">Importar backup da V1</button><input id="v1ImportInput" type="file" accept="application/json" hidden><button id="exportBtn" class="btn ghost">Exportar backup V2</button><label class="btn ghost file-label">Importar backup<input id="importInput" type="file" accept="application/json" hidden></label></div></div>
     </section>
   </main>
 
-  <div id="modal" class="modal" aria-hidden="true">
-    <div class="modal-sheet"><button id="modalClose" class="modal-close">×</button><div id="modalBody"></div></div>
-  </div>
+  <div id="modal" class="modal" aria-hidden="true"><div class="modal-sheet"><button id="modalClose" class="modal-close">×</button><div id="modalBody"></div></div></div>
   <div id="toast" class="toast"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
@@ -162,6 +121,7 @@
   <script src="market-engine.js?v=7.8.0"></script>
   <script src="match-reader-v79.js?v=7.14.0"></script>
   <script src="stable-hotfix-v714.js?v=7.14.0"></script>
+  <script src="match-vision-v715.js?v=7.15.0"></script>
   <script src="push-integrated.js?v=4.0.0"></script>
 </body>
 </html>
