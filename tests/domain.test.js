@@ -1,0 +1,14 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {cleanMatch,num,nextMatch,rowTime,scoreOutcome,sharedLearning,cleanPlayers} from '../src/domain.js';
+import {defaultState,migrate} from '../src/storage.js';
+import {buildMarketPlan} from '../src/market-engine.js';
+import {recordResult} from '../src/learning-engine.js';
+test('desconhecido não vira zero',()=>{assert.equal(num('NI'),null);assert.equal(num(null),null);assert.equal(num(''),null);assert.equal(num(0),0);});
+test('validação rejeita dados visuais inválidos',()=>{const m=cleanMatch({myStrength:'NI',rivalStrength:999,referee:'Roxo',human:'NI',rivalFormation:'9-0-1'});assert.equal(m.rivalStrength,undefined);assert.equal(m.human,undefined);});
+test('datas inválidas não geram lembretes',()=>{assert.equal(rowTime({date:'31/02/2026',time:'12:00'}),null);assert.equal(rowTime({date:'02/10/2026',time:'25:00'}),null);});
+test('próximo jogo pula resultado e ordena por data',()=>{const now=new Date(2026,9,1).getTime();const s={calendar:[{id:'a',date:'03/10/2026',time:'10:00',opponent:'A',result:'NI'},{id:'b',date:'02/10/2026',time:'10:00',opponent:'B',result:'NI'},{date:'01/10/2026',time:'10:00',result:'V'}]};assert.equal(nextMatch(s,now).id,'b');});
+test('backup exige os quatro slots e preserva a versão anterior',()=>{assert.throws(()=>migrate({slots:[]}));const s=defaultState();s.slots[1].match.referee='Verde';assert.equal(migrate(s).slots[1].match.referee,'Verde');});
+test('resultado mantém cópia da tática e compartilha entre slots',()=>{const s=defaultState();s.slots[0].tactics={formation:'4-5-1',pressure:42};recordResult(s.slots[0],{score:'2x1',shots:'NI'});s.slots[0].tactics.pressure=90;assert.equal(s.slots[0].learning.matches[0].tactic.pressure,42);assert.equal(sharedLearning(s).weights['4-5-1'].wins,1);assert.equal(s.slots[1].learning.matches.length,0);assert.equal(scoreOutcome('1x1'),'E');assert.throws(()=>recordResult(s.slots[0],{score:'NI'}));});
+test('Diretor não vende abaixo da meta nem passa de quatro vendas',()=>{const players=Array.from({length:7},(_,i)=>({name:'ATA '+i,position:'ATA',strength:80+i,forSale:i<3,training:false}));const p=buildMarketPlan({players});assert.ok(p.sell.length<=1);assert.ok(buildMarketPlan({players:players.slice(0,4)}).sell.length===0);});
+test('idade e força ausentes permanecem desconhecidas',()=>{const p=cleanPlayers([{name:'A',position:'DEF',strength:'NI',age:'NI',training:'NI'}])[0];assert.equal(p.strength,null);assert.equal(p.age,null);assert.equal(p.training,null);});
