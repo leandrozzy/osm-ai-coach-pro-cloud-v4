@@ -3,7 +3,6 @@ import {groqRead,ocrRead,googleRead} from '../lib/providers.js';
 import {blankExtraction,normalizeExtraction,fuseExtraction,coverage} from '../src/extraction.js';
 import {overlayExtraction,structuredOcr,parseCalendarOverlay,parseSquadOverlay} from '../src/ocr-layout.js';
 import {mergeMatchTexts} from '../src/parser-match.js';
-import {normalize} from '../src/utils.js';
 import {known} from '../src/domain.js';
 import {cachedCapability,probeModels} from '../lib/model-catalog.js';
 function usefulRead(type,data){
@@ -33,7 +32,7 @@ export default async function handler(req,res){
  if(google)readers.google=()=>googleRead({key:google,type,images:visualImages,context,model:body.models?.google});
  if(groq&&!body.disabled?.includes('groq-visual'))readers.groq=()=>groqRead({key:groq,type,images:visualImages,context,model:body.models?.groqVision});
  const order=body.preferredProvider==='groq'?['groq','google']:['google','groq'];
- let ocrResults=[];const calendarEvidence=[],squadEvidence=[],matchEvidence=[];
+ let ocrResults=[];const calendarEvidence=[],squadEvidence=[],matchEvidence=[],teamEvidence=[];
  const visual=async()=>{
   if(body.useVisual===false)return;
   const provider=order.find(name=>readers[name]);if(!provider)return;
@@ -49,6 +48,7 @@ export default async function handler(req,res){
  const results=await Promise.allSettled(selected.map(i=>ocrRead({key:ocr,image:i.url,budgetMs:remaining})));let read=blankExtraction();attempts.push('ocrspace');
  results.forEach((r,selectedIndex)=>{const image=selected[selectedIndex],index=image.index;if(r.status==='fulfilled'){ocrResults.push({index,...r.value});read.warnings.push(...r.value.warnings||[]);if(image.region==='full'){
  const literal=overlayExtraction(type,r.value,image.width,image.height);
+ if(literal.meta?.teamVerified===true&&known(literal.meta.team))teamEvidence.push({team:literal.meta.team,frameIndex:Number.isInteger(image.frameIndex)?image.frameIndex:index,verified:true});
  read=fuseExtraction(read,normalizeExtraction(literal,type,type==='squad'?'OCR.space posição da linha':'OCR.space card',{sourceKind:'ocr-layout',fields:type==='squad'?['position','strength','age','value']:['round','date','time','displayedScore']}));
  const frameIndex=Number.isInteger(image.frameIndex)?image.frameIndex:index;
  if(type==='calendar')for(const row of parseCalendarOverlay(r.value.lines,image.width,image.height)){const literalRow=normalizeExtraction({calendar:[row]},'calendar','OCR.space card',{sourceKind:'ocr-layout',fields:['round','date','time','displayedScore']});const normalized=literalRow.calendar[0]||literalRow.calendarFragments[0];if(normalized)calendarEvidence.push({frameIndex,row:{...normalized,_card:row._card}});}
@@ -70,11 +70,9 @@ export default async function handler(req,res){
   else failures.push({provider:'groq',stage:'text',status:404,code:'NO_SUPPORTED_MODEL',error:'Groq: nenhum modelo de texto compatível disponível nesta chave.'});
  }catch(e){failures.push({...errorInfo('groq',e),stage:'text'});}
  }
- // Do not let a rival squad or another slot's calendar contaminate the selected team.
- if(type!=='match'&&known(context.myTeam)&&output.meta.team&&output.meta.team!=='NI'&&normalize(context.myTeam)!==normalize(output.meta.team)){
- output.warnings.push('Time lido '+output.meta.team+' é diferente do time selecionado '+context.myTeam+'. Dados não aplicados.');output.players=[];output.calendar=[];output.calendarFragments=[];squadEvidence.length=0;calendarEvidence.length=0;
- }
+ // Keep the reading reviewable. The final save validates the destination club
+ // after combining all image batches, local evidence and video fallback.
  const quality=coverage(type,output);
- return res.status(200).json({data:output,coverage:quality,attempts,failures,preferredProvider,elapsedMs:Date.now()-started,needsVideo:!quality.complete,...(type==='calendar'?{calendarEvidence}:type==='squad'?{squadEvidence}:{matchEvidence})});
+ return res.status(200).json({data:output,coverage:quality,attempts,failures,preferredProvider,elapsedMs:Date.now()-started,teamEvidence,needsVideo:!quality.complete,...(type==='calendar'?{calendarEvidence}:type==='squad'?{squadEvidence}:{matchEvidence})});
  }catch(e){return res.status(400).json({error:'Solicitação inválida: '+e.message});}
 }
