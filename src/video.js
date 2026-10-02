@@ -1,0 +1,3 @@
+import {extractFrames,imageToCanvas} from './frame-extractor.js';import {preprocess} from './image-preprocess.js';import {layeredOCR} from './ocr.js';
+export async function mediaToTexts(files,onUpdate=()=>{}){const canvases=[];for(const file of files){if(file.type.startsWith('video/')){const fs=await extractFrames(file);canvases.push(...fs.map(f=>f.canvas));}else if(file.type.startsWith('image/'))canvases.push(await imageToCanvas(file));}
+ const texts=[];for(let i=0;i<canvases.length;i++){onUpdate({stage:'ocr',current:i+1,total:canvases.length});const r=await layeredOCR(preprocess(canvases[i]),p=>onUpdate({stage:'ocr',current:i+1,total:canvases.length,progress:p}));texts.push(r.text);}return {texts,frameCount:canvases.length};}

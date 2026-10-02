@@ -1,0 +1,6 @@
+import {canvasBlob} from './image-preprocess.js';
+let workerPromise;
+async function worker(){if(!globalThis.Tesseract?.createWorker) throw new Error('Tesseract.js indisponível'); if(!workerPromise)workerPromise=globalThis.Tesseract.createWorker('por+eng').catch(()=>globalThis.Tesseract.createWorker('eng'));return workerPromise;}
+export async function localOCR(canvas,onProgress=()=>{}){const w=await worker();onProgress(0.15);const {data}=await w.recognize(canvas);onProgress(1);return {text:data.text||'',confidence:data.confidence||0,provider:'tesseract'};}
+export async function remoteOCR(canvas){const blob=await canvasBlob(canvas);const base64=await new Promise((res,rej)=>{const fr=new FileReader();fr.onload=()=>res(String(fr.result).split(',')[1]);fr.onerror=rej;fr.readAsDataURL(blob)});const r=await fetch('/api/ocr',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({imageBase64:base64})});if(!r.ok)throw new Error(`OCR remoto HTTP ${r.status}`);return r.json();}
+export async function layeredOCR(canvas,onProgress){const local=await localOCR(canvas,onProgress);if(local.confidence>=65&&local.text.trim().length>20)return local;try{const remote=await remoteOCR(canvas);if((remote.confidence||0)>local.confidence||remote.text?.length>local.text.length)return remote;}catch{}return local;}
