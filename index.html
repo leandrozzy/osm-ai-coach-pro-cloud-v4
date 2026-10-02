@@ -7,8 +7,8 @@
   <meta name="description" content="OSM AI Coach Pro V2">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="styles.css?v=2.7.0">
-  <link rel="stylesheet" href="clean-fix-v25.css?v=2.7.0">
+  <link rel="stylesheet" href="styles.css?v=2.8.0">
+  <link rel="stylesheet" href="clean-fix-v25.css?v=2.8.0">
   <link rel="stylesheet" href="coach-ai-30.css?v=3.0.0">
   <title>OSM AI Coach Pro V2</title>
 </head>
@@ -19,8 +19,8 @@
       <div><h1>OSM AI Coach Pro</h1><p>V2 · Manager Assistant</p></div>
     </div>
     <div class="top-actions">
-      <span class="env-pill">7.18 STABLE CORE</span>
-      <button id="apiBtn" class="btn ghost">API Gemini</button>
+      <span class="env-pill">8.0 CLEAN READER</span>
+      <button id="apiBtn" class="btn ghost">API configurada</button>
     </div>
   </header>
 
@@ -65,7 +65,7 @@
           <input id="mediaInput" type="file" accept="video/*,image/*" multiple hidden>
           <div class="upload-mark">＋</div>
           <h3 id="uploadTitle">Enviar vídeo ou imagens da partida</h3>
-          <p id="uploadHelp">A IA identifica as telas, extrai os campos e marca o que não conseguiu ler.</p>
+          <p id="uploadHelp">A V8 percorre o vídeo inteiro, usa OCR local e não bloqueia a tática por campo oculto.</p>
           <button id="chooseMediaBtn" class="btn">Escolher mídia</button>
         </div>
         <div class="upload-options">
@@ -114,16 +114,12 @@
   <div id="toast" class="toast"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-  <script src="app.js?v=2.7.0"></script>
-  <script src="clean-fix-v25.js?v=2.7.0"></script>
+  <script src="app.js?v=2.8.0"></script>
+  <script src="clean-fix-v25.js?v=2.8.0"></script>
   <script src="coach-ai-30.js?v=3.0.0"></script>
   <script src="analysis-hotfix-33.js?v=3.3.0"></script>
   <script src="market-engine.js?v=7.8.0"></script>
-  <script src="match-reader-v79.js?v=7.14.0"></script>
-  <script src="stable-hotfix-v714.js?v=7.14.0"></script>
-  <script src="match-vision-v715.js?v=7.15.0"></script>
-  <script src="match-local-v716.js?v=7.16.0"></script>
-  <script src="match-stable-v718.js?v=7.18.0"></script>
+  <script src="match-v8-clean.js?v=8.0.0"></script>
   <script src="push-integrated.js?v=4.0.0"></script>
 </body>
 </html>
