@@ -1,4 +1,4 @@
-const CACHE = 'osm-coach-v1';
+const CACHE = 'osm-coach-v2';
 const CORE = ['/', '/index.html', '/manifest.webmanifest', '/assets/icon-192.png', '/assets/icon-512.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(CORE)).then(() => self.skipWaiting()));
