@@ -17,7 +17,7 @@ export function cleanCalendar(rows=[]){
  // displayedScore is a home/away scoreboard. score is always our team first.
  if(known(r.displayedScore)&&scoreOutcome(r.displayedScore)&&home!==null){const [a,b]=String(r.displayedScore).split(/[x×:-]/).map(Number);score=home?a+'x'+b:b+'x'+a;}
  if(known(score)&&known(result)&&scoreOutcome(score)!==result)score='NI';
- return {id:typeof r.id==='string'?r.id:crypto.randomUUID(),round:num(r.round),date:normalizeDate(r.date),time:/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(r.time)?r.time:'NI',opponent:safeText(r.opponent),nickname:safeText(r.nickname),home,cup:typeof r.cup==='boolean'?r.cup:null,score,result,stage:safeText(r.stage),_source:safeText(r._source,160)};
+ return {id:typeof r.id==='string'?r.id:crypto.randomUUID(),round:num(r.round),date:normalizeDate(r.date),time:/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(r.time)?r.time:'NI',opponent:safeText(r.opponent),nickname:safeText(r.nickname),home,cup:typeof r.cup==='boolean'?r.cup:null,score,displayedScore:known(r.displayedScore)&&scoreOutcome(r.displayedScore)?String(r.displayedScore).replace(/[×:-]/,'x').replace(/\s/g,''):'NI',result,stage:safeText(r.stage),_source:safeText(r._source,160)};
  });
 }
 export function normalizeExtraction(raw={},type,source=''){
@@ -45,9 +45,17 @@ export function fuseExtraction(first,second){
  const out={...a,match:mergeFields(a.match||{},b.match||{},conflicts,'match'),players:[...(a.players||[])],calendar:[...(a.calendar||[])],sources:[...new Set([...(a.sources||[]),...(b.sources||[])])],warnings:[...new Set([...(a.warnings||[]),...(b.warnings||[])])],conflicts,meta:{...a.meta}};
  for(const type of ['players','calendar']){
  const map=new Map(out[type].map(r=>[rowKey(r,type),r]));
- for(const row of b[type]||[]){const key=rowKey(row,type);const old=map.get(key);if(!old)map.set(key,row);else{const merged=mergeFields(old,row,conflicts,key);merged._source=[old._source,row._source].filter(Boolean).join(' + ');map.set(key,merged);}}
+ for(const row of b[type]||[]){let key=rowKey(row,type);
+ const identity=type==='calendar'&&known(row.date)&&known(row.opponent)?'date:'+row.date+'|'+normalize(row.opponent):null;
+ if(identity){const match=[...map].find(([,r])=>r.date===row.date&&normalize(r.opponent)===normalize(row.opponent));if(match)key=match[0];}
+ const old=map.get(key);if(!old)map.set(key,row);else{
+ const roundConflict=identity&&((known(old.round)&&known(row.round)&&old.round!==row.round)||conflicts.some(c=>c.field===identity+'.round'));
+ if(roundConflict&&known(old.round)&&known(row.round)&&old.round!==row.round)conflicts.push({field:identity+'.round',first:old.round,second:row.round});
+ const merged=mergeFields(old,roundConflict?{...row,round:null}:row,conflicts,key);if(roundConflict)merged.round=null;
+ merged._source=[old._source,row._source].filter(Boolean).join(' + ');map.delete(key);map.set(rowKey(merged,type),merged);}}
  out[type]=[...map.values()];
  }
+ out.calendar=cleanCalendar(out.calendar);
  const am=a.meta||{},bm=b.meta||{};
  for(const k of ['team','cash','squadValue','strength','GK','DEF','MID','ATT','expectedPlayers','expectedRounds'])if(!known(out.meta[k])&&known(bm[k]))out.meta[k]=bm[k];
  out.meta.rivalReportLocked=am.rivalReportLocked===true||bm.rivalReportLocked===true;
@@ -72,5 +80,5 @@ export function coverage(type,data){
  const expected=num(type==='squad'?data.meta?.expectedPlayers:data.meta?.expectedRounds);
  if(expected!==null&&expected!==(rows||[]).length)missing.push('Quantidade esperada '+expected+', capturada '+(rows||[]).length);
  }
- return {percent:total?Math.round(present/total*100):0,missing,conflicts:data.conflicts?.length||0,complete:missing.length===0&&!data.conflicts?.length,count:type==='squad'?data.players.length:type==='calendar'?data.calendar.length:present};
+ return {percent:total?Math.round(present/total*100):0,missing,conflicts:data.conflicts?.length||0,complete:missing.length===0&&!data.conflicts?.length,detectedCount:type==='calendar'?data.calendar.length:type==='squad'?data.players.length:present,count:type==='squad'?data.players.length:type==='calendar'?data.calendar.filter(r=>['opponent','stage','date','time','result','displayedScore','score'].some(k=>known(r[k]))).length:present};
 }

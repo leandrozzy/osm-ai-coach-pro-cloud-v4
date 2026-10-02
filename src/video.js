@@ -1,4 +1,5 @@
 import {extractFrames,imageToCanvas} from './frame-extractor.js';
+import {distinctFrames,visualBatches} from './frame-selection.js';
 import {prepareOcrImages} from './ocr-image.js';
 import {localOCR} from './ocr.js';
 import {apiRequest,apiStatus,sessionProviders} from './ai-router.js';
@@ -34,12 +35,12 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
  onUpdate(options.vision?'APIs detectadas: '+[...providers].join(', '):'OCR local selecionado manualmente');
  for(const file of files){
   if(expired())break;onUpdate('Preparando '+file.name);
-  try{if(file.type.startsWith('video/'))frames.push(...(await extractFrames(file,{maxFrames:24,signal:options.signal})).map(f=>({...f,name:file.name})));else if(file.type.startsWith('image/'))frames.push({canvas:await imageToCanvas(file),name:file.name,time:0});else errors.push('Formato não suportado: '+file.name);}catch(e){errors.push(e.message);}
+  try{if(file.type.startsWith('video/'))frames.push(...distinctFrames(await extractFrames(file,{maxFrames:24,signal:options.signal}),{limit:type==='match'?10:8}).map(f=>({...f,name:file.name})));else if(file.type.startsWith('image/'))frames.push({canvas:await imageToCanvas(file),name:file.name,time:0});else errors.push('Formato não suportado: '+file.name);}catch(e){errors.push(e.message);}
  }
  if(!frames.length)throw Error('Nenhuma tela extraída.');
  const previews=frames.map(f=>({url:f.canvas.toDataURL('image/jpeg',.25),name:f.name,time:f.time}));
- let next=0,done=0,videoJob=null;
- const startVideo=()=>{if(videoJob||!options.vision||!providers.has('twelvelabs'))return;videoJob=(async()=>{for(const file of files.filter(f=>f.type.startsWith('video/'))){if(expired())break;try{const r=await analyzeVideo(file,type,context,options.signal,onUpdate);data=fuseExtraction(data,r.data);attempts.push('twelvelabs');}catch(e){errors.push('TwelveLabs: '+e.message);}}})();};
+ let next=0,done=0,videoJob=null;const visualSlots=visualBatches(frames.length,3);
+ const startVideo=()=>{if(videoJob||!options.vision||!providers.has('twelvelabs'))return;videoJob=(async()=>{for(const file of files.filter(f=>f.type.startsWith('video/'))){if(expired())break;try{const r=await analyzeVideo(file,type,context,options.signal,onUpdate,{frames:frames.filter(f=>f.name===file.name)});data=fuseExtraction(data,r.data);attempts.push('twelvelabs');if(r.transport==='sampled-video')errors.push('TwelveLabs leu um vídeo das '+r.sampledFrames+' telas selecionadas, mantendo a resolução. Confira as telas e os campos pendentes.');}catch(e){errors.push('TwelveLabs: '+e.message);}}})();};
  if(providers.has('twelvelabs')&&!providers.has('groq')&&!providers.has('ocrspace')&&!providers.has('google'))startVideo();
  const worker=async()=>{while(next<frames.length&&!expired()){
   const index=next;next+=2;const batch=frames.slice(index,index+2);
@@ -48,16 +49,16 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
    if(options.vision&&[...providers].filter(p=>p!=='twelvelabs').every(p=>disabled.has(p))){startVideo();errors.push('Leitura por imagem indisponível: confira os avisos das APIs.');next=frames.length;break;}
    if(options.vision&&providers.size){
     const images=batch.map(f=>visualImage(f.canvas));
-    const r=await apiRequest('analyze',{type,images,ocrImages:batch.flatMap(f=>prepareOcrImages(f.canvas,type)),focusImages:batch.map((f,j)=>focusImage(f.canvas,type,index+j)).filter(Boolean),context,disabled:[...disabled],models:{groqVision:options.visionModel,groqText:options.model}},options.signal,35000);
+    const r=await apiRequest('analyze',{type,images,useVisual:visualSlots.has(Math.floor(index/2)),forceOCR:true,preferredProvider:disabled.has('google')?'groq':'google',ocrImages:batch.flatMap(f=>prepareOcrImages(f.canvas,type)).sort((a,b)=>(a.region==='full'?0:1)-(b.region==='full'?0:1)),focusImages:batch.map((f,j)=>focusImage(f.canvas,type,index+j)).filter(Boolean),context,disabled:[...disabled],models:{groqVision:options.visionModel,groqText:options.model}},options.signal,35000);
     data=fuseExtraction(data,r.data);attempts.push(...r.attempts||[]);if(!r.coverage?.complete)startVideo();
-    for(const f of r.failures||[]){errors.push(f.provider+': '+(f.message||f.error||'indisponível'));if(f.provider==='groq'&&f.stage==='vision'&&f.status===404)disabled.add('groq-visual');else if([401,403,404,429].includes(f.status))disabled.add(f.provider);}
+    for(const f of r.failures||[]){errors.push(f.provider+': '+(f.status===429?'Limite de cota atingido. Novas chamadas foram pausadas; aguarde a renovação do limite do provedor.':f.status===503?'Serviço sobrecarregado. A leitura continua com os outros serviços.':f.message||f.error||'indisponível'));if(f.provider==='groq'&&(f.code==='NO_SUPPORTED_MODEL'||f.status===404))disabled.add(f.stage==='text'?'groq-text':'groq-visual');else if([401,403,404,429,503].includes(f.status)||f.code==='PROVIDER_BUSY'||f.code==='PROVIDER_COOLDOWN')disabled.add(f.provider);}
    }else if(!options.vision){
     for(const frame of batch){if(expired())break;onUpdate('OCR local: '+frame.name);const r=await localOCR(frame.canvas,{signal:options.signal});const raw=type==='match'?mergeMatchTexts([r.text]):type==='squad'?{players:parseSquadText(r.text)}:{calendar:parseCalendarText(r.text)};data=fuseExtraction(data,normalizeExtraction(raw,type,'OCR local'));attempts.push('OCR local');}
    }else errors.push('Nenhuma chave configurada.');
   }catch(e){errors.push(e.message);next=frames.length;}done+=batch.length;
  }};
- // Two batches in flight; every service request has its own deadline.
- await Promise.all(options.vision&&providers.size?[worker(),worker()]:[worker()]);
+ // One batch at a time and at most three visual calls per analysis protect free API quotas.
+ await worker();
  if(!coverage(type,data).complete)startVideo();
  if(videoJob)await videoJob;
  if(expired())errors.push('Limite atingido ou cancelado: revise os dados parciais.');
