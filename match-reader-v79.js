@@ -2,7 +2,7 @@
 (function(){
 'use strict';
 
-var V711='7.11.0';
+var V711='7.12.0';
 var OCR_KEY='osm_ai_coach_ocrspace_key';
 var OR_KEY='osm_ai_coach_openrouter_key';
 var previousAnalyze=(typeof v21Analyze==='function')?v21Analyze:null;
@@ -47,6 +47,183 @@ function parseJsonLoose(s){
     return JSON.parse(s.slice(a,b+1).replace(/,\s*([}\]])/g,'$1'));
   }
   throw new Error('JSON inválido');
+}
+
+
+function textLines(text){
+  return String(text||'').split(/\r?\n/).map(function(x){return x.trim()}).filter(Boolean);
+}
+function allOCR(pack){
+  return (pack&&pack.texts?pack.texts:[]).join('\n');
+}
+function findNear(lines, keys, windowSize){
+  var ks=keys.map(norm), out=[];
+  for(var i=0;i<lines.length;i++){
+    var n=norm(lines[i]);
+    if(ks.some(function(k){return n.indexOf(k)>=0})){
+      for(var j=Math.max(0,i-2);j<=Math.min(lines.length-1,i+(windowSize||3));j++){
+        if(j!==i)out.push(lines[j]);
+      }
+    }
+  }
+  return out;
+}
+function firstNum(s,min,max){
+  var ms=String(s||'').replace(',','.').match(/\b\d{1,3}(?:\.\d+)?\b/g)||[];
+  for(var i=0;i<ms.length;i++){
+    var n=Number(ms[i]);
+    if(Number.isFinite(n)&&(min==null||n>=min)&&(max==null||n<=max))return n;
+  }
+  return null;
+}
+function parseRef(text){
+  var n=norm(text);
+  if(n.indexOf('vermelho')>=0)return 'Vermelho';
+  if(n.indexOf('laranja')>=0)return 'Laranja';
+  if(n.indexOf('amarelo')>=0)return 'Amarelo';
+  if(n.indexOf('azul')>=0)return 'Azul';
+  if(n.indexOf('verde')>=0)return 'Verde';
+  return null;
+}
+function parseBoolText(text, positive, negative){
+  var n=norm(text);
+  if((negative||[]).some(function(x){return n.indexOf(norm(x))>=0}))return false;
+  if((positive||[]).some(function(x){return n.indexOf(norm(x))>=0}))return true;
+  return null;
+}
+function parseLocalOCR(pack){
+  var text=allOCR(pack), lines=textLines(text), n=norm(text);
+  var out={
+    teamName:null,opponentTeamName:null,
+    myTeam:{overall:null,goalkeeper:null,defence:null,midfield:null,attack:null},
+    opponent:{overall:null,goalkeeper:null,defence:null,midfield:null,attack:null,human:null,manager:null,loginBonus:null,trainingCamp:null,secretTraining:null,formation:null,style:null,marking:null,offside:null},
+    match:{refereeColor:null,venue:null}
+  };
+
+  // Árbitro.
+  var refContext=findNear(lines,['arbitro','referee'],3).join(' ');
+  out.match.refereeColor=parseRef(refContext)||parseRef(text);
+
+  // Casa/Fora.
+  var venueContext=findNear(lines,['casa','fora','home','away'],1).join(' ');
+  var nv=norm(venueContext);
+  if(/\bfora\b|\baway\b/.test(nv))out.match.venue='Fora';
+  else if(/\bcasa\b|\bhome\b/.test(nv))out.match.venue='Casa';
+
+  // Treino secreto e campo de treinamento.
+  var secretCtx=findNear(lines,['treino secreto','secret training','secret'],3).join(' ');
+  if(secretCtx){
+    out.opponent.secretTraining=parseBoolText(secretCtx,
+      ['sim','ativo','activated','yes'],
+      ['não','nao','inativo','not active','no']);
+  }
+  var campCtx=findNear(lines,['campo de treinamento','training camp','campo treino'],3).join(' ');
+  if(campCtx){
+    out.opponent.trainingCamp=parseBoolText(campCtx,
+      ['sim','ativo','activated','yes'],
+      ['não','nao','inativo','not active','no']);
+  }
+
+  // Formação.
+  var fm = String(text).match(/\b(?:3|4|5|6)[-–](?:2|3|4|5|6)[-–](?:1|2|3|4|5)(?:\s*[AB])?\b/ig) || [];
+  for(var i=0;i<fm.length;i++){
+    var f=formation(fm[i].replace(/–/g,'-').replace(/\s+/g,' '));
+    if(f){out.opponent.formation=f;break;}
+  }
+
+  // Plano.
+  var styles=[
+    ['Jogar pelas alas',['jogar pelas alas','wing play','pelas alas']],
+    ['Jogo de passes',['jogo de passes','passing game','passes']],
+    ['Bola longa',['bola longa','long ball']],
+    ['Contra-ataque',['contra-ataque','contra ataque','counter attack']],
+    ['Remate à vista',['remate a vista','remate à vista','shoot on sight']]
+  ];
+  styles.some(function(it){
+    if(it[1].some(function(k){return n.indexOf(norm(k))>=0})){out.opponent.style=it[0];return true;}
+    return false;
+  });
+
+  // Marcação.
+  if(n.indexOf('individual')>=0||n.indexOf('man marking')>=0)out.opponent.marking='Individual';
+  else if(n.indexOf('zona')>=0||n.indexOf('zonal')>=0)out.opponent.marking='À zona';
+
+  // Impedimento.
+  var offCtx=findNear(lines,['impedimento','fora de jogo','offside'],3).join(' ');
+  if(offCtx){
+    out.opponent.offside=parseBoolText(offCtx,['sim','yes','ativo'],['não','nao','no','inativo']);
+  }
+
+  // Bônus.
+  var bonusCtx=findNear(lines,['bonus','bônus','login'],3).join(' ');
+  var bm=String(bonusCtx).match(/\b([0-3])\s*%/);
+  if(bm)out.opponent.loginBonus=Number(bm[1]);
+
+  // Humano/manager.
+  var mgrCtx=findNear(lines,['manager','treinador','gestor'],2);
+  if(mgrCtx.length){
+    var cand=mgrCtx.find(function(x){
+      var z=norm(x);
+      return z.length>=3 && !/\b\d+\b/.test(z) && ['manager','treinador','gestor'].every(function(k){return z.indexOf(k)<0});
+    });
+    if(cand){out.opponent.manager=cand.slice(0,50);out.opponent.human=true;}
+  }
+
+  // Setores: procura linhas que tenham rótulo e um número plausível perto.
+  var sectorMap=[
+    ['goalkeeper',['gol','gk','guarda-redes','goalkeeper']],
+    ['defence',['def','defesa','defence']],
+    ['midfield',['mei','meio','midfield']],
+    ['attack',['ata','ataque','attack']]
+  ];
+  sectorMap.forEach(function(it){
+    var ctx=findNear(lines,it[1],2);
+    for(var i=0;i<ctx.length;i++){
+      var v=firstNum(ctx[i],20,200);
+      if(v!==null){
+        // primeiro conjunto encontrado vai para meu time; segundo, rival
+        if(out.myTeam[it[0]]===null)out.myTeam[it[0]]=v;
+        else if(out.opponent[it[0]]===null && v!==out.myTeam[it[0]])out.opponent[it[0]]=v;
+      }
+    }
+  });
+
+  // Força geral: tenta capturar padrões VS.
+  var vsLines=lines.filter(function(x){return /\bvs\b/i.test(x)});
+  var nums=[];
+  vsLines.concat(findNear(lines,['vs'],2)).forEach(function(x){
+    var mm=String(x).match(/\b\d{2,3}\b/g)||[];
+    mm.forEach(function(v){var q=Number(v);if(q>=20&&q<=200)nums.push(q);});
+  });
+  if(nums.length>=2){out.myTeam.overall=nums[0];out.opponent.overall=nums[1];}
+
+  return out;
+}
+function mergeData(base, extra){
+  if(!extra)return base;
+  function rec(a,b){
+    Object.keys(b||{}).forEach(function(k){
+      if(b[k]&&typeof b[k]==='object'&&!Array.isArray(b[k])){
+        if(!a[k]||typeof a[k]!=='object')a[k]={};
+        rec(a[k],b[k]);
+      }else if(b[k]!==null&&b[k]!==undefined&&b[k]!==''){
+        a[k]=b[k];
+      }
+    });
+  }
+  rec(base,extra);
+  return base;
+}
+function usefulCountData(d){
+  var c=0;
+  function walk(x){
+    Object.keys(x||{}).forEach(function(k){
+      var v=x[k];
+      if(v&&typeof v==='object'&&!Array.isArray(v))walk(v);
+      else if(v!==null&&v!==undefined&&v!=='')c++;
+    });
+  }
+  walk(d);return c;
 }
 
 async function frameSig(frame){
@@ -152,7 +329,7 @@ async function collectOCR(files){
   var chosen=await diverse(frames,10);
   var texts=[],errors=[];
   for(var j=0;j<chosen.length;j++){
-    setProgress(72+Math.min(16,j),'V7.11 · OCR alta resolução '+(j+1)+'/'+chosen.length+'…');
+    setProgress(72+Math.min(16,j),'V7.12 · OCR alta resolução '+(j+1)+'/'+chosen.length+'…');
     try{
       // Alterna topo/baixo para aumentar a chance de capturar a tela inicial e Data Analyst.
       var crop=(j%2===0)?'top':'bottom';
@@ -186,36 +363,52 @@ var PROMPT=[
 ].join('\n');
 
 async function structureWithOpenRouter(pack){
+  var local=parseLocalOCR(pack);
   var key=String(localStorage.getItem(OR_KEY)||'').trim();
-  if(!key)throw new Error('OpenRouter não configurado');
-  var text=pack.texts.join('\n\n');
-  // texto somente: pequeno, barato e não sofre o "request too large" das imagens.
-  if(text.length>28000)text=text.slice(0,28000);
-  var ctl=new AbortController(),tm=setTimeout(function(){ctl.abort()},25000);
-  try{
-    var r=await fetch('https://openrouter.ai/api/v1/chat/completions',{
-      method:'POST',signal:ctl.signal,
-      headers:{
-        'Content-Type':'application/json',
-        'Authorization':'Bearer '+key,
-        'HTTP-Referer':location.origin,
-        'X-Title':'OSM AI Coach Pro'
-      },
-      body:JSON.stringify({
-        model:'openrouter/free',
-        messages:[{role:'user',content:PROMPT+'\n\nOCR REAL:\n'+text}],
-        temperature:0,
-        max_tokens:2200
-      })
-    });
-    var raw=await r.text();
-    if(!r.ok)throw new Error('OpenRouter-texto HTTP '+r.status+': '+raw.slice(0,140));
-    var j=JSON.parse(raw);
-    return parseJsonLoose(j&&j.choices&&j.choices[0]&&j.choices[0].message?j.choices[0].message.content:'');
-  }catch(e){
-    if(e&&e.name==='AbortError')throw new Error('OpenRouter-texto timeout');
-    throw e;
-  }finally{clearTimeout(tm)}
+  if(!key)return local;
+
+  var text=allOCR(pack);
+  if(!text.trim())return local;
+
+  // Chamadas curtas e independentes. Se alguma falhar, o OCR local continua valendo.
+  var chunks=[];
+  var max=8500;
+  for(var i=0;i<text.length;i+=max)chunks.push(text.slice(i,i+max));
+  chunks=chunks.slice(0,3);
+
+  var attempts=[];
+  for(var j=0;j<chunks.length;j++){
+    attempts.push((async function(chunk,idx){
+      var ctl=new AbortController(),tm=setTimeout(function(){ctl.abort()},12000);
+      try{
+        var r=await fetch('https://openrouter.ai/api/v1/chat/completions',{
+          method:'POST',signal:ctl.signal,
+          headers:{
+            'Content-Type':'application/json',
+            'Authorization':'Bearer '+key,
+            'HTTP-Referer':location.origin,
+            'X-Title':'OSM AI Coach Pro'
+          },
+          body:JSON.stringify({
+            model:'openrouter/free',
+            messages:[{role:'user',content:PROMPT+'\n\nTRECHO OCR '+(idx+1)+':\n'+chunk}],
+            temperature:0,
+            max_tokens:1200
+          })
+        });
+        var raw=await r.text();
+        if(!r.ok)throw new Error('OpenRouter '+r.status);
+        var jj=JSON.parse(raw);
+        return parseJsonLoose(jj&&jj.choices&&jj.choices[0]&&jj.choices[0].message?jj.choices[0].message.content:'');
+      }catch(e){
+        return null;
+      }finally{clearTimeout(tm)}
+    })(chunks[j],j));
+  }
+
+  var rs=await Promise.all(attempts);
+  rs.forEach(function(x){if(x)mergeData(local,x);});
+  return local;
 }
 
 function apply(slot,data){
@@ -279,19 +472,20 @@ async function analyze711(files){
   var slot=selectedSlot();
   setProgress(68,'V7.11 · lendo quadros reais em alta resolução…');
   var pack=await collectOCR(files);
-  setProgress(90,'V7.11 · consolidando somente o texto OCR…');
+  setProgress(90,'V7.12 · consolidando OCR; IA é apenas complemento…');
   var data=await structureWithOpenRouter(pack);
+  if(usefulCountData(data)===0)throw new Error('OCR sem campos reconhecíveis');
   apply(slot,data);
 
   calcQuality(slot);saveState();renderCoverage(slot);renderAnalysisSummary(slot);renderPregame();
 
   var missing=missingRequired(slot);
   setAnalysisRun(slot,'tactic',missing.length?'warning':'success',
-    'V7.11: OCR alta resolução em '+pack.frames+' telas; '+(missing.length?missing.length+' campo(s) essencial(is) ainda NI':'dados essenciais completos'),
+    'V7.12: OCR alta resolução em '+pack.frames+' telas; '+(missing.length?missing.length+' campo(s) essencial(is) ainda NI':'dados essenciais completos'),
     {quality:slot.analysisQuality,currentRunValidated:true,fullVideoScan:true});
 
   var d=document.getElementById('analysisDiagnostics');
-  if(d)d.textContent='V7.11 PRECISION · OCR.Space alta resolução + OpenRouter texto · '+pack.frames+' telas'+(pack.errors.length?' · '+pack.errors.length+' quadro(s) sem OCR':'');
+  if(d)d.textContent='V7.12 RESILIENT · OCR.Space alta resolução + OpenRouter texto · '+pack.frames+' telas'+(pack.errors.length?' · '+pack.errors.length+' quadro(s) sem OCR':'');
   setProgress(100,missing.length?'Leitura concluída com pendências':'Partida pronta');
 
   if(!missing.length&&document.getElementById('autoTactic')&&document.getElementById('autoTactic').checked){
@@ -316,13 +510,13 @@ v21Analyze=async function(files){
     Object.keys(slot).forEach(function(k){delete slot[k]});
     Object.assign(slot,snapshot);
     saveState();
-    setAnalysisRun(slot,'tactic','error','V7.11: '+safe(e)+'. Dados anteriores preservados.',{currentRunValidated:false});
+    setAnalysisRun(slot,'tactic','error','V7.12: '+safe(e)+'. Dados anteriores preservados.',{currentRunValidated:false});
     setProgress(100,'Falha sem apagar dados anteriores');
-    var d=document.getElementById('analysisDiagnostics');if(d)d.textContent='V7.11 PRECISION · '+safe(e);
+    var d=document.getElementById('analysisDiagnostics');if(d)d.textContent='V7.12 RESILIENT · '+safe(e);
   }
 };
 
 window.v21Analyze=v21Analyze;
 window.OSM_COMPLETE_MATCH_SCAN_VERSION=V711;
-try{console.info('[OSM] V7.11 Precision Match Reader ativo')}catch(_){}
+try{console.info('[OSM] V7.12 Resilient Match Reader ativo')}catch(_){}
 })();
