@@ -11,3 +11,4 @@ export default async function handler(req,res){
   return json(res,200,{text,confidence:text?70:0,provider:'ocr.space'});
  }catch(e){return json(res,e.name==='AbortError'?504:500,{error:e.message});}
 }
+
