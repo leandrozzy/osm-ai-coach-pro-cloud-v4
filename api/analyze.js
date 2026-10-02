@@ -4,6 +4,7 @@ import {blankExtraction,normalizeExtraction,fuseExtraction,coverage} from '../sr
 import {overlayExtraction,structuredOcr,parseCalendarOverlay,parseSquadOverlay} from '../src/ocr-layout.js';
 import {mergeMatchTexts} from '../src/parser-match.js';
 import {known} from '../src/domain.js';
+import {sanitizeProviderMatch} from '../src/match-grounding.js';
 import {cachedCapability,probeModels} from '../lib/model-catalog.js';
 function usefulRead(type,data){
  if(type==='match')return Object.values(data.match||{}).filter(known).length>=2;
@@ -38,7 +39,7 @@ export default async function handler(req,res){
   const provider=order.find(name=>readers[name]);if(!provider)return;
   if(provider==='groq'&&cachedCapability('groq',groq,{visual:true,preferred:body.models?.groqVision})===false){failures.push({provider:'groq',stage:'vision',status:404,code:'NO_SUPPORTED_MODEL',error:'Groq: nenhum modelo visual compatível disponível nesta chave.'});return;}
   attempts.push(provider+'-visual');
-  try{const data=await readers[provider]();if(usefulRead(type,data))preferredProvider=provider;return data;}
+  try{const data=await readers[provider]();const checked=type==='match'?sanitizeProviderMatch(data,context):data;if(usefulRead(type,checked))preferredProvider=provider;return checked;}
   catch(e){failures.push({...errorInfo(provider,e),stage:'vision'});}
  };
  const readOCR=async()=>{
@@ -66,7 +67,7 @@ export default async function handler(req,res){
   // A failed visual model does not imply there is no compatible text model.
   let supported=cachedCapability('groq',groq,{visual:false,preferred:body.models?.groqText});
   if(supported===null)supported=(await probeModels('groq',groq,{textPreferred:body.models?.groqText})).textModel;
-  if(supported&&Date.now()-started<29500){attempts.push('groq-ocr');const text=usefulOcr.map(r=>ocrImages[r.index].region==='report'?r.text:structuredOcr(type,r,ocrImages[r.index].width,ocrImages[r.index].height)).join('\n');output=fuseExtraction(output,await groqRead({key:groq,type,text,context,model:supported,budgetMs:30000-(Date.now()-started)}));}
+  if(supported&&Date.now()-started<29500){attempts.push('groq-ocr');const text=usefulOcr.map(r=>ocrImages[r.index].region==='report'?r.text:structuredOcr(type,r,ocrImages[r.index].width,ocrImages[r.index].height)).join('\n');const interpreted=await groqRead({key:groq,type,text,context,model:supported,budgetMs:30000-(Date.now()-started)});output=fuseExtraction(output,type==='match'?sanitizeProviderMatch(interpreted,context):interpreted);}
   else failures.push({provider:'groq',stage:'text',status:404,code:'NO_SUPPORTED_MODEL',error:'Groq: nenhum modelo de texto compatível disponível nesta chave.'});
  }catch(e){failures.push({...errorInfo('groq',e),stage:'text'});}
  }
