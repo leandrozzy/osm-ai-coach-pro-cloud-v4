@@ -1,253 +1,328 @@
 
 (function(){
 'use strict';
-var V79='7.10.0', GROQ_KEY='osm_ai_coach_groq_key', OCR_KEY79='osm_ai_coach_ocrspace_key';
-var prevAnalyze79=(typeof v21Analyze==='function')?v21Analyze:null;
-var REF79=['Verde','Azul','Amarelo','Laranja','Vermelho'];
-var STYLE79=['Jogar pelas alas','Jogo de passes','Bola longa','Contra-ataque','Remate à vista'];
-var MARK79=['À zona','Individual'];
 
-function norm79(v){return String(v==null?'':v).normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase().replace(/\s+/g,' ')}
-function num79(v){var n=Number(String(v==null?'':v).replace(',','.').replace(/[^\d.-]/g,''));return Number.isFinite(n)?n:null}
-function bool79(v){if(v===true||v===false)return v;var x=norm79(v);if(['sim','yes','true','ativo','active'].indexOf(x)>=0)return true;if(['não','nao','no','false','inativo','inactive'].indexOf(x)>=0)return false;return null}
-function pick79(list,v){var x=norm79(v);return list.find(function(y){return norm79(y)===x})||null}
-function form79(v){var x=String(v==null?'':v).toUpperCase().replace(/\s+/g,' ').trim();if(!x)return null;return (Array.isArray(FORMATIONS)?FORMATIONS:[]).find(function(y){return String(y).toUpperCase()===x})||null}
-function safe79(e){return String((e&&e.message)||e||'erro').slice(0,220)}
+var V711='7.11.0';
+var OCR_KEY='osm_ai_coach_ocrspace_key';
+var OR_KEY='osm_ai_coach_openrouter_key';
+var previousAnalyze=(typeof v21Analyze==='function')?v21Analyze:null;
 
-async function sig79(frame){
-  var img=await v21LoadImage(frame.dataUrl),c=document.createElement('canvas');
-  c.width=18;c.height=10;
-  var x=c.getContext('2d',{willReadFrequently:true});x.drawImage(img,0,0,18,10);
-  var d=x.getImageData(0,0,18,10).data,out=[];
-  for(var i=0;i<d.length;i+=4)out.push((d[i]*.299+d[i+1]*.587+d[i+2]*.114)/255);
-  return out;
+var REF=['Verde','Azul','Amarelo','Laranja','Vermelho'];
+var STYLES=['Jogar pelas alas','Jogo de passes','Bola longa','Contra-ataque','Remate à vista'];
+var MARK=['À zona','Individual'];
+
+function norm(v){
+  return String(v==null?'':v).normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .toLowerCase().replace(/\s+/g,' ').trim();
 }
-function dist79(a,b){var s=0,m=Math.min(a.length,b.length);for(var i=0;i<m;i++)s+=Math.abs(a[i]-b[i]);return s/Math.max(1,m)}
-async function diverse79(frames,max){
-  max=max||12;var a=(frames||[]).filter(Boolean);if(a.length<=max)return a;
-  var sigs=[];for(var i=0;i<a.length;i++){try{sigs.push(await sig79(a[i]))}catch(e){sigs.push([])}}
-  var picked=[0,a.length-1];
-  while(picked.length<max){
-    var best=-1,bscore=-1;
-    for(var j=0;j<a.length;j++){
-      if(picked.indexOf(j)>=0||!sigs[j].length)continue;
-      var md=Infinity;
-      for(var q=0;q<picked.length;q++){var p=picked[q];if(sigs[p].length)md=Math.min(md,dist79(sigs[j],sigs[p]))}
-      if(md>bscore){bscore=md;best=j}
-    }
-    if(best<0)break;picked.push(best);
-  }
-  picked.sort(function(a,b){return a-b});return picked.map(function(i){return a[i]});
+function safe(e){ return String((e&&e.message)||e||'erro').slice(0,260); }
+function has(v){ return !(v===null||v===undefined||v===''||v==='NI'); }
+function bool(v){
+  if(v===true||v===false)return v;
+  var x=norm(v);
+  if(['sim','yes','true','ativo','active'].indexOf(x)>=0)return true;
+  if(['não','nao','no','false','inativo','inactive'].indexOf(x)>=0)return false;
+  return null;
 }
-async function slim79(frame){
-  var img=await v21LoadImage(frame.dataUrl),scale=Math.min(1,680/img.naturalWidth);
-  var w=Math.max(1,Math.round(img.naturalWidth*scale)),h=Math.max(1,Math.round(img.naturalHeight*scale));
-  var c=document.createElement('canvas');c.width=w;c.height=h;c.getContext('2d').drawImage(img,0,0,w,h);
-  var dataUrl=c.toDataURL('image/jpeg',.60);
-  return {base64:dataUrl.split(',')[1],dataUrl:dataUrl,mimeType:'image/jpeg',time:frame.time||0};
+function num(v){
+  var n=Number(String(v==null?'':v).replace(',','.').replace(/[^\d.-]/g,''));
+  return Number.isFinite(n)?n:null;
 }
-function parse79(t){
-  var s=String(t||'').trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');
-  try{return JSON.parse(s)}catch(e){}
+function pick(list,v){
+  var x=norm(v);
+  return list.find(function(y){return norm(y)===x})||null;
+}
+function formation(v){
+  var x=String(v==null?'':v).toUpperCase().replace(/\s+/g,' ').trim();
+  if(!x)return null;
+  return (Array.isArray(FORMATIONS)?FORMATIONS:[]).find(function(f){
+    return String(f).toUpperCase()===x;
+  })||null;
+}
+function parseJsonLoose(s){
+  s=String(s||'').trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');
+  try{return JSON.parse(s)}catch(_){}
   var a=s.indexOf('{'),b=s.lastIndexOf('}');
-  if(a>=0&&b>a)return JSON.parse(s.slice(a,b+1).replace(/,\s*([}\]])/g,'$1'));
+  if(a>=0&&b>a){
+    return JSON.parse(s.slice(a,b+1).replace(/,\s*([}\]])/g,'$1'));
+  }
   throw new Error('JSON inválido');
 }
 
-var PROMPT79='Leia estes quadros do MESMO vídeo de análise de partida no OSM 26. O vídeo navega pela tela inicial, forças e Data Analyst. Não estime nada. IMPORTANTE: 1) Leia também os QUATRO SETORES DO MEU TIME: GOL, DEF, MEI, ATA. 2) Leia os quatro setores do RIVAL somente se visíveis. 3) Procure explicitamente Campo de Treinamento e Treino Secreto. 4) Procure Formação rival, Plano rival, Marcação e Impedimento. 5) Se houver Treino Secreto, retorne secretTraining=true e deixe null nos dados rivais que o OSM ocultou. 6) Se a tela inicial estiver nítida e não houver indicador de Campo/Treino Secreto, pode retornar false. 7) Não confunda cidade/país com Casa/Fora. 8) Use null quando não estiver visível neste lote. Responda SOMENTE JSON: {"myTeam":{"overall":null,"goalkeeper":null,"defence":null,"midfield":null,"attack":null},"opponent":{"overall":null,"goalkeeper":null,"defence":null,"midfield":null,"attack":null,"human":null,"manager":null,"loginBonus":null,"trainingCamp":null,"secretTraining":null,"formation":null,"style":null,"marking":null,"offside":null},"match":{"refereeColor":null,"venue":null}}';
+async function frameSig(frame){
+  var img=await v21LoadImage(frame.dataUrl),c=document.createElement('canvas');
+  c.width=20;c.height=12;
+  var x=c.getContext('2d',{willReadFrequently:true});
+  x.drawImage(img,0,0,20,12);
+  var d=x.getImageData(0,0,20,12).data,out=[];
+  for(var i=0;i<d.length;i+=4)out.push((d[i]+d[i+1]+d[i+2])/765);
+  return out;
+}
+function dist(a,b){
+  var s=0,m=Math.min(a.length,b.length);
+  for(var i=0;i<m;i++)s+=Math.abs(a[i]-b[i]);
+  return s/Math.max(1,m);
+}
+async function diverse(frames,max){
+  var a=(frames||[]).filter(Boolean);
+  if(a.length<=max)return a;
+  var sigs=[];
+  for(var i=0;i<a.length;i++){
+    try{sigs.push(await frameSig(a[i]))}catch(_){sigs.push([])}
+  }
+  var picked=[0,a.length-1];
+  while(picked.length<max){
+    var best=-1,score=-1;
+    for(var j=0;j<a.length;j++){
+      if(picked.indexOf(j)>=0||!sigs[j].length)continue;
+      var md=999;
+      for(var k=0;k<picked.length;k++){
+        var p=picked[k];if(sigs[p].length)md=Math.min(md,dist(sigs[j],sigs[p]));
+      }
+      if(md>score){score=md;best=j}
+    }
+    if(best<0)break;
+    picked.push(best);
+  }
+  picked.sort(function(a,b){return a-b});
+  return picked.map(function(i){return a[i]});
+}
 
-async function visionBatch79(frames){
-  var key=String(localStorage.getItem(GROQ_KEY)||'').trim();if(!key)throw new Error('Groq não configurado');
-  var parts=[{type:'text',text:PROMPT79}];
-  for(var i=0;i<frames.length;i++){var f=await slim79(frames[i]);parts.push({type:'image_url',image_url:{url:'data:image/jpeg;base64,'+f.base64}})}
-  var ctl=new AbortController(),tm=setTimeout(function(){ctl.abort()},20000);
+async function renderHiRes(frame, crop){
+  var img=await v21LoadImage(frame.dataUrl);
+  var W=img.naturalWidth,H=img.naturalHeight;
+  var sx=0,sy=0,sw=W,sh=H;
+  if(crop==='top'){
+    sy=0; sh=Math.round(H*.62);
+  }else if(crop==='bottom'){
+    sy=Math.round(H*.28); sh=Math.round(H*.72);
+  }
+  var outW=Math.min(1800,Math.max(1400,W));
+  var outH=Math.round(sh*(outW/sw));
+  var c=document.createElement('canvas');c.width=outW;c.height=outH;
+  var x=c.getContext('2d');
+  x.imageSmoothingEnabled=true;x.imageSmoothingQuality='high';
+  x.drawImage(img,sx,sy,sw,sh,0,0,outW,outH);
+  var dataUrl=c.toDataURL('image/jpeg',.90);
+  return {base64:dataUrl.split(',')[1],mimeType:'image/jpeg'};
+}
+
+async function ocrImage(frame,label,crop){
+  var key=String(localStorage.getItem(OCR_KEY)||'').trim();
+  if(!key)throw new Error('OCR.Space não configurado');
+  var im=await renderHiRes(frame,crop);
+  var fd=new FormData();
+  fd.append('base64Image','data:image/jpeg;base64,'+im.base64);
+  fd.append('language','auto');
+  fd.append('OCREngine','2');
+  fd.append('isTable','false');
+  fd.append('isOverlayRequired','false');
+  fd.append('detectOrientation','true');
+  fd.append('scale','true');
+
+  var ctl=new AbortController(),tm=setTimeout(function(){ctl.abort()},18000);
   try{
-    var r=await fetch('https://api.groq.com/openai/v1/chat/completions',{
-      method:'POST',signal:ctl.signal,
-      headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},
-      body:JSON.stringify({model:'qwen/qwen3.8-27b',messages:[{role:'user',content:parts}],temperature:0,max_completion_tokens:1500,response_format:{type:'json_object'},reasoning_effort:'none'})
+    var r=await fetch('https://api.ocr.space/parse/image',{
+      method:'POST',signal:ctl.signal,headers:{apikey:key},body:fd
     });
-    var raw=await r.text();if(!r.ok)throw new Error('Groq HTTP '+r.status);
-    var j=JSON.parse(raw);return parse79(j&&j.choices&&j.choices[0]&&j.choices[0].message?j.choices[0].message.content:'');
-  }catch(e){if(e&&e.name==='AbortError')throw new Error('Groq visão: timeout');throw e}
-  finally{clearTimeout(tm)}
-}
-
-async function ocrText79(frame){
-  var key=String(localStorage.getItem(OCR_KEY79)||'').trim();if(!key)throw new Error('OCR.Space não configurado');
-  var f=await slim79(frame),fd=new FormData();
-  fd.append('base64Image','data:image/jpeg;base64,'+f.base64);
-  fd.append('language','auto');fd.append('OCREngine','2');fd.append('isTable','true');fd.append('scale','true');
-  var ctl=new AbortController(),tm=setTimeout(function(){ctl.abort()},15000);
-  try{
-    var r=await fetch('https://api.ocr.space/parse/image',{method:'POST',signal:ctl.signal,headers:{apikey:key},body:fd});
-    var raw=await r.text();if(!r.ok)throw new Error('OCR.Space HTTP '+r.status);
-    var j=JSON.parse(raw);if(j&&j.IsErroredOnProcessing)throw new Error('OCR.Space falhou');
+    var raw=await r.text();
+    if(!r.ok)throw new Error('OCR.Space HTTP '+r.status);
+    var j=JSON.parse(raw);
+    if(j&&j.IsErroredOnProcessing){
+      var em=Array.isArray(j.ErrorMessage)?j.ErrorMessage.join(' | '):(j.ErrorMessage||j.ErrorDetails||'falhou');
+      throw new Error('OCR.Space: '+em);
+    }
     var t=(j.ParsedResults||[]).map(function(p){return p.ParsedText||''}).join('\n').trim();
-    if(!t)throw new Error('OCR.Space sem texto');return t;
-  }catch(e){if(e&&e.name==='AbortError')throw new Error('OCR.Space timeout');throw e}
-  finally{clearTimeout(tm)}
-}
-function firstNumAfter79(text,label){
-  var n=norm79(text),l=norm79(label),i=n.indexOf(l);if(i<0)return null;
-  var m=n.slice(i+l.length,i+l.length+30).match(/\d{2,3}/);if(!m)return null;
-  var v=Number(m[0]);return v>=20&&v<=200?v:null
-}
-function textStruct79(text){
-  var t=String(text||''),n=norm79(t),o={myTeam:{},opponent:{},match:{}};
-  o.myTeam.goalkeeper=firstNumAfter79(t,'gol');
-  o.myTeam.defence=firstNumAfter79(t,'def');
-  o.myTeam.midfield=firstNumAfter79(t,'mei');
-  o.myTeam.attack=firstNumAfter79(t,'ata');
-  var forms=(Array.isArray(FORMATIONS)?FORMATIONS:[]);
-  for(var i=0;i<forms.length;i++){if(n.indexOf(norm79(forms[i]))>=0){o.opponent.formation=forms[i];break}}
-  STYLE79.forEach(function(x){if(!o.opponent.style&&n.indexOf(norm79(x))>=0)o.opponent.style=x});
-  MARK79.forEach(function(x){if(!o.opponent.marking&&n.indexOf(norm79(x))>=0)o.opponent.marking=x});
-  if(n.indexOf('treino secreto')>=0)o.opponent.secretTraining=!(n.indexOf('treino secreto nao')>=0);
-  if(n.indexOf('campo de treinamento')>=0)o.opponent.trainingCamp=!(n.indexOf('campo de treinamento nao')>=0);
-  if(n.indexOf('impedimento')>=0||n.indexOf('fora de jogo')>=0){
-    if(n.indexOf('impedimento nao')>=0||n.indexOf('fora de jogo nao')>=0)o.opponent.offside=false;
-    else if(n.indexOf('impedimento sim')>=0||n.indexOf('fora de jogo sim')>=0)o.opponent.offside=true;
-  }
-  REF79.forEach(function(x){if(!o.match.refereeColor&&n.indexOf(norm79(x))>=0)o.match.refereeColor=x});
-  return o;
-}
-async function ocrFallback79(frames){
-  var chosen=await diverse79(frames,6),results=[],errors=[];
-  for(var i=0;i<chosen.length;i++){
-    try{
-      setProgress(82+Math.min(10,i),'V7.10 · OCR.Space '+(i+1)+'/'+chosen.length+'…');
-      results.push(textStruct79(await ocrText79(chosen[i])));
-    }catch(e){errors.push(safe79(e))}
-  }
-  if(!results.length)throw new Error('OCR.Space não conseguiu ler os quadros: '+errors.join(' | '));
-  return {results:results,frames:chosen.length,batches:results.length,errors:errors,provider:'OCR.Space'};
+    if(!t)throw new Error('OCR.Space '+label+' sem texto');
+    return '### '+label+'\n'+t;
+  }catch(e){
+    if(e&&e.name==='AbortError')throw new Error('OCR.Space '+label+' timeout');
+    throw e;
+  }finally{clearTimeout(tm)}
 }
 
-function vals79(results,path){
-  var p=path.split('.');
-  return results.map(function(r){return p.reduce(function(a,k){return a?a[k]:undefined},r)}).filter(function(v){return v!==null&&v!==undefined&&v!==''});
-}
-function chooseNum79(results,path){
-  var a=vals79(results,path).map(num79).filter(function(n){return n!==null&&n>=20&&n<=200});
-  if(!a.length)return null;var counts={},best=a[0],cnt=0;
-  a.forEach(function(n){var k=Math.round(n);counts[k]=(counts[k]||0)+1});
-  Object.keys(counts).forEach(function(k){if(counts[k]>cnt){best=Number(k);cnt=counts[k]}});
-  return best;
-}
-function chooseBool79(results,path,trueDominates){
-  var a=vals79(results,path).map(bool79).filter(function(v){return v!==null});
-  if(!a.length)return null;if(trueDominates&&a.indexOf(true)>=0)return true;
-  var t=a.filter(Boolean).length,f=a.length-t;return t>f?true:f>t?false:a[a.length-1];
-}
-function chooseText79(results,path,normalizer){
-  var a=vals79(results,path);
-  for(var i=a.length-1;i>=0;i--){var v=normalizer?normalizer(a[i]):String(a[i]).trim();if(v)return v}
-  return null;
-}
-async function fullScan79(files){
+async function collectOCR(files){
   var video=(files||[]).find(function(f){return String(f.type||'').indexOf('video/')===0});
   var images=(files||[]).filter(function(f){return String(f.type||'').indexOf('image/')===0});
   var frames=[];
-  if(video)frames=await v21ExtractVideoFrames(video,36);
+  if(video)frames=await v21ExtractVideoFrames(video,42);
   else for(var i=0;i<images.length;i++)frames.push(await v21ImageToFrame(images[i]));
   if(!frames.length)throw new Error('nenhum quadro disponível');
 
-  var diverse=await diverse79(frames,12),batches=[];
-  for(var j=0;j<diverse.length;j+=3)batches.push(diverse.slice(j,j+3));
-  var results=[],errors=[],groqBlocked=false;
-
-  for(var b=0;b<batches.length;b++){
-    if(groqBlocked)break;
+  var chosen=await diverse(frames,10);
+  var texts=[],errors=[];
+  for(var j=0;j<chosen.length;j++){
+    setProgress(72+Math.min(16,j),'V7.11 · OCR alta resolução '+(j+1)+'/'+chosen.length+'…');
     try{
-      setProgress(80+Math.min(8,b*2),'V7.10 · visão '+(b+1)+'/'+batches.length+'…');
-      results.push(await visionBatch79(batches[b]));
-      await new Promise(function(r){setTimeout(r,500)});
-    }catch(e){
-      var msg=safe79(e);errors.push(msg);
-      if(/429|rate|quota|too many/i.test(msg)){groqBlocked=true;break}
-    }
+      // Alterna topo/baixo para aumentar a chance de capturar a tela inicial e Data Analyst.
+      var crop=(j%2===0)?'top':'bottom';
+      texts.push(await ocrImage(chosen[j],'quadro '+(j+1),crop));
+    }catch(e){errors.push(safe(e))}
   }
-
-  if(results.length){
-    return {results:results,frames:diverse.length,batches:results.length,errors:errors,provider:'Groq'};
-  }
-
-  var fb=await ocrFallback79(diverse);
-  fb.errors=(errors||[]).concat(fb.errors||[]);
-  return fb;
+  if(!texts.length)throw new Error('OCR.Space não retornou texto útil: '+errors.join(' | '));
+  return {texts:texts,frames:chosen.length,errors:errors};
 }
-function apply79(slot,pack){
-  var R=pack.results,now=new Date().toISOString();slot.fieldMeta=slot.fieldMeta||{};
-  function set(path,v,conf){if(v===null||v===undefined||v==='')return;setPath(slot,path,v);slot.fieldMeta[path]={source:'detected',confidence:conf||.92,updatedAt:now}}
-  ['overall','goalkeeper','defence','midfield','attack'].forEach(function(k){var v=chooseNum79(R,'myTeam.'+k);if(v!==null)set('myTeam.'+k,v,.94)});
 
-  var secret=chooseBool79(R,'opponent.secretTraining',true);if(secret!==null)set('opponent.secretTraining',secret,.97);
-  var camp=chooseBool79(R,'opponent.trainingCamp',true);if(camp!==null)set('opponent.trainingCamp',camp,.95);
-  var human=chooseBool79(R,'opponent.human',false);if(human!==null)set('opponent.human',human,.92);
+var PROMPT=[
+'Você recebe OCR de vários quadros do MESMO vídeo de análise de partida do OSM 26.',
+'Os textos podem repetir, ter erros de OCR e vir de telas diferentes.',
+'Consolide APENAS dados realmente presentes. NÃO estime e NÃO invente.',
+'',
+'REGRAS IMPORTANTES:',
+'1. Meu time é o time do usuário do slot atual; rival é o adversário.',
+'2. Extraia força geral e os 4 setores GOL/DEF/MEI/ATA de ambos quando visíveis.',
+'3. Procure explicitamente: árbitro, casa/fora, bônus do rival, manager/humano, campo de treinamento, treino secreto, formação rival, plano, marcação e impedimento.',
+'4. Se TREINO SECRETO estiver ativo, secretTraining=true e deixe null para força/setores/formação/plano/marcação/impedimento rival que estejam ocultos.',
+'5. Não use cidade, país, nome de estádio ou ranking como Casa/Fora.',
+'6. loginBonus só pode ser 0,1,2,3 ou null.',
+'7. trainingCamp, secretTraining, human e offside são true|false|null.',
+'8. refereeColor só pode ser Verde|Azul|Amarelo|Laranja|Vermelho|null.',
+'9. style só pode ser Jogar pelas alas|Jogo de passes|Bola longa|Contra-ataque|Remate à vista|null.',
+'10. marking só pode ser À zona|Individual|null.',
+'11. Não copie números de jogadores como força do time.',
+'',
+'Responda SOMENTE JSON neste formato:',
+'{"teamName":null,"opponentTeamName":null,"myTeam":{"overall":null,"goalkeeper":null,"defence":null,"midfield":null,"attack":null},"opponent":{"overall":null,"goalkeeper":null,"defence":null,"midfield":null,"attack":null,"human":null,"manager":null,"loginBonus":null,"trainingCamp":null,"secretTraining":null,"formation":null,"style":null,"marking":null,"offside":null},"match":{"refereeColor":null,"venue":null}}'
+].join('\n');
 
-  var manager=chooseText79(R,'opponent.manager',function(v){return String(v||'').trim()});
-  if(manager){set('opponent.manager',manager,.91);set('opponent.human',true,.96)}
+async function structureWithOpenRouter(pack){
+  var key=String(localStorage.getItem(OR_KEY)||'').trim();
+  if(!key)throw new Error('OpenRouter não configurado');
+  var text=pack.texts.join('\n\n');
+  // texto somente: pequeno, barato e não sofre o "request too large" das imagens.
+  if(text.length>28000)text=text.slice(0,28000);
+  var ctl=new AbortController(),tm=setTimeout(function(){ctl.abort()},25000);
+  try{
+    var r=await fetch('https://openrouter.ai/api/v1/chat/completions',{
+      method:'POST',signal:ctl.signal,
+      headers:{
+        'Content-Type':'application/json',
+        'Authorization':'Bearer '+key,
+        'HTTP-Referer':location.origin,
+        'X-Title':'OSM AI Coach Pro'
+      },
+      body:JSON.stringify({
+        model:'openrouter/free',
+        messages:[{role:'user',content:PROMPT+'\n\nOCR REAL:\n'+text}],
+        temperature:0,
+        max_tokens:2200
+      })
+    });
+    var raw=await r.text();
+    if(!r.ok)throw new Error('OpenRouter-texto HTTP '+r.status+': '+raw.slice(0,140));
+    var j=JSON.parse(raw);
+    return parseJsonLoose(j&&j.choices&&j.choices[0]&&j.choices[0].message?j.choices[0].message.content:'');
+  }catch(e){
+    if(e&&e.name==='AbortError')throw new Error('OpenRouter-texto timeout');
+    throw e;
+  }finally{clearTimeout(tm)}
+}
 
-  var bonus=vals79(R,'opponent.loginBonus').map(num79).find(function(n){return n!==null&&n>=0&&n<=3});
-  if(bonus!==undefined)set('opponent.loginBonus',bonus,.92);
+function apply(slot,data){
+  var now=new Date().toISOString();
+  slot.fieldMeta=slot.fieldMeta||{};
+  function set(path,val,conf){
+    if(val===null||val===undefined||val==='')return;
+    setPath(slot,path,val);
+    slot.fieldMeta[path]={source:'detected',confidence:conf||.93,updatedAt:now};
+  }
 
-  if(slot.opponent.secretTraining===true){
-    ['opponent.overall','opponent.goalkeeper','opponent.defence','opponent.midfield','opponent.attack','opponent.formation','opponent.style','opponent.marking','opponent.offside'].forEach(function(p){
-      setPath(slot,p,null);slot.fieldMeta[p]={source:'unknown',confidence:0,updatedAt:now,hiddenBySecretTraining:true};
+  if(data.teamName)set('teamName',String(data.teamName).trim(),.90);
+  if(data.opponentTeamName)set('opponent.teamName',String(data.opponentTeamName).trim(),.90);
+
+  ['overall','goalkeeper','defence','midfield','attack'].forEach(function(k){
+    var v=num(data.myTeam&&data.myTeam[k]);
+    if(v!==null&&v>=20&&v<=200)set('myTeam.'+k,v,.96);
+  });
+
+  var sec=bool(data.opponent&&data.opponent.secretTraining);
+  if(sec!==null)set('opponent.secretTraining',sec,.98);
+
+  var camp=bool(data.opponent&&data.opponent.trainingCamp);
+  if(camp!==null)set('opponent.trainingCamp',camp,.96);
+
+  var hum=bool(data.opponent&&data.opponent.human);
+  if(hum!==null)set('opponent.human',hum,.94);
+
+  if(data.opponent&&data.opponent.manager){
+    set('opponent.manager',String(data.opponent.manager).trim(),.92);
+    set('opponent.human',true,.97);
+  }
+
+  var bonus=num(data.opponent&&data.opponent.loginBonus);
+  if(bonus!==null&&bonus>=0&&bonus<=3)set('opponent.loginBonus',bonus,.94);
+
+  if(slot.opponent&&slot.opponent.secretTraining===true){
+    [
+      'opponent.overall','opponent.goalkeeper','opponent.defence','opponent.midfield',
+      'opponent.attack','opponent.formation','opponent.style','opponent.marking','opponent.offside'
+    ].forEach(function(p){
+      setPath(slot,p,null);
+      slot.fieldMeta[p]={source:'unknown',confidence:0,updatedAt:now,hiddenBySecretTraining:true};
     });
   }else{
-    ['overall','goalkeeper','defence','midfield','attack'].forEach(function(k){var v=chooseNum79(R,'opponent.'+k);if(v!==null)set('opponent.'+k,v,.93)});
-    var formation=chooseText79(R,'opponent.formation',form79);if(formation)set('opponent.formation',formation,.95);
-    var style=chooseText79(R,'opponent.style',function(v){return pick79(STYLE79,v)});if(style)set('opponent.style',style,.95);
-    var marking=chooseText79(R,'opponent.marking',function(v){return pick79(MARK79,v)});if(marking)set('opponent.marking',marking,.95);
-    var off=chooseBool79(R,'opponent.offside',false);if(off!==null)set('opponent.offside',off,.95);
+    ['overall','goalkeeper','defence','midfield','attack'].forEach(function(k){
+      var v=num(data.opponent&&data.opponent[k]);
+      if(v!==null&&v>=20&&v<=200)set('opponent.'+k,v,.95);
+    });
+    var f=formation(data.opponent&&data.opponent.formation);if(f)set('opponent.formation',f,.96);
+    var st=pick(STYLES,data.opponent&&data.opponent.style);if(st)set('opponent.style',st,.96);
+    var mk=pick(MARK,data.opponent&&data.opponent.marking);if(mk)set('opponent.marking',mk,.96);
+    var of=bool(data.opponent&&data.opponent.offside);if(of!==null)set('opponent.offside',of,.96);
   }
 
-  var ref=chooseText79(R,'match.refereeColor',function(v){return pick79(REF79,v)});if(ref)set('match.refereeColor',ref,.95);
-  var venue=chooseText79(R,'match.venue',function(v){var x=norm79(v);return x==='casa'?'Casa':x==='fora'?'Fora':null});if(venue)set('match.venue',venue,.95);
+  var ref=pick(REF,data.match&&data.match.refereeColor);if(ref)set('match.refereeColor',ref,.97);
+  var v=norm(data.match&&data.match.venue);if(v==='casa')set('match.venue','Casa',.96);else if(v==='fora')set('match.venue','Fora',.96);
 }
 
-var oldBulk79=window.editAllFields;
-window.editAllFields=function(n,missingOnly){
-  var slot=state.slots[n-1];
-  if(!(slot&&slot.opponent&&slot.opponent.secretTraining===true))return oldBulk79(n,missingOnly);
-  var hidden=new Set(['opponent.overall','opponent.goalkeeper','opponent.defence','opponent.midfield','opponent.attack','opponent.formation','opponent.style','opponent.marking','opponent.offside']);
-  var rows=FIELD_DEFS.filter(function(x){return !hidden.has(x[0])}).filter(function(x){var p=x[0];return !missingOnly||!(hasValue(getPath(slot,p))||typeof getPath(slot,p)==='boolean')});
-  openModal('<h2>'+(missingOnly?'Completar campos visíveis ausentes':'Corrigir dados')+' · Slot '+n+'</h2><div class="field-edit"><p class="small muted"><b>Treino secreto ativo:</b> campos ocultos pelo OSM foram removidos desta lista.</p>'+rows.map(function(x,i){return '<label>'+esc(x[1])+'<input id="bulk_'+i+'" data-path="'+x[0]+'" value="'+esc(getPath(slot,x[0])==null?'':getPath(slot,x[0]))+'"></label>'}).join('')+'<p class="small muted">Use NI ou deixe vazio apenas quando realmente não souber.</p><button class="btn" onclick="saveBulkFields('+n+')">Salvar alterações</button></div>');
-};
+async function analyze711(files){
+  var slot=selectedSlot();
+  setProgress(68,'V7.11 · lendo quadros reais em alta resolução…');
+  var pack=await collectOCR(files);
+  setProgress(90,'V7.11 · consolidando somente o texto OCR…');
+  var data=await structureWithOpenRouter(pack);
+  apply(slot,data);
+
+  calcQuality(slot);saveState();renderCoverage(slot);renderAnalysisSummary(slot);renderPregame();
+
+  var missing=missingRequired(slot);
+  setAnalysisRun(slot,'tactic',missing.length?'warning':'success',
+    'V7.11: OCR alta resolução em '+pack.frames+' telas; '+(missing.length?missing.length+' campo(s) essencial(is) ainda NI':'dados essenciais completos'),
+    {quality:slot.analysisQuality,currentRunValidated:true,fullVideoScan:true});
+
+  var d=document.getElementById('analysisDiagnostics');
+  if(d)d.textContent='V7.11 PRECISION · OCR.Space alta resolução + OpenRouter texto · '+pack.frames+' telas'+(pack.errors.length?' · '+pack.errors.length+' quadro(s) sem OCR':'');
+  setProgress(100,missing.length?'Leitura concluída com pendências':'Partida pronta');
+
+  if(!missing.length&&document.getElementById('autoTactic')&&document.getElementById('autoTactic').checked){
+    await generateTactic(state.selectedSlot);
+  }
+}
 
 v21Analyze=async function(files){
-  if(!prevAnalyze79)throw new Error('analisador anterior indisponível');
-  await prevAnalyze79(files);
-  if(analysisMode!=='tactic')return;
-
-  var slot=selectedSlot(),pack=null;
-  try{
-    setProgress(78,'V7.10 · varrendo todo o vídeo e removendo quadros repetidos…');
-    pack=await fullScan79(files);
-    apply79(slot,pack);
-    calcQuality(slot);saveState();renderCoverage(slot);renderAnalysisSummary(slot);renderPregame();
-
-    var missing=missingRequired(slot);
-    setAnalysisRun(slot,'tactic',missing.length?'warning':'success',
-      'V7.10: varredura completa em '+pack.frames+' telas distintas; '+(missing.length?missing.length+' campo(s) essencial(is) ainda NI':'dados essenciais completos'),
-      {quality:slot.analysisQuality,currentRunValidated:true,fullVideoScan:true});
-
-    if(!missing.length&&document.getElementById('autoTactic')&&document.getElementById('autoTactic').checked){
-      setProgress(94,'V7.10 · gerando tática com leitura completa…');
-      await generateTactic(state.selectedSlot);
-    }
-    setProgress(100,missing.length?'Leitura completa com pendências':'Partida pronta');
-  }catch(e){
-    var msg79=safe79(e);
-    setAnalysisRun(slot,'tactic','warning','V7.10: leitura principal mantida; complemento visual falhou: '+msg79,{quality:slot.analysisQuality,currentRunValidated:true,fullVideoScan:false});
-    var d=document.getElementById('analysisDiagnostics');
-    if(d)d.textContent='V7.10 COMPLETE SCAN · complemento visual: '+msg79;
+  if(analysisMode!=='tactic'){
+    if(previousAnalyze)return previousAnalyze(files);
+    throw new Error('analisador anterior indisponível');
   }
-  var d2=document.getElementById('analysisDiagnostics');
-  if(d2&&pack)d2.textContent='V7.10 COMPLETE SCAN · '+pack.frames+' quadros distintos · '+pack.batches+' lotes lidos'+(pack.errors&&pack.errors.length?' · '+pack.errors.length+' tentativa(s) recuperada(s)':'')+' · setores próprios + Data Analyst';
+
+  var slot=selectedSlot();
+  var snapshot=JSON.parse(JSON.stringify(slot));
+  try{
+    // Não executa a cadeia antiga da partida: ela é justamente o que vinha contaminando
+    // o slot e desperdiçando chamadas em Groq. Para Partida, V7.11 é o leitor principal.
+    await analyze711(files);
+  }catch(e){
+    // Mantém os dados anteriores se a tentativa nova falhar.
+    Object.keys(slot).forEach(function(k){delete slot[k]});
+    Object.assign(slot,snapshot);
+    saveState();
+    setAnalysisRun(slot,'tactic','error','V7.11: '+safe(e)+'. Dados anteriores preservados.',{currentRunValidated:false});
+    setProgress(100,'Falha sem apagar dados anteriores');
+    var d=document.getElementById('analysisDiagnostics');if(d)d.textContent='V7.11 PRECISION · '+safe(e);
+  }
 };
+
 window.v21Analyze=v21Analyze;
-window.OSM_COMPLETE_MATCH_SCAN_VERSION=V79;
+window.OSM_COMPLETE_MATCH_SCAN_VERSION=V711;
+try{console.info('[OSM] V7.11 Precision Match Reader ativo')}catch(_){}
 })();
