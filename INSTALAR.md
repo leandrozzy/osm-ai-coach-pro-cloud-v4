@@ -1,13 +1,8 @@
-# Publicar no projeto existente
+# Instalação
+1. Suba estes arquivos na raiz do projeto GitHub conectado à Vercel, preservando vercel.json.
+2. Na Vercel, use npm run build e diretório dist (já definidos no arquivo).
+3. Informe as chaves em Configurações do app, ou configure GROQ_API_KEY, OCR_SPACE_API_KEY e TWELVELABS_API_KEY nas variáveis da Vercel e publique novamente.
+4. Abra a URL no Chrome Android, menu → Instalar aplicativo.
 
-1. Extraia o ZIP. Os arquivos index.html, package.json e vercel.json devem ficar na raiz do repositório osm-ai-coach-pro-cloud-v4, junto com as pastas src, api, assets, scripts e tests.
-2. Substitua os arquivos da tentativa anterior e faça commit na main. Não é necessário apagar o histórico nem excluir o projeto.
-3. A integração GitHub–Vercel existente deve iniciar uma publicação automaticamente. A nova versão só está publicada após o deploy ficar Ready.
-4. Abra o endereço do projeto. Em Configurações, informe sua chave Gemini se desejar leitura visual/IA. Sem chave, edição e tática local continuam disponíveis.
-5. No Chrome Android, menu ⋮ → Instalar app/Adicionar à tela inicial.
-
-As configurações de build estão em vercel.json. Se o projeto tiver overrides antigos na Vercel, use Framework Other, Build Command npm run build, Output Directory dist e Root Directory vazio.
-
-O aplicativo guarda dados no dispositivo. Faça backup pela aba Configurações antes de limpar os dados do navegador.
-
-Limites: IA depende de chave/cota; leitura de mídias reais ainda requer calibração; notificações atuais dependem do app aberto. Nenhuma tática garante vitória.
+Não coloque chaves no Git. Chaves informadas no app ficam só em memória nesta aba. APIs possuem limites próprios; confira as cotas das suas contas. O envio de vídeos ao TwelveLabs pode deixar assets na sua conta conforme a política do serviço.
+Exporte backups antes de limpar dados do navegador. Notificações com app fechado não estão implementadas.
