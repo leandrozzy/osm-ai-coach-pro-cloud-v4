@@ -22,7 +22,9 @@ export function cleanCalendar(rows=[]){
 }
 export function normalizeExtraction(raw={},type,source=''){
  const out=blankExtraction();if(!raw||typeof raw!=='object')return out;
- if(type==='match')out.match=cleanMatch(raw.match||raw.data||raw);
+ const payload=raw.data&&typeof raw.data==='object'?raw.data:raw;
+ if(type==='match')out.match=cleanMatch(payload.match||payload);
+ if(payload!==raw)raw=payload;
  if(type==='squad')out.players=cleanPlayers(Array.isArray(raw.players)?raw.players:[]).map(p=>({...p,_source:source}));
  if(type==='calendar')out.calendar=cleanCalendar(Array.isArray(raw.calendar)?raw.calendar:[]).map(r=>({...r,_source:source}));
  if(raw.meta&&typeof raw.meta==='object'){

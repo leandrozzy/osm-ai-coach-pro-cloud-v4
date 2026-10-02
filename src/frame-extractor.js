@@ -1,4 +1,4 @@
-import {dhash,distance} from './frame-dedup.js';
+import {dhash} from './frame-dedup.js';
 
 function waitEvent(target,event,timeoutMs=8000){
   return new Promise((resolve,reject)=>{
@@ -11,27 +11,12 @@ function waitEvent(target,event,timeoutMs=8000){
   });
 }
 
-function noveltySelect(frames,maxFrames=9){
-  if(maxFrames===1)return frames.slice(0,1);
-  if(frames.length<=maxFrames)return frames;
-  const selected=[frames[0]];
-  const remaining=frames.slice(1,-1);
-  while(selected.length<maxFrames-1 && remaining.length){
-    let bestIndex=0,bestScore=-1;
-    for(let i=0;i<remaining.length;i++){
-      const f=remaining[i];
-      const nearest=Math.min(...selected.map(s=>distance(s.hash,f.hash)));
-      const timeBonus=Math.min(8,Math.abs(f.time-selected[selected.length-1].time));
-      const score=nearest+(timeBonus*.35);
-      if(score>bestScore){bestScore=score;bestIndex=i;}
-    }
-    selected.push(remaining.splice(bestIndex,1)[0]);
-  }
-  selected.push(frames[frames.length-1]);
-  return selected.sort((a,b)=>a.time-b.time);
+function noveltySelect(frames,maxFrames=24){
+ if(frames.length<=maxFrames)return frames;
+ return Array.from({length:maxFrames},(_,i)=>frames[Math.round(i*(frames.length-1)/(maxFrames-1))]);
 }
 
-export async function extractFrames(file,{maxFrames=16,candidates=60,signal}={}){
+export async function extractFrames(file,{maxFrames=24,candidates=60,signal}={}){
   const video=document.createElement('video');
   video.muted=true;video.playsInline=true;video.preload='metadata';
   const objectUrl=URL.createObjectURL(file);video.src=objectUrl;
@@ -40,7 +25,6 @@ export async function extractFrames(file,{maxFrames=16,candidates=60,signal}={})
     const duration=Number.isFinite(video.duration)&&video.duration>0?video.duration:1;
     const targetCount=Math.min(candidates,Math.max(8,Math.ceil(duration/.5)));
     const frames=[];
-    let lastHash=null;
     for(let i=0;i<targetCount;i++){
       if(signal?.aborted)break;
       const time=targetCount===1?0.01:Math.max(0.01,Math.min(duration-.03,(duration-.03)*i/(targetCount-1)));
@@ -55,10 +39,7 @@ export async function extractFrames(file,{maxFrames=16,candidates=60,signal}={})
       c.height=Math.max(1,Math.round(height*scale));
       c.getContext('2d',{willReadFrequently:true}).drawImage(video,0,0,c.width,c.height);
       const hash=dhash(c);
-      if(!lastHash || distance(lastHash,hash)>=1){
-        frames.push({time,canvas:c,hash});
-        lastHash=hash;
-      }
+      frames.push({time,canvas:c,hash});
     }
     return noveltySelect(frames,maxFrames);
   } finally {
