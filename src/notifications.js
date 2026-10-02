@@ -1,6 +1,6 @@
 import {rowTime,known,pending} from './domain.js';
 const sent=new Set();
-export async function requestNotifications(){if(!('Notification' in window))return 'unsupported';return Notification.requestPermission();}
+export async function requestNotifications(){if(!('Notification' in window))return 'unsupported';if(Notification.permission!=='default')return Notification.permission;let timer;try{return await Promise.race([Notification.requestPermission(),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('O Android não respondeu ao pedido. Confira a permissão nas configurações do app/Chrome.')),15000);})]);}finally{clearTimeout(timer);}}
 export async function notify(title,body,tag){
  if(!('Notification' in window)||Notification.permission!=='granted')return;
  const registration=await navigator.serviceWorker?.getRegistration();

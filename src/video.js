@@ -22,6 +22,8 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
  const context={username:options.username,myTeam:options.myTeam,rivalName:options.rivalName,competitionType:options.competitionType};
  const status=options.vision?await apiStatus():null;
  const providers=new Set([...sessionProviders(),...Object.entries(status?.providers||{}).filter(([,v])=>v===true||v?.configured).map(([k])=>k)]);
+ if(options.vision&&!providers.size)throw Error('Nenhuma chave detectada. Abra Configurações, salve uma chave Google/Groq/OCR.space/TwelveLabs e tente novamente. A análise automática não usa OCR local.');
+ onUpdate(options.vision?'APIs detectadas: '+[...providers].join(', '):'OCR local selecionado manualmente');
  for(const file of files){
   if(expired())break;onUpdate('Preparando '+file.name);
   try{if(file.type.startsWith('video/'))frames.push(...(await extractFrames(file,{maxFrames:24,signal:options.signal})).map(f=>({...f,name:file.name})));else if(file.type.startsWith('image/'))frames.push({canvas:await imageToCanvas(file),name:file.name,time:0});else errors.push('Formato não suportado: '+file.name);}catch(e){errors.push(e.message);}
@@ -35,15 +37,16 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
   const index=next;next+=2;const batch=frames.slice(index,index+2);
   onUpdate('Lendo '+done+'/'+frames.length+' telas · provedores disponíveis');
   try{
+   if(options.vision&&[...providers].every(p=>disabled.has(p))){errors.push('Provedores indisponíveis: confira as chaves/cotas em Configurações.');next=frames.length;break;}
    if(options.vision&&providers.size){
     const images=batch.map(f=>{let quality=.82,url=f.canvas.toDataURL('image/jpeg',quality);while(url.length>1350000&&quality>.25){quality-=.1;url=f.canvas.toDataURL('image/jpeg',quality);}return {url,width:f.canvas.width,height:f.canvas.height};});
     const r=await apiRequest('analyze',{type,images,focusImages:batch.map((f,j)=>focusImage(f.canvas,type,index+j)).filter(Boolean),context,disabled:[...disabled],models:{groqVision:options.visionModel,groqText:options.model}},options.signal,23000);
     data=fuseExtraction(data,r.data);attempts.push(...r.attempts||[]);if(!r.coverage?.complete)startVideo();
     for(const f of r.failures||[]){errors.push(f.provider+': '+(f.message||f.error||'indisponível'));if([401,403,404,429].includes(f.status))disabled.add(f.provider);}
-   }else if(options.fallback||!options.vision){
-    for(const frame of batch){if(expired())break;onUpdate('OCR local: '+frame.name);const r=await localOCR(frame.canvas);const raw=type==='match'?mergeMatchTexts([r.text]):type==='squad'?{players:parseSquadText(r.text)}:{calendar:parseCalendarText(r.text)};data=fuseExtraction(data,normalizeExtraction(raw,type,'OCR local'));attempts.push('OCR local');}
+   }else if(!options.vision){
+    for(const frame of batch){if(expired())break;onUpdate('OCR local: '+frame.name);const r=await localOCR(frame.canvas,{signal:options.signal});const raw=type==='match'?mergeMatchTexts([r.text]):type==='squad'?{players:parseSquadText(r.text)}:{calendar:parseCalendarText(r.text)};data=fuseExtraction(data,normalizeExtraction(raw,type,'OCR local'));attempts.push('OCR local');}
    }else errors.push('Nenhuma chave configurada.');
-  }catch(e){errors.push(e.message);}done+=batch.length;
+  }catch(e){errors.push(e.message);next=frames.length;}done+=batch.length;
  }};
  // Two batches in flight; every service request has its own deadline.
  await Promise.all(options.vision&&providers.size?[worker(),worker()]:[worker()]);
