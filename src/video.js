@@ -1,6 +1,6 @@
 import {extractFrames,imageToCanvas} from './frame-extractor.js';
-import {distinctFrames,visualBatches} from './frame-selection.js';
-import {detectCalendarIcons} from './calendar-icons.js';
+import {visualBatches} from './frame-selection.js';
+import {applyScreenEvidence} from './visual-evidence.js';
 import {prepareOcrImages} from './ocr-image.js';
 import {localOCR} from './ocr.js';
 import {apiRequest,apiStatus,sessionProviders} from './ai-router.js';
@@ -36,7 +36,7 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
  onUpdate(options.vision?'APIs detectadas: '+[...providers].join(', '):'OCR local selecionado manualmente');
  for(const file of files){
   if(expired())break;onUpdate('Preparando '+file.name);
-  try{if(file.type.startsWith('video/'))frames.push(...distinctFrames(await extractFrames(file,{maxFrames:24,signal:options.signal}),{limit:type==='match'?10:8}).map(f=>({...f,name:file.name})));else if(file.type.startsWith('image/'))frames.push({canvas:await imageToCanvas(file),name:file.name,time:0});else errors.push('Formato não suportado: '+file.name);}catch(e){errors.push(e.message);}
+  try{if(file.type.startsWith('video/')){const selected=await extractFrames(file,{type,profile:options.profile,signal:options.signal});frames.push(...selected.map(f=>({...f,name:file.name})));if(selected.selection?.limited)errors.push('O vídeo contém mais telas diferentes do que o limite desta leitura. Use Completar leitura se faltarem dados.');}else if(file.type.startsWith('image/'))frames.push({canvas:await imageToCanvas(file),name:file.name,time:0});else errors.push('Formato não suportado: '+file.name);}catch(e){errors.push(e.message);}
  }
  if(!frames.length)throw Error('Nenhuma tela extraída.');
  const previews=frames.map(f=>({url:f.canvas.toDataURL('image/jpeg',.25),name:f.name,time:f.time}));
@@ -52,7 +52,7 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
     const images=batch.map(f=>visualImage(f.canvas));
     const r=await apiRequest('analyze',{type,images,useVisual:visualSlots.has(Math.floor(index/2)),forceOCR:true,preferredProvider:disabled.has('google')?'groq':'google',ocrImages:batch.flatMap((f,frameIndex)=>prepareOcrImages(f.canvas,type).map(image=>({...image,frameIndex}))).sort((a,b)=>(a.region==='full'?0:1)-(b.region==='full'?0:1)),focusImages:batch.map((f,j)=>focusImage(f.canvas,type,index+j)).filter(Boolean),context,disabled:[...disabled],models:{groqVision:options.visionModel,groqText:options.model}},options.signal,35000);
     data=fuseExtraction(data,r.data);attempts.push(...r.attempts||[]);
-    if(type==='calendar')for(const evidence of r.calendarEvidence||[]){const frame=batch[evidence.frameIndex];if(!frame||!evidence.row?._card)continue;const icons=detectCalendarIcons(frame.canvas,evidence.row._card);if(icons.home!==null||icons.cup!==null||icons.result!=='NI'){data=fuseExtraction(data,normalizeExtraction({calendar:[{...evidence.row,...icons}]},type,'Ícones nas telas'));attempts.push('ícones locais');}}
+    const local=applyScreenEvidence(data,r,batch,type);data=local.data;attempts.push(...local.used);
     if(!coverage(type,data).complete)startVideo();
     for(const f of r.failures||[]){errors.push(f.provider+': '+(f.status===429?'Limite de cota atingido. Novas chamadas foram pausadas; aguarde a renovação do limite do provedor.':f.status===503?'Serviço sobrecarregado. A leitura continua com os outros serviços.':f.message||f.error||'indisponível'));if(f.provider==='groq'&&(f.code==='NO_SUPPORTED_MODEL'||f.status===404))disabled.add(f.stage==='text'?'groq-text':'groq-visual');else if([401,403,404,429,503].includes(f.status)||f.code==='PROVIDER_BUSY'||f.code==='PROVIDER_COOLDOWN'||f.code==='PROVIDER_TIMEOUT')disabled.add(f.provider);}
    }else if(!options.vision){
@@ -67,6 +67,6 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
  if(expired())errors.push('Limite atingido ou cancelado: revise os dados parciais.');
  const quality=coverage(type,data);
  if(!quality.complete)errors.push('Leitura parcial: '+quality.missing.slice(0,12).join('; '));
- if(data.conflicts.length)errors.push(data.conflicts.length+' divergências entre leituras: confira os valores na mídia.');
+ const unresolved=data.conflicts.filter(c=>!c.resolved);if(unresolved.length)errors.push(unresolved.length+' divergências entre leituras: confira os valores na mídia.');
  return {...data,files:[...files],type,previews,errors:[...new Set([...errors,...data.warnings])],mode:[...new Set(attempts)].join(' + ')||'Sem resposta',frames:frames.length,coverage:quality,elapsedMs:Date.now()-started,createdAt:new Date().toISOString()};
 }

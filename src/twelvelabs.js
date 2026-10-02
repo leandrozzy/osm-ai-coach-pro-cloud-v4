@@ -1,4 +1,5 @@
 import {apiRequest} from './ai-router.js';
+import {repairWebmDuration} from './webm-duration.js';
 
 // JSON/base64 adds about one third; leave room below the Vercel 4.5 MB body limit.
 const MAX_VIDEO_BYTES=3000000;
@@ -61,8 +62,13 @@ export async function compactFrames(frames,signal,onUpdate=()=>{}){
    }
    if(recorder.state!=='inactive')recorder.stop();
    await finished;checkAbort(signal);if(recordingError)throw recordingError;
-   const clip=new Blob(parts,{type:mimeType.split(';')[0]});
+   let clip=new Blob(parts,{type:mimeType.split(';')[0]});
    if(!clip.size||clip.size>MAX_VIDEO_BYTES)throw Error('Não foi possível preparar vídeo de até 3 MB; a leitura das outras APIs foi preservada.');
+   if(clip.type==='video/webm'){
+    onUpdate('TwelveLabs: conferindo duração do vídeo');
+    clip=await repairWebmDuration(clip,duration,signal);checkAbort(signal);
+    if(clip.size>MAX_VIDEO_BYTES)throw Error('Vídeo preparado acima de 3 MB; a leitura pelas outras APIs foi preservada.');
+   }
    return clip;
   }finally{signal?.removeEventListener('abort',cancel);}
  }finally{
