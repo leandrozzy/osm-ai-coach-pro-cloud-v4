@@ -31,17 +31,18 @@ function noveltySelect(frames,maxFrames=9){
   return selected.sort((a,b)=>a.time-b.time);
 }
 
-export async function extractFrames(file,{maxFrames=9,candidates=26}={}){
+export async function extractFrames(file,{maxFrames=16,candidates=60,signal}={}){
   const video=document.createElement('video');
   video.muted=true;video.playsInline=true;video.preload='metadata';
   const objectUrl=URL.createObjectURL(file);video.src=objectUrl;
   try{
     await waitEvent(video,'loadedmetadata',10000);
     const duration=Number.isFinite(video.duration)&&video.duration>0?video.duration:1;
-    const targetCount=Math.min(candidates,Math.max(8,Math.ceil(duration/.8)));
+    const targetCount=Math.min(candidates,Math.max(8,Math.ceil(duration/.5)));
     const frames=[];
     let lastHash=null;
     for(let i=0;i<targetCount;i++){
+      if(signal?.aborted)break;
       const time=targetCount===1?0.01:Math.max(0.01,Math.min(duration-.03,(duration-.03)*i/(targetCount-1)));
       if(Math.abs(video.currentTime-time)>.001){
         video.currentTime=time;
@@ -49,12 +50,12 @@ export async function extractFrames(file,{maxFrames=9,candidates=26}={}){
       }
       const c=document.createElement('canvas');
       const width=video.videoWidth||720,height=video.videoHeight||1280;
-      const scale=Math.min(1,1280/width);
+      const scale=Math.min(1,2448/Math.max(width,height));
       c.width=Math.max(1,Math.round(width*scale));
       c.height=Math.max(1,Math.round(height*scale));
       c.getContext('2d',{willReadFrequently:true}).drawImage(video,0,0,c.width,c.height);
       const hash=dhash(c);
-      if(!lastHash || distance(lastHash,hash)>=5){
+      if(!lastHash || distance(lastHash,hash)>=1){
         frames.push({time,canvas:c,hash});
         lastHash=hash;
       }
@@ -70,7 +71,7 @@ export async function imageToCanvas(file){
   const img=await createImageBitmap(file);
   try{
     const c=document.createElement('canvas');
-    const scale=Math.min(1,1600/img.width);
+    const scale=Math.min(1,2448/Math.max(img.width,img.height));
     c.width=Math.max(1,Math.round(img.width*scale));
     c.height=Math.max(1,Math.round(img.height*scale));
     c.getContext('2d',{willReadFrequently:true}).drawImage(img,0,0,c.width,c.height);
