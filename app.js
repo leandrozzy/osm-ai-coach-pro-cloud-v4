@@ -1,19 +1,10 @@
-import { initApp } from './src/ui.js';
-
-function showBootError(error) {
-  console.error('Falha ao iniciar OSM AI Coach Pro', error);
-  const root = document.querySelector('#app');
-  if (root) root.innerHTML = `<main style="padding:20px;font-family:system-ui"><h2>Falha ao iniciar o app</h2><p>Atualize a página. Se continuar, limpe apenas o cache deste site e abra novamente.</p><pre style="white-space:pre-wrap">${String(error?.message || error)}</pre></main>`;
+function showBootError(error){
+ const root=document.querySelector('#app');root.replaceChildren();
+ const main=document.createElement('main'),heading=document.createElement('h1'),message=document.createElement('p'),button=document.createElement('button');
+ heading.textContent='Não foi possível abrir o app';message.textContent=String(error?.message||error);button.textContent='Exportar dados brutos para recuperação';
+ button.onclick=()=>{const blob=new Blob([localStorage.getItem('osm-ai-coach-pro:v1')||'{}'],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='osm-recuperacao.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
+ main.append(heading,message,button);root.append(main);
 }
+import('./src/ui.js').then(({initApp})=>initApp(document.querySelector('#app'))).catch(showBootError);
+if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
 
-window.addEventListener('error', e => showBootError(e.error || e.message));
-window.addEventListener('unhandledrejection', e => showBootError(e.reason));
-
-try {
-  initApp(document.querySelector('#app'));
-  if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(console.warn));
-  }
-} catch (error) {
-  showBootError(error);
-}

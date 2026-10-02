@@ -1,14 +1,1 @@
-{
-  "name": "OSM AI Coach Pro",
-  "short_name": "OSM Coach",
-  "description": "Coach pessoal para OSM 26 com análise local, OCR e táticas.",
-  "start_url": "/",
-  "display": "standalone",
-  "background_color": "#071018",
-  "theme_color": "#0bbf7a",
-  "orientation": "portrait-primary",
-  "icons": [
-    {"src":"/assets/icon-192.png","sizes":"192x192","type":"image/png"},
-    {"src":"/assets/icon-512.png","sizes":"512x512","type":"image/png"}
-  ]
-}
+{"name":"OSM AI Coach Pro","short_name":"OSM Coach","id":"/","start_url":"/","scope":"/","display":"standalone","background_color":"#f3f5ee","theme_color":"#101b24","lang":"pt-BR","description":"Quatro slots, leitura de mídia e preparação tática no OSM.","icons":[{"src":"/assets/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any"},{"src":"/assets/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any"}]}
