@@ -1,5 +1,7 @@
-import {extractFrames,imageToCanvas} from './frame-extractor.js';
-import {visualBatches} from './frame-selection.js';
+import {extractFrames,extractAdditionalFrames,imageToCanvas} from './frame-extractor.js';
+import {visualBatches,selectCompletionFrames} from './frame-selection.js';
+import {videoRequired,disableFailedProvider} from './reading-policy.js';
+import {matchFields} from './domain.js';
 import {applyScreenEvidence} from './visual-evidence.js';
 import {refineSquadRoster} from './squad-roster.js';
 import {sanitizeProviderMatch} from './match-grounding.js';
@@ -37,7 +39,13 @@ function batchOcrImages(batch,type){
 }
 export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
  if(files.length>24||files.some(f=>f.size>150*1024*1024))throw Error('Máximo 24 arquivos, 150 MB por arquivo.');
- const started=Date.now(),limit=options.profile==='complete'?180000:90000,frames=[],errors=[],attempts=[],rosterEvidence=[],readingTeams=[],disabled=new Set();let data=blankExtraction();
+ const started=Date.now(),limit=options.profile==='complete'?180000:90000,frames=[],reserves=[],errors=[],attempts=[],rosterEvidence=[],readingTeams=[],disabled=new Set();let data=blankExtraction();
+ const userSignal=options.signal,deadlineController=new AbortController(),cancel=()=>deadlineController.abort();
+ let videoController=null;
+ const stopVideo=()=>videoController?.abort();
+ if(userSignal?.aborted)cancel();else userSignal?.addEventListener('abort',cancel,{once:true});
+ const deadlineTimer=setTimeout(cancel,limit);options={...options,signal:deadlineController.signal};
+ try{
  const expired=()=>options.signal?.aborted||Date.now()-started>=limit;
  const context={username:options.username,myTeam:options.myTeam||'NI',rivalName:options.rivalName,competitionType:options.competitionType};
  const status=options.vision?await apiStatus():null;
@@ -46,43 +54,79 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
  onUpdate(options.vision?'APIs detectadas: '+[...providers].join(', '):'OCR local selecionado manualmente');
  for(const file of files){
   if(expired())break;onUpdate('Preparando '+file.name);
-  try{if(file.type.startsWith('video/')){const selected=await extractFrames(file,{type,profile:options.profile,signal:options.signal});frames.push(...selected.map(f=>({...f,name:file.name})));if(selected.selection?.limited)errors.push('O vídeo contém mais telas diferentes do que o limite desta leitura. Use Completar leitura se faltarem dados.');}else if(file.type.startsWith('image/'))frames.push({canvas:await imageToCanvas(file),name:file.name,time:0});else errors.push('Formato não suportado: '+file.name);}catch(e){errors.push(e.message);}
+  try{if(file.type.startsWith('video/')){const selected=await extractFrames(file,{type,profile:options.profile,signal:options.signal});const fileIndex=files.indexOf(file);frames.push(...selected.map(f=>({...f,name:file.name,fileIndex})));if(selected.omittedFrames?.length)reserves.push({file,fileIndex,probes:selected.omittedFrames});}else if(file.type.startsWith('image/'))frames.push({canvas:await imageToCanvas(file),name:file.name,fileIndex:files.indexOf(file),time:0});else errors.push('Formato não suportado: '+file.name);}catch(e){errors.push(e.message);}
  }
- if(!frames.length)throw Error('Nenhuma tela extraída.');
+ if(!frames.length)throw Error(options.signal.aborted?(userSignal?.aborted?'Leitura cancelada.':'Tempo limite ao preparar as telas. Tente um trecho menor; os dados salvos foram preservados.'):'Nenhuma tela extraída.');
  const previews=frames.map(f=>({url:f.canvas.toDataURL('image/jpeg',.25),name:f.name,time:f.time}));
  const batchSize=type==='match'?3:2;
  let next=0,done=0,videoJob=null;const visualSlots=visualBatches(frames.length,3,{batchSize});
- const startVideo=()=>{if(videoJob||!options.vision||!providers.has('twelvelabs'))return;videoJob=(async()=>{for(const file of files.filter(f=>f.type.startsWith('video/'))){if(expired())break;try{const r=await analyzeVideo(file,type,context,options.signal,onUpdate,{frames:frames.filter(f=>f.name===file.name)});data=fuseExtraction(data,type==='match'?sanitizeProviderMatch(r.data,context):r.data);attempts.push('twelvelabs');if(r.transport==='sampled-video')errors.push('TwelveLabs leu um vídeo das '+r.sampledFrames+' telas selecionadas, mantendo a resolução. Confira as telas e os campos pendentes.');}catch(e){errors.push('TwelveLabs: '+e.message);}}})();};
+ const visualAvailable=()=>providers.has('google')&&!disabled.has('google')||providers.has('groq')&&!disabled.has('groq')&&!disabled.has('groq-visual');
+ const startVideo=()=>{
+  const remaining=limit-(Date.now()-started);
+  if(videoJob||!options.vision||!providers.has('twelvelabs')||!videoRequired(type,data)||remaining<5000||expired())return;
+  videoController=new AbortController();options.signal?.addEventListener('abort',stopVideo,{once:true});
+  videoJob=(async()=>{
+   for(const file of files.filter(f=>f.type.startsWith('video/'))){
+    if(expired()||videoController.signal.aborted||!videoRequired(type,data))break;
+    try{
+     const budgetMs=Math.min(50000,limit-(Date.now()-started));
+     const missing=coverage(type,data).missing;
+     const targetFields=type==='match'?matchFields.filter(([key,label])=>missing.some(field=>field===label||field.startsWith(label+' ('))||(data.conflicts||[]).some(conflict=>conflict.field==='match.'+key&&!conflict.resolved)).map(([key])=>key):[...new Set(missing.map(field=>field.includes(': ')?field.split(': ').at(-1):field==='Início da lista não confirmado'?'meta.sawTop':field==='Fim da lista não confirmado'?'meta.sawBottom':'').filter(field=>/^[A-Za-z][A-Za-z0-9.]{0,50}$/.test(field)))];
+     const r=await analyzeVideo(file,type,{...context,targetFields},videoController.signal,onUpdate,{frames:frames.filter(f=>f.fileIndex===files.indexOf(file)&&f.canvas.width>0),budgetMs});
+     data=fuseExtraction(data,type==='match'?sanitizeProviderMatch(r.data,context):r.data);attempts.push('twelvelabs');
+    }catch(e){if(!videoController.signal.aborted)errors.push('TwelveLabs: '+e.message);break;}
+   }
+  })();
+ };
  if(providers.has('twelvelabs')&&!providers.has('groq')&&!providers.has('ocrspace')&&!providers.has('google'))startVideo();
- const worker=async()=>{while(next<frames.length&&!expired()){
+ const worker=async(additional=false)=>{while(next<frames.length&&!expired()){
   const index=next;next+=batchSize;const batch=frames.slice(index,index+batchSize);
   onUpdate('Lendo '+done+'/'+frames.length+' telas · provedores disponíveis');
   try{
    if(options.vision&&[...providers].filter(p=>p!=='twelvelabs').every(p=>disabled.has(p))){startVideo();errors.push('Leitura por imagem indisponível: confira os avisos das APIs.');next=frames.length;break;}
    if(options.vision&&providers.size){
     const images=batch.map(f=>visualImage(f.canvas));
-    const r=await apiRequest('analyze',{type,images,useVisual:visualSlots.has(Math.floor(index/batchSize)),forceOCR:true,preferredProvider:disabled.has('google')?'groq':'google',ocrImages:batchOcrImages(batch,type),focusImages:batch.slice(0,2).map((f,j)=>focusImage(f.canvas,type,index+j)).filter(Boolean),context,disabled:[...disabled],models:{groqVision:options.visionModel,groqText:options.model}},options.signal,35000);
+    const r=await apiRequest('analyze',{type,images,useVisual:!additional&&visualSlots.has(Math.floor(index/batchSize)),useText:!additional,forceOCR:true,preferredProvider:disabled.has('google')?'groq':'google',ocrImages:batchOcrImages(batch,type),focusImages:additional?[]:batch.slice(0,2).map((f,j)=>focusImage(f.canvas,type,index+j)).filter(Boolean),context,disabled:[...disabled],models:{groqVision:options.visionModel,groqText:options.model}},options.signal,Math.max(1000,Math.min(35000,limit-(Date.now()-started))));
     data=fuseExtraction(data,type==='match'?sanitizeProviderMatch(r.data,context):r.data);attempts.push(...r.attempts||[]);
     for(const proof of r.teamEvidence||[])if(proof.verified===true&&typeof proof.team==='string'&&proof.team.trim()&&proof.team!=='NI')readingTeams.push(proof.team.trim());
     if(type==='squad')for(const evidence of r.squadEvidence||[]){const frame=batch[evidence.frameIndex];if(frame)rosterEvidence.push(...(evidence.players||[]).map(row=>({...row,width:evidence.width,height:evidence.height,frameId:frame.name+':'+frame.time})));}
 
     const local=applyScreenEvidence(data,r,batch,type);data=local.data;attempts.push(...local.used);
-    if(!coverage(type,data).complete)startVideo();
-    for(const f of r.failures||[]){errors.push(f.provider+': '+(f.status===429?'Limite de cota atingido. Novas chamadas foram pausadas; aguarde a renovação do limite do provedor.':f.status===503?'Serviço sobrecarregado. A leitura continua com os outros serviços.':f.message||f.error||'indisponível'));if(f.provider==='groq'&&(['NO_SUPPORTED_MODEL','GROQ_INVALID_JSON','GROQ_INPUT_SPLIT','GROQ_OUTPUT_SPLIT','GROQ_INPUT_BUDGET'].includes(f.code)||f.status===404||f.status===413||(f.status===400&&/json/i.test(f.error||''))))disabled.add(f.stage==='text'?'groq-text':'groq-visual');else if([401,403,404,429,503].includes(f.status)||f.code==='PROVIDER_BUSY'||f.code==='PROVIDER_COOLDOWN'||f.code==='PROVIDER_TIMEOUT')disabled.add(f.provider);}
+    for(const f of r.failures||[]){errors.push(f.provider+': '+(f.status===429?'Limite de cota atingido. Novas chamadas foram pausadas; aguarde a renovação do limite do provedor.':f.status===503?'Serviço sobrecarregado. A leitura continua com os outros serviços.':f.message||f.error||'indisponível'));disableFailedProvider(disabled,f);}
+    if(videoJob&&!videoRequired(type,data))stopVideo();else if(!additional&&!visualAvailable())startVideo();
    }else if(!options.vision){
     for(const frame of batch){if(expired())break;onUpdate('OCR local: '+frame.name);const r=await localOCR(frame.canvas,{signal:options.signal});const raw=type==='match'?mergeMatchTexts([r.text]):type==='squad'?{players:parseSquadText(r.text)}:{calendar:parseCalendarText(r.text)};data=fuseExtraction(data,normalizeExtraction(raw,type,'OCR local'));attempts.push('OCR local');}
    }else errors.push('Nenhuma chave configurada.');
   }catch(e){errors.push(e.message);next=frames.length;}done+=batch.length;
+  if(additional)for(const frame of batch){frame.canvas.width=0;frame.canvas.height=0;}
  }};
  // At most three visual batches; a failed provider can use one bounded fallback
  // on the same screens so the first club headers are not lost.
  await worker();
- if(!coverage(type,data).complete)startVideo();
+ // One targeted OCR pass covers relevant pauses omitted by the initial sample.
+ // It uses neither another visual-model batch nor the slow local OCR worker.
+ if(options.vision&&providers.has('ocrspace')&&!disabled.has('ocrspace')&&!expired()&&limit-(Date.now()-started)>12000){
+  const missing=coverage(type,data).missing,extras=[];
+  for(const reserve of reserves){
+   if(!missing.length||extras.length>=4)break;
+   const probes=selectCompletionFrames(reserve.probes,{type,missing,limit:4-extras.length,excludeTimes:frames.filter(f=>f.fileIndex===reserve.fileIndex).map(f=>f.time)});
+   if(!probes.length)continue;onUpdate('Completando campos pendentes nas telas originais…');
+   try{const decoded=await extractAdditionalFrames(reserve.file,{probes,signal:options.signal,maxFrames:4-extras.length});extras.push(...decoded.map(frame=>({...frame,name:reserve.file.name,fileIndex:reserve.fileIndex})));reserve.probes=reserve.probes.filter(probe=>!decoded.some(frame=>Math.abs(Number(probe.time)-Number(frame.time))<.04));}catch(e){errors.push(e.message);}
+  }
+  if(extras.length){next=frames.length;frames.push(...extras);previews.push(...extras.map(f=>({url:f.canvas.toDataURL('image/jpeg',.25),name:f.name,time:f.time})));await worker(true);}
+ }
+ if(videoRequired(type,data))startVideo();else stopVideo();
  if(videoJob)await videoJob;
  if(expired())errors.push('Limite atingido ou cancelado: revise os dados parciais.');
  if(type==='squad'){const checked=refineSquadRoster(data,rosterEvidence);data=checked.data;data.warnings.push(...checked.warnings);}
  const quality=coverage(type,data);
+ if(quality.missing.length&&reserves.some(reserve=>reserve.probes.length))errors.push('Há pausas adicionais no vídeo. Use Completar leitura para os campos ainda pendentes.');
  if(!quality.complete)errors.push('Leitura parcial: '+quality.missing.slice(0,12).join('; '));
  const unresolved=data.conflicts.filter(c=>!c.resolved);if(unresolved.length)errors.push(unresolved.length+' divergências entre leituras: confira os valores na mídia.');
  return {...data,rosterEvidence,readingTeams:[...new Set(readingTeams)],files:[...files],type,previews,errors:[...new Set([...errors,...data.warnings])],mode:[...new Set(attempts)].join(' + ')||'Sem resposta',frames:frames.length,coverage:quality,elapsedMs:Date.now()-started,createdAt:new Date().toISOString()};
+ }finally{
+  clearTimeout(deadlineTimer);userSignal?.removeEventListener('abort',cancel);
+  options.signal?.removeEventListener('abort',stopVideo);stopVideo();
+  for(const frame of frames){frame.canvas.width=0;frame.canvas.height=0;}
+ }
 }

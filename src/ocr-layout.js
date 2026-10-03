@@ -70,7 +70,13 @@ export function parseSquadMeta(lines,width,height){
   const strength=words.find(w=>w.y/height>.28&&w.y/height<.39&&w.x/width>.81&&w.x/width<.88&&/^\d{1,3}$/.test(w.text)&&+w.text>0&&+w.text<=400);if(strength&&out.GK)out.strength=+strength.text;
  }
  const total=words.find(w=>/^\d+$/.test(w.text)&&words.some(label=>/^jogadores$/i.test(label.text)&&Math.abs(label.y-w.y)<Math.max(label.h,w.h)&&w.x>label.x&&w.x<label.x+width*.12));if(total&&+total.text>=1&&+total.text<=100)out.expectedPlayers=+total.text;
- out.visibleNames=parseSquadOverlay(lines,width,height).map(r=>r.name);return out;
+ const players=parseSquadOverlay(lines,width,height);
+ out.visibleNames=players.map(r=>r.name);
+ // The stationary club header followed by the first (attack) section proves
+ // the start. Player targets and the number of goalkeepers prove neither end.
+ const firstSection=squadSections(words,width)[0];
+ if(headerVisible&&out.teamVerified===true&&firstSection?.position==='ATA'&&players.some(row=>row._rowY*height>firstSection.y))out.sawTop=true;
+ return out;
 }
 export function parseCalendarOverlay(lines,width,height,layout={}){
  return parseCalendarWords(overlayWords(lines),width,height,layout);

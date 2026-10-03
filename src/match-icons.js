@@ -1,5 +1,6 @@
 import {normalize} from './utils.js';
 import {matchOcrRows,parseMatchOverlay} from './parser-match.js';
+import {recognizeDigitNumber} from './osm-digits.js';
 const yellow=(r,g,b)=>r>160&&g>110&&b<120&&r>b*1.6&&g>b*1.3;
 const white=(r,g,b)=>Math.min(r,g,b)>175&&Math.max(r,g,b)-Math.min(r,g,b)<65;
 const dark=(r,g,b)=>Math.max(r,g,b)<150;
@@ -47,21 +48,74 @@ function thermometer(image,label){
  }
  return null;
 }
+function visiblyEmptyManagerLine(image,area){
+ if(!area||!['squad-header','versus'].includes(area.kind))return null;
+ const box={left:Math.floor(area.left),right:Math.ceil(area.right),top:Math.floor(area.top),bottom:Math.ceil(area.bottom)};
+ if(box.left<0||box.top<0||box.right>image.width||box.bottom>image.height||box.right-box.left<image.width*.12||box.bottom-box.top<image.height*.027)return null;
+ let opaque=0,blue=0,ink=0,total=0;
+ for(let y=box.top;y<box.bottom;y++)for(let x=box.left;x<box.right;x++){
+  const at=(y*image.width+x)*4,r=image.data[at],g=image.data[at+1],b=image.data[at+2];total++;
+  if(image.data[at+3]<240)continue;opaque++;
+  if(b>45&&b>r*1.25&&b>g*.88&&r<155&&g<205)blue++;
+  const whiteText=Math.min(r,g,b)>170&&Math.max(r,g,b)-Math.min(r,g,b)<65;
+  const cyanText=r>45&&g>145&&b>175&&g>r*1.3&&b>g*1.07;
+  if(whiteText||cyanText)ink++;
+ }
+ // Missing OCR is not an empty username. Check the original visible blue
+ // band for any white text/flag pixels, and reject cropped/loading images.
+ if(!total||opaque/total<.995||blue/total<.94||ink>Math.max(6,total*.00008))return null;
+ return {confidence:.97,box};
+}
+function opaqueBox(image,box){
+ let total=0,opaque=0;
+ for(let y=Math.floor(box.top);y<Math.ceil(box.bottom);y++)for(let x=Math.floor(box.left);x<Math.ceil(box.right);x++){total++;if(image.data[(y*image.width+x)*4+3]>=240)opaque++;}
+ return total&&opaque/total>.995;
+}
 export function detectMatchPixels(image,evidence={}){
  const empty={match:{},meta:{}};
  if(!image?.data||!image.width||!image.height||image.width/image.height<1.8||image.width/image.height>2.6||evidence.region&&evidence.region!=='full')return empty;
  const width=Number(evidence.width||image.width),height=Number(evidence.height||image.height),ocr=evidence.ocr||{},context=evidence.context||{};
  const parsed=parseMatchOverlay(ocr,width,height,context),match={};for(const [field,value] of Object.entries(parsed))if(!field.startsWith('_')&&value!==null&&value!=='NI'&&value!=='')match[field]=value;
- const meta={_ocrFields:Object.keys(match),_headerFields:(parsed._headerFields||[]).filter(field=>Object.hasOwn(match,field))},sx=image.width/width,sy=image.height/height;
+ const meta={_ocrFields:Object.keys(match),_headerFields:(parsed._headerFields||[]).filter(field=>Object.hasOwn(match,field)),matchEvidence:parsed._evidence||{}},sx=image.width/width,sy=image.height/height;
+ for(const field of ['myStrength','rivalStrength']){
+  const proof=parsed._evidence?.[field]?.kind==='strength-badge'?parsed._evidence[field]:parsed._strengthAreas?.[field];if(!proof?.club||!proof.box)continue;
+  const raw=proof.box,areaOnly=proof.kind==='strength-badge-area',padX=areaOnly?0:Math.max(2,(raw.right-raw.left)*sx*.14),padY=areaOnly?0:Math.max(2,(raw.bottom-raw.top)*sy*.15);
+  const box={left:Math.max(0,raw.left*sx-padX),right:Math.min(image.width,raw.right*sx+padX),top:Math.max(0,raw.top*sy-padY),bottom:Math.min(image.height,raw.bottom*sy+padY)};
+  if(!opaqueBox(image,box))continue;
+  const digits=recognizeDigitNumber(image,box,'light');
+  const agreesWithOcr=digits&&digits.value===match[field];
+  if(digits&&(areaOnly||agreesWithOcr||digits.confidence>=.88)&&digits.value>0&&digits.value<=400){
+   match[field]=digits.value;meta.iconEvidence=[...(meta.iconEvidence||[]),{kind:'strength-numerals',field,club:proof.club,value:digits.value,confidence:digits.confidence,box}];
+  }else{
+   if(match[field]!=null)meta.pendingMatchFacts=[...(meta.pendingMatchFacts||[]),{field,value:match[field],reason:'Dígitos do círculo de força não confirmados na imagem original.',source:'OCR do círculo da equipa'}];
+   delete match[field];meta._headerFields=meta._headerFields.filter(key=>key!==field);meta._ocrFields=meta._ocrFields.filter(key=>key!==field);
+  }
+ }
+ if(parsed._nicknameArea&&!match.rivalNickname){
+  const raw=parsed._nicknameArea,area={...raw,left:raw.left*sx,right:raw.right*sx,top:raw.top*sy,bottom:raw.bottom*sy};
+  const emptyName=visiblyEmptyManagerLine(image,area);
+  if(emptyName){match.human=false;meta.iconEvidence=[...(meta.iconEvidence||[]),{kind:'cpu-empty-manager-line',club:area.club,...emptyName}];}
+ }
  const rows=matchOcrRows(ocr).map(row=>({...row,left:row.left*sx,right:row.right*sx,top:row.top*sy,bottom:row.bottom*sy}));
- const label=rows.find(row=>/analista de dados/.test(normalize(row.text))&&row.left>image.width*.65&&row.right<image.width*.83&&row.top>image.height*.20&&row.bottom<image.height*.37);
+ let label=rows.find(row=>/analista de dados/.test(normalize(row.text))&&row.left>image.width*.65&&row.right<image.width*.83&&row.top>image.height*.20&&row.bottom<image.height*.37);
+ // The rival scout lock has a fixed panel location in this identified header.
+ // Its actual three-part glyph can remain visible when OCR misses its label.
+ if(!label&&parsed._rivalHeader)label={left:image.width*.694,right:image.width*.81,top:image.height*.306,bottom:image.height*.335};
  if(label&&match.rivalName&&(!context.myTeam||normalize(match.rivalName)!==normalize(context.myTeam))){
-  const lock=padlock(image,label);if(lock){match.secretTraining='Sim';meta.rivalReportLocked=true;meta.iconEvidence=[{kind:'padlock',...lock}];}
+  const lock=padlock(image,label);if(lock){match.secretTraining='Sim';meta.rivalReportLocked=true;meta.iconEvidence=[...(meta.iconEvidence||[]),{kind:'padlock',...lock}];}
  }
  // OCR sometimes groups the label and neighbouring text into one row. Locate
  // the label word itself; the colour is still established by the thermometer.
  const wordLabels=rows.flatMap(row=>(row.words||[]).map(word=>({text:String(word.WordText||''),left:Number(word.Left)*sx,right:(Number(word.Left)+Number(word.Width))*sx,top:Number(word.Top)*sy,bottom:(Number(word.Top)+Number(word.Height))*sy})));
- const referee=wordLabels.find(word=>/^arbitro\s*[:.;]?$/i.test(normalize(word.text))&&word.left>image.width*.35&&word.right<image.width*.72&&word.top>image.height*.30&&word.bottom<image.height*.68);
+ let referee=wordLabels.find(word=>/^arbitro\s*[:.;]?$/i.test(normalize(word.text))&&word.left>image.width*.35&&word.right<image.width*.72&&word.top>image.height*.30&&word.bottom<image.height*.68);
+ if(!referee&&parsed._versus&&match.myName&&match.rivalName){
+  // An OCR failure of the label is independent of the actual icon. This
+  // fallback is restricted to the central referee avatar on a grounded VS
+  // screen; the detector still requires the thin stem and round bulb.
+  const avatar={left:image.width*.467,right:image.width*.494,top:image.height*.421,bottom:image.height*.505};
+  const skin=(r,g,b)=>r>140&&g>95&&b<160&&r>g*1.12&&g>b*1.15;
+  if(fraction(image,avatar,skin)>.08)referee={left:image.width*.507,right:image.width*.535,top:image.height*.462,bottom:image.height*.493};
+ }
  if(referee){const found=thermometer(image,referee);if(found){match.referee=found.color;meta.iconEvidence=[...(meta.iconEvidence||[]),{kind:'referee-thermometer',confidence:found.confidence,box:found.box}];}}
  return {match,meta};
 }

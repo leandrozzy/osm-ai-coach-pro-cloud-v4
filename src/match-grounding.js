@@ -10,8 +10,9 @@ const rivalFields=['rivalName','rivalNickname','human','rivalStrength','rivalSqu
 // or bind another club's header to the selected club. OCR handles those facts.
 export function sanitizeProviderMatch(initial,context={}){
  if(!initial?.match)return initial;
- const out={...initial,match:{...initial.match},_matchFieldSources:{...initial._matchFieldSources},meta:{...initial.meta},warnings:[...(initial.warnings||[])]};
+ const out={...initial,match:{...initial.match},_matchFieldSources:{...initial._matchFieldSources},meta:{...initial.meta,pendingMatchFacts:[...(initial.meta?.pendingMatchFacts||[])]},warnings:[...(initial.warnings||[])]};
  const drop=field=>{if((out._matchFieldSources[field]?.rank||0)>=4)return;delete out.match[field];delete out._matchFieldSources[field];};
+ const pending=(field,reason)=>{const value=out.match[field];if(!known(value)||(out._matchFieldSources[field]?.rank||0)>=4)return;out.meta.pendingMatchFacts.push({field,value,reason,source:out._matchFieldSources[field]?.source||'Leitura da API'});drop(field);};
  const own=known(context.myTeam)?identity(context.myTeam):'',username=identity(context.username||'leandrozzy');
  if(known(out.match.rivalNickname)&&!isRivalNickname(out.match.rivalNickname,context)){
   const ownNickname=identity(out.match.rivalNickname)===username;
@@ -37,11 +38,20 @@ export function sanitizeProviderMatch(initial,context={}){
   if(!known(out.match[field])||(out._matchFieldSources[field]?.rank||0)>=2)continue;
   const club=out.match[clubField];
   if(!known(club)||identity(club)===username||!/[\p{L}]/u.test(String(club))){
-   drop(field);out.warnings.push('Força sem clube identificado na tela: mantida NI.');
+   pending(field,'Clube e círculo de força aguardam identificação na tela.');
+  }else{
+   // Naming the club does not prove that a model read its strength badge.
+   // Nearby ratings, counters and other screens have unrelated numbers.
+   pending(field,'Valor sugerido pela IA sem leitura comprovada do círculo de força.');
   }
+ }
+ if(known(out.match.human)&&(out._matchFieldSources.human?.rank||0)<2){
+  pending('human','Humano/CPU precisa de indicação explícita na tela; nickname ausente não comprova CPU.');
  }
  let countRemoved=false;
  for(const field of ['myPlayers','rivalPlayers'])if(known(out.match[field])&&(out._matchFieldSources[field]?.rank||0)<2){drop(field);countRemoved=true;}
  if(countRemoved)out.warnings.push('Quantidade de jogadores sem contagem comprovada: mantida NI.');
+ const pendingByValue=new Map(out.meta.pendingMatchFacts.filter(fact=>fact&&known(fact.value)).map(fact=>[fact.field+'|'+String(fact.value),fact]));
+ out.meta.pendingMatchFacts=[...pendingByValue.values()].slice(-20);
  out.warnings=[...new Set(out.warnings)];return out;
 }

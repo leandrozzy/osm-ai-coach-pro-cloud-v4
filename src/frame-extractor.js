@@ -45,7 +45,30 @@ export async function extractFrames(file,{maxFrames,profile='fast',type='match',
    await seek(video,probe.time,signal);
    const canvas=canvasFor(video,2448);frames.push({...probe,canvas,hash:dhash(canvas)});
   }
+  Object.defineProperty(frames,'omittedFrames',{value:selected.omittedFrames,enumerable:false});
   Object.defineProperty(frames,'selection',{value:selected.selection,enumerable:false});return frames;
+ }catch(error){
+  for(const frame of frames){frame.canvas.width=0;frame.canvas.height=0;}
+  throw error;
+ }finally{
+  URL.revokeObjectURL(objectUrl);video.removeAttribute('src');video.load?.();
+ }
+}
+export async function extractAdditionalFrames(file,{probes=[],signal,maxFrames=4}={}){
+ const requested=probes.filter((probe,index)=>Number.isFinite(Number(probe.time))&&!probes.slice(0,index).some(other=>Math.abs(Number(other.time)-Number(probe.time))<.04)).slice(0,Math.max(1,Math.min(4,Math.floor(Number(maxFrames)||4))));
+ if(!requested.length)return [];
+ const video=document.createElement('video');video.muted=true;video.playsInline=true;video.preload='metadata';
+ const objectUrl=URL.createObjectURL(file),frames=[];
+ try{
+  await waitEvent(video,'loadedmetadata',{timeoutMs:10000,signal,action:()=>{video.src=objectUrl;}});
+  const duration=Number.isFinite(video.duration)&&video.duration>0?video.duration:1;
+  for(const probe of requested){
+   if(signal?.aborted)throw aborted();
+   const time=Math.max(.01,Math.min(Math.max(.01,duration-.03),Number(probe.time)));
+   await seek(video,time,signal);
+   const canvas=canvasFor(video,2448);frames.push({...probe,time,canvas,hash:dhash(canvas)});
+  }
+  return frames;
  }catch(error){
   for(const frame of frames){frame.canvas.width=0;frame.canvas.height=0;}
   throw error;

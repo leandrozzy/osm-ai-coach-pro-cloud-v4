@@ -8,6 +8,7 @@ export function isRivalNickname(value,context={}){
  const text=String(value??'').trim(),n=normalize(text),own=normalize(context.username||'leandrozzy').replace(/^@/,'');
  if(!text||text.length>60||n===normalize(NI)||n.replace(/^@/,'')===own)return false;
  if(!/[\p{L}]/u.test(text)||/^[+\-]?\d+(?:[.,]\d+)?\s*(?:%|m|mm|k|b)?$/i.test(text))return false;
+ if(/^(?:cpu|computador|computer|bot|sem (?:treinador|usuario)|inteligencia artificial)$/.test(n))return false;
  if(/^\d\s*-\s*\d(?:\s*-\s*\d)/.test(text)||/^\d{1,2}:\d{2}(?:\s*h)?$/i.test(text))return false;
  if(/^(?:nota(?: mais alta)?|posi[cg]ao|objetivo|jogadores?|marcador|idade|equipa|formacao|relatorio|analista de dados|treino secreto)\b/.test(n))return false;
  return true;
@@ -74,9 +75,12 @@ export function parseMatchText(text='',context={}){
  const human=normalize(pick(text,['humano/cpu','tipo do rival','rival humano']));if(human==='humano'||human==='sim')out.human=true;else if(human==='cpu'||human==='nao')out.human=false;
  for(const key of ['myPlayers','rivalPlayers']){const count=integer(out[key]);out[key]=count!==null&&count>=1&&count<=100?out[key]:NI;}
  if(!isRivalNickname(out.rivalNickname,context))out.rivalNickname=NI;
- return {...out,...parseRivalReportText(text,context)};
+ const parsed={...out,...parseRivalReportText(text,context)};
+ parsed._evidence={};
+ for(const field of ['myStrength','rivalStrength','human','location','referee'])if(parsed[field]!==undefined&&parsed[field]!==null&&parsed[field]!==NI)parsed._evidence[field]={kind:'explicit-label',value:parsed[field]};
+ return parsed;
 }
-export function mergeMatchTexts(texts=[],context={}){const out={_schemaVersion:3,_sources:{}};for(let i=0;i<texts.length;i++){const obj=parseMatchText(texts[i],context);for(const [k,v] of Object.entries(obj)){if(k.startsWith('_')||v==null||v===NI)continue;out[k]=v;out._sources[k]='OCR tela '+(i+1);}}return out;}
+export function mergeMatchTexts(texts=[],context={}){const out={_schemaVersion:3,_sources:{},_evidence:{}};for(let i=0;i<texts.length;i++){const obj=parseMatchText(texts[i],context);for(const [k,v] of Object.entries(obj)){if(k.startsWith('_')||v==null||v===NI)continue;out[k]=v;out._sources[k]='OCR tela '+(i+1);if(obj._evidence?.[k])out._evidence[k]={...obj._evidence[k],source:out._sources[k]};}}return out;}
 
 export function matchOcrRows(ocr={}){
  const words=(ocr.lines||[]).flatMap(line=>(line.Words||[]).map(word=>({...word,Left:Number(word.Left),Top:Number(word.Top??line.MinTop),Width:Number(word.Width),Height:Number(word.Height??line.MaxHeight)}))).filter(word=>String(word.WordText||'').trim()&&[word.Left,word.Top,word.Width,word.Height].every(Number.isFinite)&&word.Width>0&&word.Height>0);
@@ -102,7 +106,8 @@ export function matchOcrRows(ocr={}){
 export function parseMatchOverlay(ocr={},width,height,context={}){
  const out=mergeMatchTexts([ocr.text||''],context),headerFields=new Set();
  out._headerFields=[];
- const setHeader=(field,value)=>{if(value==null||value===NI||value==='')return;out[field]=value;headerFields.add(field);out._headerFields=[...headerFields];};
+ const setHeader=(field,value,evidence)=>{if(value==null||value===NI||value==='')return;out[field]=value;headerFields.add(field);out._headerFields=[...headerFields];if(evidence)out._evidence[field]={...evidence,value};};
+ const badgeEvidence=(word,club)=>({kind:'strength-badge',club,box:{left:word.x,top:word.y,right:word.x+word.w,bottom:word.y+word.h}});
  if(!width||!height||width/height<1.8||width/height>2.6)return out;
  const rows=matchOcrRows(ocr),words=rows.flatMap(row=>row.words.map(word=>({text:String(word.WordText),x:Number(word.Left),y:Number(word.Top??row.top),w:Number(word.Width),h:Number(word.Height??row.bottom-row.top)})));
  const identity=value=>normalize(value).replace(/[^\p{L}\p{N}]/gu,''),ownTeam=context.myTeam&&context.myTeam!==NI?identity(context.myTeam):'',rivalTeam=context.rivalName&&context.rivalName!==NI?identity(context.rivalName):'',username=identity(context.username||'leandrozzy');
@@ -131,10 +136,12 @@ export function parseMatchOverlay(ocr={},width,height,context={}){
    if(team)setHeader(prefix+'Name',team.text);
    if(prefix==='rival'){
     const nickname=nicknameRows.filter(row=>sameSide(row,left)&&(!team||row.top>team.bottom)&&isRivalNickname(row.text,context)).sort((a,b)=>a.top-b.top)[0];
-    if(nickname)setHeader('rivalNickname',nickname.text);
+    if(nickname){setHeader('rivalNickname',nickname.text,{kind:'manager-line',club:team?.text});setHeader('human',true,{kind:'manager-line',club:team?.text});}
+    if(team&&ownUser)out._nicknameArea={kind:'versus',club:team.text,left:left?width*.16:width*.66,right:left?width*.44:width*.94,top:team.bottom+height*.003,bottom:team.bottom+height*.071};
    }
   }
   if(ownLeft!==null)setHeader('location',ownLeft?'Casa':'Fora');
+  if(ownLeft!==null&&clubs.every(Boolean))out._versus=true;
   const strengthCandidates={my:[],rival:[]};
   for(const word of words){
    if(word.y<height*.20||word.y>height*.31)continue;
@@ -146,10 +153,10 @@ export function parseMatchOverlay(ocr={},width,height,context={}){
     // The two strength circles contain large centered digits. A small round,
     // objective or player rating inside the same broad region is not a badge.
     const badge=word.h>=height*.025&&word.h<=height*.075&&word.w>=width*.014&&word.w<=width*.065&&word.w/word.h>=.4&&word.w/word.h<=3;
-    if(!isSplitBonus&&badge)strengthCandidates[prefix].push(+word.text);
+    if(!isSplitBonus&&badge)strengthCandidates[prefix].push(word);
    }
   }
-  for(const prefix of ['my','rival']){const values=[...new Set(strengthCandidates[prefix])];if(values.length===1)setHeader(prefix+'Strength',values[0]);}
+  for(const prefix of ['my','rival']){const candidates=strengthCandidates[prefix],values=[...new Set(candidates.map(word=>+word.text))];if(values.length===1){const word=candidates[0];setHeader(prefix+'Strength',values[0],badgeEvidence(word,out[prefix+'Name']));}}
   return out;
  }
  const validTeam=row=>row.left>width*.025&&row.left<width*.4&&row.top>height*.18&&row.bottom<height*.27&&/[\p{L}]/u.test(row.text)&&!isOwnNickname(row.text)&&!/(?:nota mais|jogador|marcador|idade|posi[cg]ao|objetivo|analista)/.test(normalize(row.text));
@@ -177,9 +184,11 @@ export function parseMatchOverlay(ocr={},width,height,context={}){
  else if(!ownTeam&&ownUser&&teamRow.bottom<ownUser.top&&ownUser.top-teamRow.bottom<height*.08)prefix='my';
  if(!prefix)return out;
  setHeader(prefix+'Name',teamRow.text);
+ if(prefix==='rival'&&header.teamVerified)out._rivalHeader=true;
  if(prefix==='rival'){
   const nickname=rows.filter(row=>row.left<width*.4&&row.top>teamRow.bottom&&row.top-teamRow.bottom<height*.065&&isRivalNickname(row.text,context)).sort((a,b)=>a.top-b.top)[0];
-  if(nickname)setHeader('rivalNickname',nickname.text);
+  if(nickname){setHeader('rivalNickname',nickname.text,{kind:'manager-line',club:teamRow.text});setHeader('human',true,{kind:'manager-line',club:teamRow.text});}
+  if(header.teamVerified&&['GK','DEF','MID','ATT'].filter(field=>header[field]!=null).length>=3)out._nicknameArea={kind:'squad-header',club:teamRow.text,left:teamRow.left,right:width*.42,top:teamRow.bottom+height*.008,bottom:teamRow.bottom+height*.065};
  }
  // The money at the very top is cash. Only the squad-value header is accepted.
  const value=words.find(word=>word.x>width*.91&&word.y>height*.105&&word.y<height*.20&&/^\d+(?:[.,]\d+)?\s*[MKB]$/i.test(word.text));if(value)setHeader(prefix+'SquadValue',value.text);
@@ -193,9 +202,10 @@ export function parseMatchOverlay(ocr={},width,height,context={}){
   for(const [metaKey,field] of [['GK','GK'],['DEF','DEF'],['MID','MID'],['ATT','ATT']])if(header[metaKey]!=null)setHeader(prefix+field,header[metaKey]);
  }
  const force=words.find(word=>normalize(word.text)==='equipa'&&word.x>width*.79&&word.x<width*.92&&word.y>height*.18&&word.y<height*.35);
+ if(header.teamVerified&&(force||['GK','DEF','MID','ATT'].every(field=>header[field]!=null)))out._strengthAreas={[prefix+'Strength']:{kind:'strength-badge-area',club:teamRow.text,box:{left:width*.81,right:width*.88,top:height*.28,bottom:height*.39}}};
  const forceNumbers=words.filter(word=>/^\d{1,3}$/.test(word.text)&&+word.text>0&&+word.text<=400&&word.x>width*.81&&word.x<width*.88&&word.y>height*.28&&word.y<height*.39&&word.h>=height*.032&&word.h<=height*.085&&word.w>=width*.014&&word.w<=width*.065&&word.w/word.h>=.4&&word.w/word.h<=3);
  const centeredForce=forceNumbers.filter(word=>force?Math.abs(word.x+word.w/2-force.x-force.w/2)<width*.019&&word.y>=force.y+force.h+height*.004&&word.y-force.y<height*.10&&word.h>=force.h*1.25:header.teamVerified&&header.GK!=null&&header.DEF!=null&&header.MID!=null&&header.ATT!=null);
- const forceValues=[...new Set(centeredForce.map(word=>+word.text))];if(forceValues.length===1)setHeader(prefix+'Strength',forceValues[0]);
+ const forceValues=[...new Set(centeredForce.map(word=>+word.text))];if(forceValues.length===1)setHeader(prefix+'Strength',forceValues[0],badgeEvidence(centeredForce[0],teamRow.text));
  // Position, objective, round and formation numbers never supply the player count.
  for(const label of words){
   if(!/^jogadores[:.]?$/i.test(normalize(label.text))||label.y<height*.09||label.y>height*.50)continue;

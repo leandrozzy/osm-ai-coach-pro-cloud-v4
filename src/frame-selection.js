@@ -116,12 +116,65 @@ function chooseScenes(scenes,limit,type){
  }
  return chosen.sort((a,b)=>(a.frame.time??0)-(b.frame.time??0));
 }
+function panelDistance(a,b,kind){
+ if(!a||!b||a.length!==b.length)return 1;
+ if(kind==='comparison')return comparisonDetailDistance(a,b);
+ if(kind!=='roster-header')return regionalDistance(a,b);
+ const width=Math.sqrt(a.length*2),height=width/2;
+ if(!Number.isInteger(width)||!Number.isInteger(height))return regionalDistance(a,b);
+ let sum=0,count=0;
+ // Scrolling player rows below an unchanged club header does not add match facts.
+ for(let y=0;y<Math.ceil(height*.38);y++)for(let x=0;x<width;x++){const i=y*width+x;sum+=Math.abs(a[i]-b[i]);count++;}
+ return sum/(Math.max(1,count)*255);
+}
+function essentialExtra(scene,chosen){
+ const kind=scene.frame.layout?.kind;
+ if(scene.frames.length<2||!['comparison','roster-header','report-cover','report-field','report-details'].includes(kind))return false;
+ const existing=chosen.filter(other=>other.frame.layout?.kind===kind);
+ const minimum=kind==='comparison'?.009:kind==='roster-header'?.009:.025;
+ return !existing.length||existing.every(other=>panelDistance(scene.frame.signature,other.frame.signature,kind)>minimum);
+}
 export function selectAnalysisFrames(frames,{type='match',profile='fast',limit,threshold,regionalThreshold}={}){
  const maximum=Math.max(1,Math.min(24,Number(limit)||(profile==='complete'?12:8)));
  const grouped=scenesFor(frames,{type,threshold,regionalThreshold});
- const chosen=chooseScenes(grouped.scenes,maximum,type),result=chosen.map(scene=>scene.frame);
- Object.defineProperty(result,'selection',{value:{candidates:frames.length,scenes:grouped.scenes.length,selected:result.length,omittedScenes:Math.max(0,grouped.scenes.length-result.length),blankSkipped:grouped.blankSkipped,obscuredSkipped:grouped.obscuredSkipped,limited:grouped.scenes.length>result.length},enumerable:false});
+ const chosen=chooseScenes(grouped.scenes,maximum,type);
+ // A fast reading must not silently drop a different, stationary report panel
+ // just because eight other images have already been retained. Expansion is
+ // limited to four useful pauses; transitions stay available as tiny probes.
+ if(type==='match'&&profile==='fast'&&!Number(limit)){
+  const extras=grouped.scenes.filter(scene=>!chosen.includes(scene)&&essentialExtra(scene,chosen)).sort((a,b)=>b.frames.length-a.frames.length||b.frame.sharpness-a.frame.sharpness);
+  for(const scene of extras){if(chosen.length>=12)break;if(essentialExtra(scene,chosen))chosen.push(scene);}
+  chosen.sort((a,b)=>(a.frame.time??0)-(b.frame.time??0));
+ }
+ const result=chosen.map(scene=>scene.frame),omitted=grouped.scenes.filter(scene=>!chosen.includes(scene)).map(scene=>{const {canvas,hash,...probe}=scene.frame;return {...probe,stableFrames:scene.frames.length};});
+ Object.defineProperty(result,'omittedFrames',{value:omitted,enumerable:false});
+ Object.defineProperty(result,'selection',{value:{candidates:frames.length,scenes:grouped.scenes.length,selected:result.length,omittedScenes:omitted.length,blankSkipped:grouped.blankSkipped,obscuredSkipped:grouped.obscuredSkipped,expanded:result.length>maximum,limited:omitted.length>0},enumerable:false});
  return result;
+}
+export function selectCompletionFrames(probes=[],{type='match',missing=[],limit=4,excludeTimes=[]}={}){
+ const words=(Array.isArray(missing)?missing.join(' '):String(missing||'')).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+ const wanted=new Set();
+ if(/bonus|arbitro|referee|casa|fora|\bhome\b/.test(words))wanted.add('comparison');
+ if(/nickname|humano|rivalhuman|forca|strength|valor|value|jogador|player|gol|def|mei|ata|secreto|secret/.test(words))wanted.add('roster-header');
+ if(/estadio|stadium|campo|trainingcamp|secreto|secret/.test(words))wanted.add('report-cover');
+ if(/formacao|formation/.test(words))wanted.add('report-field');
+ if(/marcacao|marking|impedimento|offside|plano|plan|desarme|tackl/.test(words))wanted.add('report-details');
+ const excluded=excludeTimes.map(Number).filter(Number.isFinite),available=probes.filter(probe=>probe.layout?.usable!==false&&!excluded.some(time=>Math.abs(time-Number(probe.time))<.04));
+ const maximum=Math.max(1,Math.min(4,Math.floor(Number(limit)||4))),selected=[];
+ const score=probe=>{
+  const kind=probe.layout?.kind,known=kind&&kind!=='unknown';
+  const desired=type==='match'&&wanted.size?wanted.has(kind):known;
+  const stable=Math.min(1,(probe.stableFrames||1)/4);
+  const spread=selected.length?Math.min(...selected.map(other=>Math.abs(Number(probe.time)-Number(other.time)))):0;
+  return (desired?4:0)+(known?1:0)+stable*.5+Math.min(1,spread/8)*.2+Math.min(1,(probe.sharpness||0)/50)*.1;
+ };
+ while(selected.length<maximum&&available.length){
+  available.sort((a,b)=>score(b)-score(a));const next=available.shift();
+  // Use a different physical panel before another copy of the same pause.
+  if(selected.some(other=>other.layout?.kind===next.layout?.kind&&signatureDistance(other.signature,next.signature)<.012&&regionalDistance(other.signature,next.signature)<.035))continue;
+  selected.push(next);
+ }
+ return selected.sort((a,b)=>Number(a.time)-Number(b.time));
 }
 export function distinctFrames(frames,options={}){return selectAnalysisFrames(frames,{...options,limit:options.limit??10});}
 export function visualBatches(total,maximum=3,{batchSize=2}={}){

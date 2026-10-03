@@ -5,6 +5,14 @@ import {repairWebmDuration} from './webm-duration.js';
 const MAX_VIDEO_BYTES=3000000;
 const abortError=()=>Object.assign(Error('Envio TwelveLabs cancelado.'),{code:'ABORTED'});
 const checkAbort=signal=>{if(signal?.aborted)throw abortError();};
+const deadlineError=()=>Object.assign(Error('TwelveLabs não concluiu dentro do prazo desta leitura; os dados já reconhecidos foram preservados.'),{code:'TWELVE_DEADLINE'});
+function lifecycle(signal,budgetMs){
+ const budget=Number.isFinite(budgetMs)?Math.min(90000,Math.max(1000,budgetMs)):50000,until=Date.now()+budget;
+ return {
+  remaining(){checkAbort(signal);const left=until-Date.now();if(left<=0)throw deadlineError();return left;},
+  request(body,maximum=12000){const left=this.remaining();return apiRequest('twelvelabs',body,signal,Math.max(1,Math.min(maximum,left)));}
+ };
+}
 function pause(ms,signal){
  return new Promise((resolve,reject)=>{
   if(signal?.aborted){reject(abortError());return;}
@@ -78,22 +86,36 @@ export async function compactFrames(frames,signal,onUpdate=()=>{}){
  }
 }
 
-async function analyzeClip(clip,type,context,signal,onUpdate){
- checkAbort(signal);onUpdate('TwelveLabs: analisando vídeo de '+(clip.size/1000000).toFixed(1)+' MB');
- return apiRequest('twelvelabs',{action:'analyze',type,context,videoBase64:await base64(clip,signal)},signal,23000);
+async function analyzeAsset(video,type,context,job,onUpdate){
+ // The provider's analysis is synchronous. Give it the time remaining in this
+ // lifecycle, with transport headroom, rather than restarting a 20 s clock at
+ // every upload, preparation and inference stage.
+ const left=job.remaining();if(left<2000)throw deadlineError();
+ const budgetMs=Math.min(45000,Math.floor(left-1500));
+ onUpdate('TwelveLabs: analisando vídeo · leitura por imagem continua');
+ return job.request({action:'analyze',type,context,...video,budgetMs},budgetMs+1500);
 }
 
-export async function analyzeVideo(file,type,context,signal,onUpdate=()=>{},{frames=[]}={}){
- checkAbort(signal);
- if(file.size<=MAX_VIDEO_BYTES)return analyzeClip(file,type,context,signal,onUpdate);
+async function analyzeClip(clip,type,context,signal,onUpdate,job){
+ checkAbort(signal);onUpdate('TwelveLabs: enviando vídeo de '+(clip.size/1000000).toFixed(1)+' MB');
+ const videoBase64=await base64(clip,signal);job.remaining();
+ return analyzeAsset({videoBase64},type,context,job,onUpdate);
+}
+
+export async function analyzeVideo(file,type,context,signal,onUpdate=()=>{},{frames=[],budgetMs=50000,assetId}={}){
+ checkAbort(signal);const job=lifecycle(signal,budgetMs);
+ if(assetId){if(!/^[A-Za-z0-9_-]{8,100}$/.test(assetId))throw Error('Asset TwelveLabs inválido.');return analyzeAsset({assetId},type,context,job,onUpdate);}
+ if(file.size<=MAX_VIDEO_BYTES)return analyzeClip(file,type,context,signal,onUpdate,job);
  // Large S3 parts cannot pass through Vercel. Selected screens fit in a compact
  // video and use the same-origin API, avoiding browser S3 CORS and hidden ETags.
  if(frames.length){
+  if(job.remaining()<Math.max(8,frames.length)*500+2500)throw deadlineError();
   const clip=await compactFrames(frames,signal,onUpdate);
-  return {...await analyzeClip(clip,type,context,signal,onUpdate),transport:'sampled-video',sampledFrames:frames.length};
+  job.remaining();
+  return {...await analyzeClip(clip,type,context,signal,onUpdate,job),transport:'sampled-video',sampledFrames:frames.length};
  }
  onUpdate('TwelveLabs: preparando upload original');
- const u=await apiRequest('twelvelabs',{action:'create',filename:file.name,size:file.size},signal,12000);
+ const u=await job.request({action:'create',filename:file.name,size:file.size});
  if(!u.upload_id||!u.asset_id||!u.chunk_size||!u.total_chunks)throw Error('Upload TwelveLabs incompleto.');
  const chunks=[];
  for(let index=1;index<=u.total_chunks;index++){
@@ -102,16 +124,18 @@ export async function analyzeVideo(file,type,context,signal,onUpdate=()=>{},{fra
   onUpdate('TwelveLabs: enviando bloco '+index+'/'+u.total_chunks);
   // The server obtains this exact part URL from TwelveLabs using this key. The
   // browser never PUTs to S3, and no caller-supplied URL is fetched by the server.
-  const result=await apiRequest('twelvelabs',{action:'chunk',uploadId:u.upload_id,index,chunkBase64:await base64(blob,signal)},signal,25000);
+  const chunkBase64=await base64(blob,signal);
+  const result=await job.request({action:'chunk',uploadId:u.upload_id,index,chunkBase64},25000);
   if(!result.chunk)throw Error('Confirmação do bloco TwelveLabs ausente.');chunks.push(result.chunk);
  }
- await apiRequest('twelvelabs',{action:'report',uploadId:u.upload_id,chunks},signal,12000);
- const until=Date.now()+20000;
+ await job.request({action:'report',uploadId:u.upload_id,chunks});
+ const until=Date.now()+Math.min(20000,Math.max(0,job.remaining()-2500));
  while(Date.now()<until){
-  checkAbort(signal);const asset=await apiRequest('twelvelabs',{action:'status',assetId:u.asset_id},signal,9000);
-  if(asset.status==='ready')return apiRequest('twelvelabs',{action:'analyze',type,context,assetId:u.asset_id},signal,23000);
+  const asset=await job.request({action:'status',assetId:u.asset_id},9000);
+  if(asset.status==='ready')return analyzeAsset({assetId:u.asset_id},type,context,job,onUpdate);
   if(asset.status==='failed')throw Error('Vídeo não processado pelo TwelveLabs.');
-  onUpdate('TwelveLabs: aguardando preparação do vídeo');await pause(1000,signal);
+  onUpdate('TwelveLabs: aguardando preparação do vídeo');await pause(Math.min(1000,job.remaining()),signal);
  }
- throw Error('TwelveLabs ainda processando; dados parciais preservados.');
+ const pending=Object.assign(Error('TwelveLabs ainda está preparando o vídeo; dados parciais preservados.'),{code:'TWELVE_PROCESSING',resume:{assetId:u.asset_id}});
+ throw pending;
 }
