@@ -3,6 +3,7 @@ import {groqRead,ocrRead,googleRead} from '../lib/providers.js';
 import {blankExtraction,normalizeExtraction,fuseExtraction,coverage} from '../src/extraction.js';
 import {overlayExtraction,structuredOcr,parseCalendarOverlay,parseSquadOverlay} from '../src/ocr-layout.js';
 import {mergeMatchTexts,parseMatchOverlay} from '../src/parser-match.js';
+import {mapOcrRegion,parseReportControls} from '../src/report-controls.js';
 import {known} from '../src/domain.js';
 import {sanitizeProviderMatch} from '../src/match-grounding.js';
 import {cachedCapability,probeModels} from '../lib/model-catalog.js';
@@ -81,7 +82,20 @@ export default async function handler(req,res){
  if(type==='squad')squadEvidence.push({frameIndex,players:parseSquadOverlay(r.value.lines,image.width,image.height),width:image.width,height:image.height});
  if(type==='match'||type==='squad')matchEvidence.push({frameIndex,ocr:{text:r.value.text,lines:r.value.lines},width:image.width,height:image.height,region:'full',context});
  }}else failures.push(errorInfo('ocrspace',r.reason));});
- if(type==='match'&&ocrResults.length)read=fuseExtraction(read,normalizeExtraction(mergeMatchTexts(ocrResults.map(r=>r.text),{myTeam:context.myTeam,rivalName:context.rivalName}),'match','OCR.space explícito',{sourceKind:'ocr-explicit',fields:['rivalFormation','rivalPlan','rivalMarking','rivalOffside','rivalTackling','stadium','trainingCamp','myTrainingCamp']}));
+ if(type==='match'&&ocrResults.length){
+  // The report explanation and its tactical values are in separate panels.
+  // Join only crops of the same frame so the literal report identifies the
+  // club owning the labels on the right, without mixing another squad screen.
+  const groups=new Map();
+  for(const result of ocrResults){const image=ocrImages[result.index],frame=Number.isInteger(image.frameIndex)?image.frameIndex:result.index;if(!groups.has(frame))groups.set(frame,[]);groups.get(frame).push({result,image});}
+  const combined=[...groups.values()].map(group=>{
+   const reference=group.find(item=>item.image.crop)?.image.crop,width=reference?.sourceWidth||group[0].image.width,height=reference?.sourceHeight||group[0].image.height;
+   const regions=group.map(({result,image})=>mapOcrRegion(result,image.region==='full'?{...image,crop:{left:0,top:0,width,height,sourceWidth:width,sourceHeight:height}}:image)).filter(region=>region&&region.width===width&&region.height===height);
+   return {text:group.map(item=>item.result.text).join('\n'),lines:regions.flatMap(region=>region.lines),width,height};
+  });
+  read=fuseExtraction(read,normalizeExtraction(mergeMatchTexts(combined.map(ocr=>ocr.text),context),'match','OCR.space explícito',{sourceKind:'ocr-explicit',fields:['rivalFormation','rivalPlan','rivalMarking','rivalOffside','rivalTackling','stadium','trainingCamp','myTrainingCamp']}));
+  for(const ocr of combined){const controls=parseReportControls(ocr,ocr.width,ocr.height,context),fields=Object.keys(controls);if(fields.length)read=fuseExtraction(read,normalizeExtraction({match:controls},'match','Controles associados ao relatório',{sourceKind:'ocr-explicit',fields}));}
+ }
  return read;
  };
  if(body.forceOCR===true){const results=await Promise.allSettled([visual(),readOCR()]);for(const result of results)if(result.status==='fulfilled'&&result.value)output=fuseExtraction(output,result.value);}
