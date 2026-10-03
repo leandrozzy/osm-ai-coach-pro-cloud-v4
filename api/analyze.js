@@ -2,7 +2,7 @@ import {allowed,requestBody,keyFor,errorInfo} from '../lib/http.js';
 import {groqRead,ocrRead,googleRead} from '../lib/providers.js';
 import {blankExtraction,normalizeExtraction,fuseExtraction,coverage} from '../src/extraction.js';
 import {overlayExtraction,structuredOcr,parseCalendarOverlay,parseSquadOverlay} from '../src/ocr-layout.js';
-import {mergeMatchTexts} from '../src/parser-match.js';
+import {mergeMatchTexts,parseMatchOverlay} from '../src/parser-match.js';
 import {known} from '../src/domain.js';
 import {sanitizeProviderMatch} from '../src/match-grounding.js';
 import {cachedCapability,probeModels} from '../lib/model-catalog.js';
@@ -17,7 +17,8 @@ export default async function handler(req,res){
  const body=requestBody(req),type=body.type;
  if(!['match','squad','calendar'].includes(type))return res.status(400).json({error:'Tipo inválido.'});
  const images=body.images;
- if(!Array.isArray(images)||images.length<1||images.length>2||images.some(i=>!i||typeof i.url!=='string'||i.url.length>1400000||!/^data:image\/(?:jpeg|png);base64,/.test(i.url)||!Number.isFinite(i.width)||!Number.isFinite(i.height)))return res.status(400).json({error:'Envie 1 ou 2 telas JPEG/PNG, até 1 MB por tela.'});
+ const maxImages=type==='match'?3:2;
+ if(!Array.isArray(images)||images.length<1||images.length>maxImages||images.some(i=>!i||typeof i.url!=='string'||i.url.length>1400000||!/^data:image\/(?:jpeg|png);base64,/.test(i.url)||!Number.isFinite(i.width)||!Number.isFinite(i.height)))return res.status(400).json({error:'Envie de 1 a '+maxImages+' telas JPEG/PNG, até 1 MB por tela.'});
  const google=body.disabled?.includes('google')?'':keyFor('google',body);
  const focus=Array.isArray(body.focusImages)?body.focusImages:[];
  if(focus.length>2||focus.some(i=>typeof i!=='string'||i.length>500000||!/^data:image\/(?:jpeg|png);base64,/.test(i)))return res.status(400).json({error:'Recortes de leitura inválidos.'});
@@ -27,20 +28,33 @@ export default async function handler(req,res){
  const groq=body.disabled?.includes('groq')?'':keyFor('groq',body),ocr=body.disabled?.includes('ocrspace')?'':keyFor('ocrspace',body);
  const context=body.context||{},failures=[],attempts=[];const started=Date.now();let preferredProvider=null;
  let output=blankExtraction();
- // One visual provider reads selected batches; OCR handles the remaining screens.
- // The client determines visual sampling across the whole clip, not per frame.
+ const checkedRead=(data,stage)=>{
+  const {providerFailures=[],...clean}=data;
+  for(const failure of providerFailures)failures.push({...failure,stage});
+  return type==='match'?sanitizeProviderMatch(clean,context):clean;
+ };
+ // Keep one useful visual response per batch. A failed service can fall back
+ // immediately on these same frames within the original request deadline.
  const readers={};
- if(google)readers.google=()=>googleRead({key:google,type,images:visualImages,context,model:body.models?.google});
- if(groq&&!body.disabled?.includes('groq-visual'))readers.groq=()=>groqRead({key:groq,type,images:visualImages,context,model:body.models?.groqVision});
+ if(google)readers.google=budgetMs=>googleRead({key:google,type,images:visualImages,context,model:body.models?.google,budgetMs});
+ if(groq&&!body.disabled?.includes('groq-visual'))readers.groq=budgetMs=>groqRead({key:groq,type,images:visualImages,context,model:body.models?.groqVision,budgetMs});
  const order=body.preferredProvider==='groq'?['groq','google']:['google','groq'];
  let ocrResults=[];const calendarEvidence=[],squadEvidence=[],matchEvidence=[],teamEvidence=[];
  const visual=async()=>{
   if(body.useVisual===false)return;
-  const provider=order.find(name=>readers[name]);if(!provider)return;
-  if(provider==='groq'&&cachedCapability('groq',groq,{visual:true,preferred:body.models?.groqVision})===false){failures.push({provider:'groq',stage:'vision',status:404,code:'NO_SUPPORTED_MODEL',error:'Groq: nenhum modelo visual compatível disponível nesta chave.'});return;}
-  attempts.push(provider+'-visual');
-  try{const data=await readers[provider]();const checked=type==='match'?sanitizeProviderMatch(data,context):data;if(usefulRead(type,checked))preferredProvider=provider;return checked;}
-  catch(e){failures.push({...errorInfo(provider,e),stage:'vision'});}
+  let partial;
+  for(const provider of order.filter(name=>readers[name])){
+   const remaining=28000-(Date.now()-started);if(remaining<500)break;
+   if(provider==='groq'&&cachedCapability('groq',groq,{visual:true,preferred:body.models?.groqVision})===false){failures.push({provider:'groq',stage:'vision',status:404,code:'NO_SUPPORTED_MODEL',error:'Groq: nenhum modelo visual compatível disponível nesta chave.'});continue;}
+   attempts.push(provider+'-visual');
+   try{
+    const data=await readers[provider](Math.min(23000,remaining)),checked=checkedRead(data,'vision');
+    partial=fuseExtraction(partial,checked);
+    if(usefulRead(type,checked)){preferredProvider=provider;return partial;}
+    failures.push({provider,stage:'vision',status:null,code:'EMPTY_READ',error:'Nenhum dado suficiente reconhecido pelo serviço nesta tela.'});
+   }catch(e){failures.push({...errorInfo(provider,e),stage:'vision'});}
+  }
+  return partial;
  };
  const readOCR=async()=>{
  const remaining=30000-(Date.now()-started);if(!ocr||remaining<500)return;
@@ -49,6 +63,16 @@ export default async function handler(req,res){
  const results=await Promise.allSettled(selected.map(i=>ocrRead({key:ocr,image:i.url,budgetMs:remaining})));let read=blankExtraction();attempts.push('ocrspace');
  results.forEach((r,selectedIndex)=>{const image=selected[selectedIndex],index=image.index;if(r.status==='fulfilled'){ocrResults.push({index,...r.value});read.warnings.push(...r.value.warnings||[]);if(image.region==='full'){
  const literal=overlayExtraction(type,r.value,image.width,image.height);
+ if(type==='match'){
+  // Read the identified club headers before asking a model to interpret OCR.
+  // Native icon colors are still verified on the device using the original frame.
+  const match=parseMatchOverlay(r.value,image.width,image.height,context);
+  const headerFields=(match._headerFields||[]).filter(field=>known(match[field]));
+  const header=Object.fromEntries(headerFields.map(field=>[field,match[field]]));
+  read=fuseExtraction(read,normalizeExtraction({match:header},type,'OCR.space cabeçalhos',{sourceKind:'ocr-layout',fields:headerFields}));
+  const report=Object.fromEntries(Object.entries(match).filter(([field])=>!field.startsWith('_')&&!headerFields.includes(field)));
+  read=fuseExtraction(read,normalizeExtraction({match:report},type,'OCR.space relatório',{sourceKind:'ocr-explicit',fields:['rivalFormation','rivalPlan','rivalMarking','rivalOffside','rivalTackling','stadium','trainingCamp','myTrainingCamp']}));
+ }
  if(literal.meta?.teamVerified===true&&known(literal.meta.team))teamEvidence.push({team:literal.meta.team,frameIndex:Number.isInteger(image.frameIndex)?image.frameIndex:index,verified:true});
  read=fuseExtraction(read,normalizeExtraction(literal,type,type==='squad'?'OCR.space posição da linha':'OCR.space card',{sourceKind:'ocr-layout',fields:type==='squad'?['position','strength','age','value']:['round','date','time','displayedScore']}));
  const frameIndex=Number.isInteger(image.frameIndex)?image.frameIndex:index;
@@ -67,7 +91,7 @@ export default async function handler(req,res){
   // A failed visual model does not imply there is no compatible text model.
   let supported=cachedCapability('groq',groq,{visual:false,preferred:body.models?.groqText});
   if(supported===null)supported=(await probeModels('groq',groq,{textPreferred:body.models?.groqText})).textModel;
-  if(supported&&Date.now()-started<29500){attempts.push('groq-ocr');const text=usefulOcr.map(r=>ocrImages[r.index].region==='report'?r.text:structuredOcr(type,r,ocrImages[r.index].width,ocrImages[r.index].height)).join('\n');const interpreted=await groqRead({key:groq,type,text,context,model:supported,budgetMs:30000-(Date.now()-started)});output=fuseExtraction(output,type==='match'?sanitizeProviderMatch(interpreted,context):interpreted);}
+  if(supported&&Date.now()-started<29500){attempts.push('groq-ocr');const text=usefulOcr.map(r=>ocrImages[r.index].region==='report'?r.text:structuredOcr(type,r,ocrImages[r.index].width,ocrImages[r.index].height)).join('\n');const interpreted=await groqRead({key:groq,type,text,context,model:supported,budgetMs:30000-(Date.now()-started)});output=fuseExtraction(output,checkedRead(interpreted,'text'));}
   else failures.push({provider:'groq',stage:'text',status:404,code:'NO_SUPPORTED_MODEL',error:'Groq: nenhum modelo de texto compatível disponível nesta chave.'});
  }catch(e){failures.push({...errorInfo('groq',e),stage:'text'});}
  }
