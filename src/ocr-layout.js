@@ -2,7 +2,7 @@ import {normalize} from './utils.js';
 import {blankExtraction} from './extraction.js';
 import {parseCalendarWords} from './calendar-ocr.js';
 const mapped={PL:'ATA',AV:'ATA',EE:'ATA',ED:'ATA',MC:'MEI',MCD:'MEI',MCO:'MEI',MD:'MEI',ME:'MEI',DE:'DEF',DD:'DEF',DC:'DEF',GR:'GOL',GK:'GOL'};
-export function overlayWords(lines=[]){return lines.flatMap(line=>(line.Words||[]).map(w=>({text:String(w.WordText||''),x:Number(w.Left),y:Number(w.Top??line.MinTop),w:Number(w.Width),h:Number(w.Height??line.MaxHeight)}))).filter(w=>w.text.trim()&&[w.x,w.y,w.w,w.h].every(Number.isFinite));}
+export function overlayWords(lines=[]){return lines.flatMap(line=>(line.Words||[]).map(w=>({text:String(w.WordText||''),x:Number(w.Left),y:Number(w.Top??line.MinTop),w:Number(w.Width),h:Number(w.Height??line.MaxHeight),...(Number.isFinite(w.Confidence)?{confidence:w.Confidence}:{})}))).filter(w=>w.text.trim()&&[w.x,w.y,w.w,w.h].every(Number.isFinite));}
 function rowWords(words,center,tolerance){return words.filter(w=>Math.abs(w.y+w.h/2-center)<tolerance).sort((a,b)=>a.x-b.x);}
 function sectionPosition(text){
  const value=normalize(text).replace(/\s+/g,'');
@@ -33,7 +33,8 @@ export function parseSquadOverlay(lines,width,height){
   if(rows.some(r=>Math.abs(r._rowY*height-center)<tolerance))continue;
   const row=rowWords(words,center,tolerance);
   const at=(min,max)=>row.filter(w=>w.x/width>=min&&w.x/width<max);
-  const name=at(.035,.49).filter(w=>/[\p{L}]/u.test(w.text)).map(w=>w.text).join(' ').replace(/^\d+\s*/,'').trim();
+  const nameWords=at(.035,.49).filter(w=>/[\p{L}]/u.test(w.text));
+  const name=nameWords.map(w=>w.text).join(' ').replace(/^\d+\s*/,'').trim();
   if(!name||/^(jogador|medios|defesas|avan[cgp]ados|guarda)/.test(normalize(name)))continue;
   const positionToken=at(.605,.65).map(w=>w.text).join('').replace(/[^A-Za-z]/g,'').toUpperCase();
   const section=sections.filter(s=>s.y<center).at(-1),tokenPosition=mapped[positionToken];
@@ -42,8 +43,11 @@ export function parseSquadOverlay(lines,width,height){
   const strength=attributes[position==='GOL'?'DEF':position];
   const age=at(.535,.58).find(w=>/^\d{2}$/.test(w.text)&&+w.text>=15&&+w.text<=60)?.text;
   const value=at(.91,1).map(w=>w.text).join('').replace(/^[^\d]+/,'');
-  rows.push({id:crypto.randomUUID(),name,position,age:age?+age:null,strength:strength??null,value:money.test(value)?value:'NI',training:null,forSale:null,_rowY:center/height,_rowTextHeight:anchor.h/height,_attributes:attributes,_positionSource:tokenPosition?'token':section?'section':null});
+  const nameBox={left:Math.min(...nameWords.map(w=>w.x)),right:Math.max(...nameWords.map(w=>w.x+w.w)),top:Math.min(...nameWords.map(w=>w.y)),bottom:Math.max(...nameWords.map(w=>w.y+w.h))};
+  const nameConfidence=nameWords.every(w=>Number.isFinite(w.confidence))?nameWords.reduce((sum,w)=>sum+w.confidence,0)/nameWords.length:undefined;
+  rows.push({id:crypto.randomUUID(),name,position,age:age?+age:null,strength:strength??null,value:money.test(value)?value:'NI',training:null,forSale:null,_rowY:center/height,_rowTextHeight:anchor.h/height,_attributes:attributes,_positionSource:tokenPosition?'token':section?'section':null,_nameBox:nameBox,...(nameConfidence!==undefined?{_rowNameConfidence:nameConfidence}:{})});
  }
+ for(let i=0;i<rows.length;i++)rows[i]._rowNeighbours={before:i?{name:rows[i-1].name,rowY:rows[i-1]._rowY}:null,after:i+1<rows.length?{name:rows[i+1].name,rowY:rows[i+1]._rowY}:null};
  return rows;
 }
 export function parseSquadMeta(lines,width,height){

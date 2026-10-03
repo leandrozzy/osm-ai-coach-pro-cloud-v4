@@ -6,7 +6,7 @@ const white=(r,g,b)=>Math.min(r,g,b)>175&&Math.max(r,g,b)-Math.min(r,g,b)<65;
 const dark=(r,g,b)=>Math.max(r,g,b)<150;
 function components(image,box,predicate){
  const points=new Set(),left=Math.max(0,Math.floor(box.left)),right=Math.min(image.width,Math.ceil(box.right)),top=Math.max(0,Math.floor(box.top)),bottom=Math.min(image.height,Math.ceil(box.bottom));
- for(let y=top;y<bottom;y++)for(let x=left;x<right;x++){const offset=(y*image.width+x)*4;if(image.data[offset+3]>200&&predicate(image.data[offset],image.data[offset+1],image.data[offset+2]))points.add(y*image.width+x);}
+ for(let y=top;y<bottom;y++)for(let x=left;x<right;x++){const offset=(y*image.width+x)*4;if(image.data[offset+3]>200&&predicate(image.data[offset],image.data[offset+1],image.data[offset+2],x,y))points.add(y*image.width+x);}
  const out=[];
  while(points.size){const seed=points.values().next().value;points.delete(seed);const queue=[seed],pixels=new Set();let x0=image.width,x1=0,y0=image.height,y1=0;
   while(queue.length){const point=queue.pop(),x=point%image.width,y=Math.floor(point/image.width);pixels.add(point);x0=Math.min(x0,x);x1=Math.max(x1,x);y0=Math.min(y0,y);y1=Math.max(y1,y);
@@ -52,18 +52,27 @@ function visiblyEmptyManagerLine(image,area){
  if(!area||!['squad-header','versus'].includes(area.kind))return null;
  const box={left:Math.floor(area.left),right:Math.ceil(area.right),top:Math.floor(area.top),bottom:Math.ceil(area.bottom)};
  if(box.left<0||box.top<0||box.right>image.width||box.bottom>image.height||box.right-box.left<image.width*.12||box.bottom-box.top<image.height*.027)return null;
- let opaque=0,blue=0,ink=0,total=0;
+ let opaque=0,blue=0,total=0;
  for(let y=box.top;y<box.bottom;y++)for(let x=box.left;x<box.right;x++){
   const at=(y*image.width+x)*4,r=image.data[at],g=image.data[at+1],b=image.data[at+2];total++;
   if(image.data[at+3]<240)continue;opaque++;
   if(b>45&&b>r*1.25&&b>g*.88&&r<155&&g<205)blue++;
-  const whiteText=Math.min(r,g,b)>170&&Math.max(r,g,b)-Math.min(r,g,b)<65;
-  const cyanText=r>45&&g>145&&b>175&&g>r*1.3&&b>g*1.07;
-  if(whiteText||cyanText)ink++;
  }
  // Missing OCR is not an empty username. Check the original visible blue
  // band for any white text/flag pixels, and reject cropped/loading images.
- if(!total||opaque/total<.995||blue/total<.94||ink>Math.max(6,total*.00008))return null;
+ if(!total||opaque/total<.995||blue/total<.72)return null;
+ const ink=(r,g,b)=>Math.min(r,g,b)>170&&Math.max(r,g,b)-Math.min(r,g,b)<65||r>45&&g>145&&b>175&&g>r*1.3&&b>g*1.07;
+ const fragments=components(image,box,ink).filter(part=>part.h>=Math.max(5,image.height*.0065)&&part.pixels.size>=Math.max(5,image.width*image.height*.0000025));
+ if(fragments.length)return null;
+ const luminance=(r,g,b)=>(r+g*2+b)/4;
+ const dim=components(image,box,(r,g,b,x,y)=>{
+  const palette=Math.min(r,g,b)>110&&Math.max(r,g,b)-Math.min(r,g,b)<80||g>90&&b>110&&g>r*1.18&&b>r*1.35;
+  if(!palette)return false;
+  const values=[];
+  for(let yy=Math.max(0,y-5);yy<=Math.min(image.height-1,y+5);yy++)for(let xx=Math.max(0,x-5);xx<=Math.min(image.width-1,x+5);xx++){const at=(yy*image.width+xx)*4;values.push(luminance(image.data[at],image.data[at+1],image.data[at+2]));}
+  values.sort((a,b)=>a-b);return luminance(r,g,b)-values[Math.floor(values.length/2)]>=24;
+ }).filter(part=>part.h>=Math.max(5,image.height*.0065)&&part.pixels.size>=8);
+ if(dim.some(part=>part.h>=image.height*.014&&part.pixels.size>=30)||dim.some((part,i)=>dim.some((other,j)=>i!==j&&Math.abs(part.top+part.h/2-other.top-other.h/2)<image.height*.014)))return null;
  return {confidence:.97,box};
 }
 function opaqueBox(image,box){
@@ -71,30 +80,103 @@ function opaqueBox(image,box){
  for(let y=Math.floor(box.top);y<Math.ceil(box.bottom);y++)for(let x=Math.floor(box.left);x<Math.ceil(box.right);x++){total++;if(image.data[(y*image.width+x)*4+3]>=240)opaque++;}
  return total&&opaque/total>.995;
 }
+function headerCircle(image,parsed){
+ const fields=['myName','rivalName'].filter(field=>parsed._headerFields?.includes(field)&&parsed[field]);
+ if(fields.length!==1||parsed._versus)return null;
+ const cyan=(r,g,b)=>r<160&&g>125&&b>160&&g>r*1.2&&b>r*1.4;
+ const rings=components(image,{left:image.width*.78,right:image.width*.91,top:image.height*.18,bottom:image.height*.44},cyan).filter(part=>part.h>image.height*.13&&part.h<image.height*.26&&part.w/part.h>.82&&part.w/part.h<1.18&&part.pixels.size/(part.w*part.h)>.035&&part.pixels.size/(part.w*part.h)<.42);
+ if(rings.length!==1)return null;
+ const ring=rings[0];return {field:fields[0]==='myName'?'myStrength':'rivalStrength',club:parsed[fields[0]],box:{left:ring.left+ring.w*.23,right:ring.right-ring.w*.23,top:ring.top+ring.h*.33,bottom:ring.bottom-ring.h*.17}};
+}
+function versusCircles(image,parsed){
+ if(!parsed._versus||!parsed.myName||!parsed.rivalName)return [];
+ const cyan=(r,g,b)=>r<160&&g>125&&b>160&&g>r*1.2&&b>r*1.4,found=[];
+ for(const left of [true,false]){
+  const rings=components(image,{left:image.width*(left?.28:.62),right:image.width*(left?.38:.72),top:image.height*.18,bottom:image.height*.33},cyan).filter(part=>part.h>image.height*.065&&part.h<image.height*.145&&part.w/part.h>.82&&part.w/part.h<1.18&&part.pixels.size/(part.w*part.h)>.035&&part.pixels.size/(part.w*part.h)<.42);
+  if(rings.length!==1)continue;
+  const ring=rings[0],own=parsed.location===(left?'Casa':'Fora'),box={left:ring.left+ring.w*.19,right:ring.right-ring.w*.19,top:ring.top+ring.h*.22,bottom:ring.bottom-ring.h*.20};
+  // The bonus tab replaces white strength digits with a green +3% inside the
+  // same circle. That display supplies no strength crop or scalar fallback.
+  if(fraction(image,box,(r,g,b)=>Math.min(r,g,b)>145&&Math.max(r,g,b)-Math.min(r,g,b)<65)<.03)continue;
+  found.push({field:own?'myStrength':'rivalStrength',club:own?parsed.myName:parsed.rivalName,box});
+ }
+ return found;
+}
 export function detectMatchPixels(image,evidence={}){
  const empty={match:{},meta:{}};
- if(!image?.data||!image.width||!image.height||image.width/image.height<1.8||image.width/image.height>2.6||evidence.region&&evidence.region!=='full')return empty;
+ if(!image?.data||!image.width||!image.height||image.data.length!==image.width*image.height*4||image.width/image.height<1.8||image.width/image.height>2.6||evidence.region&&evidence.region!=='full')return empty;
  const width=Number(evidence.width||image.width),height=Number(evidence.height||image.height),ocr=evidence.ocr||{},context=evidence.context||{};
  const parsed=parseMatchOverlay(ocr,width,height,context),match={};for(const [field,value] of Object.entries(parsed))if(!field.startsWith('_')&&value!==null&&value!=='NI'&&value!=='')match[field]=value;
  const meta={_ocrFields:Object.keys(match),_headerFields:(parsed._headerFields||[]).filter(field=>Object.hasOwn(match,field)),matchEvidence:parsed._evidence||{}},sx=image.width/width,sy=image.height/height;
+ if(parsed._versusEvidence){
+  const layout=parsed._versusEvidence,boxes=[...layout.clubs.map(club=>club.box),...(layout.manager?[layout.manager.box]:[])].map(box=>({left:box.left*sx,right:box.right*sx,top:box.top*sy,bottom:box.bottom*sy}));
+  if(boxes.every(box=>opaqueBox(image,box)&&fraction(image,box,white)>.025))meta.matchLayoutEvidence={...layout,originalTextVisible:true};
+ }
+ const circle=headerCircle(image,parsed),circles=[...(circle?[circle]:[]),...versusCircles(image,parsed)];
+ for(const detected of circles){
+  if(!parsed._strengthAreas?.[detected.field])parsed._strengthAreas={...parsed._strengthAreas,[detected.field]:{kind:'strength-badge-area',club:detected.club,box:{left:detected.box.left/sx,right:detected.box.right/sx,top:detected.box.top/sy,bottom:detected.box.bottom/sy}}};
+  if(match[detected.field]!=null)continue;
+  // An isolated crop can read the actual numeral while the complete-page
+  // engine misses Equipa and all sectors. Its word is still literally inside
+  // this detected native circle of the identified club; no label is invented.
+  const words=matchOcrRows(ocr).flatMap(row=>row.words),box=detected.box;
+  const candidates=words.filter(word=>/^[1-9]\d{1,2}$/.test(String(word.WordText).trim())&&+word.WordText<=400&&
+   Number(word.Left)*sx>=box.left-2&&Number(word.Left+word.Width)*sx<=box.right+2&&
+   Number(word.Top)*sy>=box.top-2&&Number(word.Top+word.Height)*sy<=box.bottom+2&&Number(word.Height)*sy>=image.height*.020);
+  const values=[...new Set(candidates.map(word=>+word.WordText))];if(values.length!==1)continue;
+  const word=candidates[0],proof={kind:'strength-badge',club:detected.club,value:values[0],box:{left:word.Left,right:word.Left+word.Width,top:word.Top,bottom:word.Top+word.Height}};
+  match[detected.field]=values[0];parsed._evidence={...parsed._evidence,[detected.field]:proof};meta.matchEvidence=parsed._evidence;
+  if(!meta._headerFields.includes(detected.field))meta._headerFields.push(detected.field);
+  if(!meta._ocrFields.includes(detected.field))meta._ocrFields.push(detected.field);
+ }
  for(const field of ['myStrength','rivalStrength']){
   const proof=parsed._evidence?.[field]?.kind==='strength-badge'?parsed._evidence[field]:parsed._strengthAreas?.[field];if(!proof?.club||!proof.box)continue;
   const raw=proof.box,areaOnly=proof.kind==='strength-badge-area',padX=areaOnly?0:Math.max(2,(raw.right-raw.left)*sx*.14),padY=areaOnly?0:Math.max(2,(raw.bottom-raw.top)*sy*.15);
   const box={left:Math.max(0,raw.left*sx-padX),right:Math.min(image.width,raw.right*sx+padX),top:Math.max(0,raw.top*sy-padY),bottom:Math.min(image.height,raw.bottom*sy+padY)};
   if(!opaqueBox(image,box))continue;
-  const digits=recognizeDigitNumber(image,box,'light');
+  let digits=recognizeDigitNumber(image,box,'light');
+  if(!digits&&!areaOnly&&parsed._strengthAreas?.[field]?.box){
+   const full=parsed._strengthAreas[field].box;
+   digits=recognizeDigitNumber(image,{left:full.left*sx,right:full.right*sx,top:full.top*sy,bottom:full.bottom*sy},'light');
+  }
   const agreesWithOcr=digits&&digits.value===match[field];
   if(digits&&(areaOnly||agreesWithOcr||digits.confidence>=.88)&&digits.value>0&&digits.value<=400){
    match[field]=digits.value;meta.iconEvidence=[...(meta.iconEvidence||[]),{kind:'strength-numerals',field,club:proof.club,value:digits.value,confidence:digits.confidence,box}];
   }else{
-   if(match[field]!=null)meta.pendingMatchFacts=[...(meta.pendingMatchFacts||[]),{field,value:match[field],reason:'Dígitos do círculo de força não confirmados na imagem original.',source:'OCR do círculo da equipa'}];
-   delete match[field];meta._headerFields=meta._headerFields.filter(key=>key!==field);meta._ocrFields=meta._ocrFields.filter(key=>key!==field);
+   // A specialised font matcher being unable to read a glyph does not refute
+   // a literal, club-oriented OCR observation. Ask the bounded crop reader to
+   // corroborate it; only an actually proved conflicting numeral replaces it.
+   meta.localOcrRegions=[...(meta.localOcrRegions||[]),{field,club:proof.club,kind:'strength',box,observedValue:match[field]??null}];
+   meta.digitDiagnostics=[...(meta.digitDiagnostics||[]),{field,reason:digits?'LOW_CONSENSUS':'FONT_OR_CROP_UNRECOGNISED',box}];
+   const full=parsed._strengthAreas?.[field]?.box,check=full?{left:full.left*sx,right:full.right*sx,top:full.top*sy,bottom:full.bottom*sy}:box;
+   if(match[field]!=null&&opaqueBox(image,check)&&fraction(image,check,(r,g,b)=>Math.min(r,g,b)>145&&Math.max(r,g,b)-Math.min(r,g,b)<65)<.003){
+    meta.pendingMatchFacts=[...(meta.pendingMatchFacts||[]),{field,value:match[field],reason:'Nenhum dígito visível na área identificada do círculo de força.',source:'OCR do círculo da equipa'}];
+    delete match[field];meta._headerFields=meta._headerFields.filter(key=>key!==field);meta._ocrFields=meta._ocrFields.filter(key=>key!==field);
+   }
   }
  }
- if(parsed._nicknameArea&&!match.rivalNickname){
+ if(parsed._weakHeaderFields?.includes('human')&&parsed._evidence?.human?.kind==='manager-line'){
+  const proof=parsed._evidence.human,raw=proof.box;
+  if(raw){
+   const box={left:raw.left*sx,right:raw.right*sx,top:raw.top*sy,bottom:raw.bottom*sy};
+   const letters=opaqueBox(image,box)?components(image,box,white).filter(part=>part.h>=image.height*.012&&part.h<image.height*.04&&part.w>=2&&part.w/part.h<1.1):[];
+   // Country flags alone have small stars and horizontal stripes. Several
+   // actual letter-height glyphs on one baseline prove the manager text is
+   // present, even when OCR cannot establish the precise username spelling.
+   if(letters.length>=3&&letters.some(part=>letters.filter(other=>Math.abs(part.bottom-other.bottom)<image.height*.01).length>=3)){
+    match.human=true;if(!meta._headerFields.includes('human'))meta._headerFields.push('human');
+    meta.iconEvidence=[...(meta.iconEvidence||[]),{kind:'human-visible-manager-line',club:proof.club,confidence:.95,box}];
+   }else delete match.human;
+  }
+ }
+ if(parsed._nicknameArea&&(!match.rivalNickname||parsed._weakHeaderFields?.includes('rivalNickname'))){
   const raw=parsed._nicknameArea,area={...raw,left:raw.left*sx,right:raw.right*sx,top:raw.top*sy,bottom:raw.bottom*sy};
   const emptyName=visiblyEmptyManagerLine(image,area);
-  if(emptyName){match.human=false;meta.iconEvidence=[...(meta.iconEvidence||[]),{kind:'cpu-empty-manager-line',club:area.club,...emptyName}];}
+  if(emptyName){
+   match.human=false;
+   if(parsed._weakHeaderFields?.includes('rivalNickname'))delete match.rivalNickname;
+   meta.iconEvidence=[...(meta.iconEvidence||[]),{kind:'cpu-empty-manager-line',club:area.club,...emptyName}];
+  }
  }
  const rows=matchOcrRows(ocr).map(row=>({...row,left:row.left*sx,right:row.right*sx,top:row.top*sy,bottom:row.bottom*sy}));
  let label=rows.find(row=>/analista de dados/.test(normalize(row.text))&&row.left>image.width*.65&&row.right<image.width*.83&&row.top>image.height*.20&&row.bottom<image.height*.37);

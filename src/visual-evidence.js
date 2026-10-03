@@ -68,7 +68,7 @@ export function applyScreenEvidence(initial,response,frames,type){
   const pixelFields=[];
   if(local.meta?.iconEvidence?.some(e=>e.kind==='padlock'))pixelFields.push('secretTraining');
   if(local.meta?.iconEvidence?.some(e=>e.kind==='referee-thermometer'))pixelFields.push('referee');
-  if(local.meta?.iconEvidence?.some(e=>e.kind==='cpu-empty-manager-line'))pixelFields.push('human');
+  if(local.meta?.iconEvidence?.some(e=>['cpu-empty-manager-line','human-visible-manager-line'].includes(e.kind)))pixelFields.push('human');
   for(const proof of local.meta?.iconEvidence||[])if(proof.kind==='strength-numerals'&&['myStrength','rivalStrength'].includes(proof.field)&&known(local.match?.[proof.field]))pixelFields.push(proof.field);
   const headerFields=(local.meta?._headerFields||[]).filter(key=>known(local.match[key])&&!pixelFields.includes(key));
   if(headerFields.length)data=fuseExtraction(data,normalizeExtraction({match:Object.fromEntries(headerFields.map(key=>[key,local.match[key]]))},type,'Cabeçalhos identificados nas telas',{sourceKind:'ocr-layout',fields:headerFields}));

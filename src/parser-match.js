@@ -111,20 +111,67 @@ export function parseMatchOverlay(ocr={},width,height,context={}){
  if(!width||!height||width/height<1.8||width/height>2.6)return out;
  const rows=matchOcrRows(ocr),words=rows.flatMap(row=>row.words.map(word=>({text:String(word.WordText),x:Number(word.Left),y:Number(word.Top??row.top),w:Number(word.Width),h:Number(word.Height??row.bottom-row.top)})));
  const identity=value=>normalize(value).replace(/[^\p{L}\p{N}]/gu,''),ownTeam=context.myTeam&&context.myTeam!==NI?identity(context.myTeam):'',rivalTeam=context.rivalName&&context.rivalName!==NI?identity(context.rivalName):'',username=identity(context.username||'leandrozzy');
+ const caption=(row,nickname=false)=>{
+  let seenName=false;
+  const kept=(row.words||[]).filter(word=>{
+   const letters=/[\p{L}]/u.test(word.WordText);if(letters)seenName=true;
+   return letters||seenName&&nickname&&/^\d+$/.test(word.WordText)||!nickname&&/[\p{N}]/u.test(word.WordText);
+  });
+  const trim=nickname?/^[^\p{L}\p{N}_]+|[^\p{L}\p{N}_]+$/gu:/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu;
+  const text=kept.length?kept.map(word=>String(word.WordText).replace(trim,'')).filter(Boolean).join(' '):String(row.text).replace(trim,'').trim();
+  const confidences=kept.filter(word=>/[\p{L}]/u.test(word.WordText)&&word.Confidence!=null&&Number.isFinite(Number(word.Confidence))).map(word=>Number(word.Confidence));
+  return {text,words:kept,weak:confidences.some(value=>value<50),confidence:confidences.length?Math.min(...confidences):undefined,box:{left:row.left,right:row.right,top:row.top,bottom:row.bottom}};
+ };
+ const setCaption=(field,row,evidence={},nickname=false)=>{
+  const value=caption(row,nickname);setHeader(field,value.text,{...evidence,box:value.box,confidence:value.confidence});
+  if(value.weak){headerFields.delete(field);out._headerFields=[...headerFields];out._weakHeaderFields=[...new Set([...(out._weakHeaderFields||[]),field])];}
+  return value;
+ };
+ const setManager=(row,club)=>{
+  const value=setCaption('rivalNickname',row,{kind:'manager-line',club},true);
+  if(!isRivalNickname(value.text,context)){delete out.rivalNickname;headerFields.delete('rivalNickname');out._headerFields=[...headerFields];return;}
+  setHeader('human',true,{kind:'manager-line',club,box:value.box,confidence:value.confidence});
+  if(value.weak){headerFields.delete('human');out._headerFields=[...headerFields];out._weakHeaderFields=[...new Set([...(out._weakHeaderFields||[]),'human'])];}
+ };
  const isOwnNickname=value=>identity(value)===username;
+ const reportIdentity=parseRivalReportText(ocr.text||'',context);
+ if(reportIdentity.rivalName){
+  const clubRow=rows.find(row=>identity(caption(row).text)===identity(reportIdentity.rivalName)&&row.left>width*.10&&row.right<width*.44&&row.top>height*.18&&row.bottom<height*.32);
+  if(clubRow){
+   const value=setCaption('rivalName',clubRow,{kind:'report-club-caption'});
+   const manager=rows.filter(row=>row.left>width*.10&&row.right<width*.44&&row.top>clubRow.bottom&&row.top-clubRow.bottom<height*.075&&isRivalNickname(caption(row,true).text,context)).sort((a,b)=>a.top-b.top)[0];
+   if(manager)setManager(manager,value.text);
+  }
+ }
  const vs=words.find(word=>normalize(word.text)==='vs'&&word.x>width*.44&&word.x<width*.56&&word.y>height*.20&&word.y<height*.39);
- if(vs){
+ {
   const sameSide=(row,left)=>left?row.left>width*.14&&row.right<width*.44:row.left>width*.66&&row.right<width*.94;
   const nicknameRows=rows.filter(row=>row.top>height*.34&&row.bottom<height*.47&&row.text.length<=60&&(isRivalNickname(row.text,context)||isOwnNickname(row.text)));
-  const ownUser=nicknameRows.find(row=>isOwnNickname(row.text));
+  // Flags beside a manager can be OCR garbage on the same line. The literal
+  // username word retains its own box and must independently match ownership.
+  const ownWord=words.find(word=>word.y>height*.375&&word.y+word.h<height*.47&&isOwnNickname(word.text));
+  const ownUser=ownWord?{text:ownWord.text,left:ownWord.x,right:ownWord.x+ownWord.w,top:ownWord.y,bottom:ownWord.y+ownWord.h}:nicknameRows.find(row=>isOwnNickname(row.text));
   const club=left=>{
    const nickname=nicknameRows.find(row=>sameSide(row,left)&&row.top>height*.375);
    const candidates=rows.filter(row=>sameSide(row,left)&&row.top>height*.30&&row.bottom<height*.405&&/[\p{L}]/u.test(row.text)&&!isOwnNickname(row.text)&&(!nickname||row.bottom<nickname.top));
    const anchor=candidates.sort((a,b)=>b.bottom-a.bottom)[0];if(!anchor)return null;
    const line=candidates.filter(row=>Math.abs(row.top-anchor.top)<Math.max(anchor.bottom-anchor.top,row.bottom-row.top)*.55).sort((a,b)=>a.left-b.left);
-   return {...anchor,text:line.map(row=>row.text).join(' '),left:Math.min(...line.map(row=>row.left)),right:Math.max(...line.map(row=>row.right))};
+   const title=line.flatMap(row=>row.words).filter(word=>/[\p{L}\p{N}]/u.test(word.WordText)).map(word=>word.WordText.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu,'')).join(' ');
+   return {...anchor,text:title,words:line.flatMap(row=>row.words),left:Math.min(...line.map(row=>row.left)),right:Math.max(...line.map(row=>row.right))};
   };
   const clubs=[club(true),club(false)];
+  const ownClubIndex=ownTeam?clubs.findIndex(row=>row&&identity(row.text)===ownTeam):-1;
+  const ownManagerIndex=ownUser?(ownUser.left<width*.5?0:1):-1;
+  const managerClub=clubs[ownManagerIndex];
+  // The dark stylised VS often has no OCR token. Two distinct titles on the
+  // same baseline, with the actual known owner's manager directly below the
+  // correct club, identify this layout independently of that decorative text.
+  const structuralVs=clubs.every(Boolean)&&identity(clubs[0].text)!==identity(clubs[1].text)&&
+   Math.abs(clubs[0].bottom-clubs[1].bottom)<height*.025&&ownClubIndex>=0&&ownClubIndex===ownManagerIndex&&
+   managerClub&&ownUser.top>managerClub.bottom&&ownUser.top-managerClub.bottom<height*.075&&
+   ownUser.left>=managerClub.left-width*.045&&ownUser.right<=managerClub.right+width*.045;
+  if(!vs&&!structuralVs){/* Continue to the independent squad/report header below. */}
+  else{
   // A known club owns its side even when the nickname is missing or contradictory.
   // Username can establish ownership only before this slot has an identified club.
   let ownLeft=null;
@@ -133,15 +180,18 @@ export function parseMatchOverlay(ocr={},width,height,context={}){
   const sidePrefix=left=>ownLeft!==null?(left===ownLeft?'my':'rival'):rivalTeam&&identity(clubs[left?0:1]?.text)===rivalTeam?'rival':null;
   for(const left of [true,false]){
    const prefix=sidePrefix(left),team=clubs[left?0:1];if(!prefix)continue;
-   if(team)setHeader(prefix+'Name',team.text);
+   if(team)setCaption(prefix+'Name',team,{kind:'club-caption'});
    if(prefix==='rival'){
     const nickname=nicknameRows.filter(row=>sameSide(row,left)&&(!team||row.top>team.bottom)&&isRivalNickname(row.text,context)).sort((a,b)=>a.top-b.top)[0];
-    if(nickname){setHeader('rivalNickname',nickname.text,{kind:'manager-line',club:team?.text});setHeader('human',true,{kind:'manager-line',club:team?.text});}
+    if(nickname)setManager(nickname,team?.text);
     if(team&&ownUser)out._nicknameArea={kind:'versus',club:team.text,left:left?width*.16:width*.66,right:left?width*.44:width*.94,top:team.bottom+height*.003,bottom:team.bottom+height*.071};
    }
   }
   if(ownLeft!==null)setHeader('location',ownLeft?'Casa':'Fora');
-  if(ownLeft!==null&&clubs.every(Boolean))out._versus=true;
+  if(ownLeft!==null&&clubs.every(Boolean)){
+   out._versus=true;
+   out._versusEvidence={kind:vs?'literal-versus':'identified-versus-layout',clubs:clubs.map(row=>({name:row.text,box:{left:row.left,right:row.right,top:row.top,bottom:row.bottom}})),manager:ownUser?{name:ownUser.text,box:{left:ownUser.left,right:ownUser.right,top:ownUser.top,bottom:ownUser.bottom}}:null};
+  }
   const strengthCandidates={my:[],rival:[]};
   for(const word of words){
    if(word.y<height*.20||word.y>height*.31)continue;
@@ -158,6 +208,7 @@ export function parseMatchOverlay(ocr={},width,height,context={}){
   }
   for(const prefix of ['my','rival']){const candidates=strengthCandidates[prefix],values=[...new Set(candidates.map(word=>+word.text))];if(values.length===1){const word=candidates[0];setHeader(prefix+'Strength',values[0],badgeEvidence(word,out[prefix+'Name']));}}
   return out;
+  }
  }
  const validTeam=row=>row.left>width*.025&&row.left<width*.4&&row.top>height*.18&&row.bottom<height*.27&&/[\p{L}]/u.test(row.text)&&!isOwnNickname(row.text)&&!/(?:nota mais|jogador|marcador|idade|posi[cg]ao|objetivo|analista)/.test(normalize(row.text));
  const ownUser=rows.find(row=>isOwnNickname(row.text)&&row.left<width*.4&&row.top>height*.16&&row.bottom<height*.32);
@@ -183,11 +234,11 @@ export function parseMatchOverlay(ocr={},width,height,context={}){
  else if(ownTeam&&header.teamVerified&&clubIdentity!==ownTeam)prefix='rival';
  else if(!ownTeam&&ownUser&&teamRow.bottom<ownUser.top&&ownUser.top-teamRow.bottom<height*.08)prefix='my';
  if(!prefix)return out;
- setHeader(prefix+'Name',teamRow.text);
- if(prefix==='rival'&&header.teamVerified)out._rivalHeader=true;
+ setCaption(prefix+'Name',teamRow,{kind:'club-caption'});
+ if(prefix==='rival'&&header.teamVerified&&!out._weakHeaderFields?.includes('rivalName'))out._rivalHeader=true;
  if(prefix==='rival'){
   const nickname=rows.filter(row=>row.left<width*.4&&row.top>teamRow.bottom&&row.top-teamRow.bottom<height*.065&&isRivalNickname(row.text,context)).sort((a,b)=>a.top-b.top)[0];
-  if(nickname){setHeader('rivalNickname',nickname.text,{kind:'manager-line',club:teamRow.text});setHeader('human',true,{kind:'manager-line',club:teamRow.text});}
+  if(nickname)setManager(nickname,teamRow.text);
   if(header.teamVerified&&['GK','DEF','MID','ATT'].filter(field=>header[field]!=null).length>=3)out._nicknameArea={kind:'squad-header',club:teamRow.text,left:teamRow.left,right:width*.42,top:teamRow.bottom+height*.008,bottom:teamRow.bottom+height*.065};
  }
  // The money at the very top is cash. Only the squad-value header is accepted.
