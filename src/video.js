@@ -27,6 +27,14 @@ function visualImage(source){
  if(url.length>650000)throw Error('Tela muito grande para enviar; use um trecho ou imagem menor.');
  return {url,width:canvas.width,height:canvas.height};
 }
+function batchOcrImages(batch,type){
+ const prepared=batch.flatMap((frame,frameIndex)=>prepareOcrImages(frame.canvas,type).map(image=>({...image,frameIndex,kind:frame.layout?.kind||'unknown'})));
+ const full=prepared.filter(image=>image.region==='full');
+ const report=prepared.filter(image=>image.region==='report'&&!['roster-header','roster-list','comparison'].includes(image.kind));
+ const priority=image=>image.kind==='report-details'||image.kind==='report-field'?2:image.kind==='report-cover'?1:0;
+ report.sort((a,b)=>priority(b)-priority(a));
+ return [...full,...report].slice(0,type==='match'?4:2).map(({kind,...image})=>image);
+}
 export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
  if(files.length>24||files.some(f=>f.size>150*1024*1024))throw Error('Máximo 24 arquivos, 150 MB por arquivo.');
  const started=Date.now(),limit=options.profile==='complete'?180000:90000,frames=[],errors=[],attempts=[],rosterEvidence=[],readingTeams=[],disabled=new Set();let data=blankExtraction();
@@ -42,30 +50,32 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
  }
  if(!frames.length)throw Error('Nenhuma tela extraída.');
  const previews=frames.map(f=>({url:f.canvas.toDataURL('image/jpeg',.25),name:f.name,time:f.time}));
- let next=0,done=0,videoJob=null;const visualSlots=visualBatches(frames.length,3);
+ const batchSize=type==='match'?3:2;
+ let next=0,done=0,videoJob=null;const visualSlots=visualBatches(frames.length,3,{batchSize});
  const startVideo=()=>{if(videoJob||!options.vision||!providers.has('twelvelabs'))return;videoJob=(async()=>{for(const file of files.filter(f=>f.type.startsWith('video/'))){if(expired())break;try{const r=await analyzeVideo(file,type,context,options.signal,onUpdate,{frames:frames.filter(f=>f.name===file.name)});data=fuseExtraction(data,type==='match'?sanitizeProviderMatch(r.data,context):r.data);attempts.push('twelvelabs');if(r.transport==='sampled-video')errors.push('TwelveLabs leu um vídeo das '+r.sampledFrames+' telas selecionadas, mantendo a resolução. Confira as telas e os campos pendentes.');}catch(e){errors.push('TwelveLabs: '+e.message);}}})();};
  if(providers.has('twelvelabs')&&!providers.has('groq')&&!providers.has('ocrspace')&&!providers.has('google'))startVideo();
  const worker=async()=>{while(next<frames.length&&!expired()){
-  const index=next;next+=2;const batch=frames.slice(index,index+2);
+  const index=next;next+=batchSize;const batch=frames.slice(index,index+batchSize);
   onUpdate('Lendo '+done+'/'+frames.length+' telas · provedores disponíveis');
   try{
    if(options.vision&&[...providers].filter(p=>p!=='twelvelabs').every(p=>disabled.has(p))){startVideo();errors.push('Leitura por imagem indisponível: confira os avisos das APIs.');next=frames.length;break;}
    if(options.vision&&providers.size){
     const images=batch.map(f=>visualImage(f.canvas));
-    const r=await apiRequest('analyze',{type,images,useVisual:visualSlots.has(Math.floor(index/2)),forceOCR:true,preferredProvider:disabled.has('google')?'groq':'google',ocrImages:batch.flatMap((f,frameIndex)=>prepareOcrImages(f.canvas,type).map(image=>({...image,frameIndex}))).sort((a,b)=>(a.region==='full'?0:1)-(b.region==='full'?0:1)),focusImages:batch.map((f,j)=>focusImage(f.canvas,type,index+j)).filter(Boolean),context,disabled:[...disabled],models:{groqVision:options.visionModel,groqText:options.model}},options.signal,35000);
+    const r=await apiRequest('analyze',{type,images,useVisual:visualSlots.has(Math.floor(index/batchSize)),forceOCR:true,preferredProvider:disabled.has('google')?'groq':'google',ocrImages:batchOcrImages(batch,type),focusImages:batch.slice(0,2).map((f,j)=>focusImage(f.canvas,type,index+j)).filter(Boolean),context,disabled:[...disabled],models:{groqVision:options.visionModel,groqText:options.model}},options.signal,35000);
     data=fuseExtraction(data,type==='match'?sanitizeProviderMatch(r.data,context):r.data);attempts.push(...r.attempts||[]);
     for(const proof of r.teamEvidence||[])if(proof.verified===true&&typeof proof.team==='string'&&proof.team.trim()&&proof.team!=='NI')readingTeams.push(proof.team.trim());
     if(type==='squad')for(const evidence of r.squadEvidence||[]){const frame=batch[evidence.frameIndex];if(frame)rosterEvidence.push(...(evidence.players||[]).map(row=>({...row,width:evidence.width,height:evidence.height,frameId:frame.name+':'+frame.time})));}
 
     const local=applyScreenEvidence(data,r,batch,type);data=local.data;attempts.push(...local.used);
     if(!coverage(type,data).complete)startVideo();
-    for(const f of r.failures||[]){errors.push(f.provider+': '+(f.status===429?'Limite de cota atingido. Novas chamadas foram pausadas; aguarde a renovação do limite do provedor.':f.status===503?'Serviço sobrecarregado. A leitura continua com os outros serviços.':f.message||f.error||'indisponível'));if(f.provider==='groq'&&(f.code==='NO_SUPPORTED_MODEL'||f.status===404))disabled.add(f.stage==='text'?'groq-text':'groq-visual');else if([401,403,404,429,503].includes(f.status)||f.code==='PROVIDER_BUSY'||f.code==='PROVIDER_COOLDOWN'||f.code==='PROVIDER_TIMEOUT')disabled.add(f.provider);}
+    for(const f of r.failures||[]){errors.push(f.provider+': '+(f.status===429?'Limite de cota atingido. Novas chamadas foram pausadas; aguarde a renovação do limite do provedor.':f.status===503?'Serviço sobrecarregado. A leitura continua com os outros serviços.':f.message||f.error||'indisponível'));if(f.provider==='groq'&&(['NO_SUPPORTED_MODEL','GROQ_INVALID_JSON','GROQ_INPUT_SPLIT','GROQ_OUTPUT_SPLIT','GROQ_INPUT_BUDGET'].includes(f.code)||f.status===404||f.status===413||(f.status===400&&/json/i.test(f.error||''))))disabled.add(f.stage==='text'?'groq-text':'groq-visual');else if([401,403,404,429,503].includes(f.status)||f.code==='PROVIDER_BUSY'||f.code==='PROVIDER_COOLDOWN'||f.code==='PROVIDER_TIMEOUT')disabled.add(f.provider);}
    }else if(!options.vision){
     for(const frame of batch){if(expired())break;onUpdate('OCR local: '+frame.name);const r=await localOCR(frame.canvas,{signal:options.signal});const raw=type==='match'?mergeMatchTexts([r.text]):type==='squad'?{players:parseSquadText(r.text)}:{calendar:parseCalendarText(r.text)};data=fuseExtraction(data,normalizeExtraction(raw,type,'OCR local'));attempts.push('OCR local');}
    }else errors.push('Nenhuma chave configurada.');
   }catch(e){errors.push(e.message);next=frames.length;}done+=batch.length;
  }};
- // One batch at a time and at most three visual calls per analysis protect free API quotas.
+ // At most three visual batches; a failed provider can use one bounded fallback
+ // on the same screens so the first club headers are not lost.
  await worker();
  if(!coverage(type,data).complete)startVideo();
  if(videoJob)await videoJob;

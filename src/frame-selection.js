@@ -124,8 +124,10 @@ export function selectAnalysisFrames(frames,{type='match',profile='fast',limit,t
  return result;
 }
 export function distinctFrames(frames,options={}){return selectAnalysisFrames(frames,{...options,limit:options.limit??10});}
-export function visualBatches(total,maximum=3){
- const count=Math.ceil(total/2);if(!count||maximum<1)return new Set();if(count<=maximum)return new Set(Array.from({length:count},(_,i)=>i));
+export function visualBatches(total,maximum=3,{batchSize=2}={}){
+ // A Partida batch can contain three full frames, the Groq visual limit. This
+ // lets all eight selected panels reach visual analysis within three calls.
+ const size=Math.max(1,Math.min(3,Math.floor(Number(batchSize)||2))),count=Math.ceil(total/size);if(!count||maximum<1)return new Set();if(count<=maximum)return new Set(Array.from({length:count},(_,i)=>i));
  if(maximum===1)return new Set([Math.floor((count-1)/2)]);
  return new Set(Array.from({length:maximum},(_,i)=>Math.round(i*(count-1)/(maximum-1))));
 }

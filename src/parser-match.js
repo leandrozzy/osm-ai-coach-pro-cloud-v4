@@ -1,6 +1,17 @@
 import {NI,normalize} from './utils.js';
 import {parseSquadMeta} from './ocr-layout.js';
 const lines=text=>String(text).split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+// Ratings (8.0), money and counts can sit immediately below a club while a
+// screen is scrolling. They are not manager identities, even if OCR calls
+// that row a nickname. Manual review remains able to supply the actual name.
+export function isRivalNickname(value,context={}){
+ const text=String(value??'').trim(),n=normalize(text),own=normalize(context.username||'leandrozzy').replace(/^@/,'');
+ if(!text||text.length>60||n===normalize(NI)||n.replace(/^@/,'')===own)return false;
+ if(!/[\p{L}]/u.test(text)||/^[+\-]?\d+(?:[.,]\d+)?\s*(?:%|m|mm|k|b)?$/i.test(text))return false;
+ if(/^\d\s*-\s*\d(?:\s*-\s*\d)/.test(text)||/^\d{1,2}:\d{2}(?:\s*h)?$/i.test(text))return false;
+ if(/^(?:nota(?: mais alta)?|posi[cg]ao|objetivo|jogadores?|marcador|idade|equipa|formacao|relatorio|analista de dados|treino secreto)\b/.test(n))return false;
+ return true;
+}
 export function parseReferee(text=''){
  for(const line of lines(text)){const m=normalize(line).match(/(?:arbitro|referee|juiz)\s*[:\-]?\s*(verde|azul|amarelo|laranja|vermelho)\b/);if(m)return m[1][0].toUpperCase()+m[1].slice(1);}return NI;
 }
@@ -22,7 +33,7 @@ export function parseRivalReportText(text='',context={}){
   const preceding=lines(text).slice(0,lines(text).findIndex(line=>/pelo que pude ver/i.test(line)));
   const nameIndex=preceding.findIndex(line=>normalize(line)===normalize(club[1]));
   const nickname=nameIndex>=0?preceding[nameIndex+1]:null;
-  if(nickname&&nickname.length<=60&&normalize(nickname)!==normalize(context.username||'leandrozzy')&&!/formacao|marcacao|jogar|estadio|relatorio/i.test(normalize(nickname)))out.rivalNickname=nickname;
+  if(isRivalNickname(nickname,context)&&!/formacao|marcacao|jogar|estadio|relatorio/i.test(normalize(nickname)))out.rivalNickname=nickname;
  }
  const formation=n.match(/\bparece que vao jogar num\s+([345]\s*-\s*[1-5]\s*-\s*[1-5](?:\s*-\s*[1-5])?)(?:\s*([ab]))?\b/);
  if(formation)out.rivalFormation=formation[1].replace(/\s/g,'')+(formation[2]?' '+formation[2].toUpperCase():'');
@@ -62,7 +73,7 @@ export function parseMatchText(text='',context={}){
  out.rivalTackling=pick(text,['desarme rival','entrada rival','entradas rival']);
  const human=normalize(pick(text,['humano/cpu','tipo do rival','rival humano']));if(human==='humano'||human==='sim')out.human=true;else if(human==='cpu'||human==='nao')out.human=false;
  for(const key of ['myPlayers','rivalPlayers']){const count=integer(out[key]);out[key]=count!==null&&count>=1&&count<=100?out[key]:NI;}
- if(normalize(out.rivalNickname)===normalize(context.username||'leandrozzy'))out.rivalNickname=NI;
+ if(!isRivalNickname(out.rivalNickname,context))out.rivalNickname=NI;
  return {...out,...parseRivalReportText(text,context)};
 }
 export function mergeMatchTexts(texts=[],context={}){const out={_schemaVersion:3,_sources:{}};for(let i=0;i<texts.length;i++){const obj=parseMatchText(texts[i],context);for(const [k,v] of Object.entries(obj)){if(k.startsWith('_')||v==null||v===NI)continue;out[k]=v;out._sources[k]='OCR tela '+(i+1);}}return out;}
@@ -99,7 +110,7 @@ export function parseMatchOverlay(ocr={},width,height,context={}){
  const vs=words.find(word=>normalize(word.text)==='vs'&&word.x>width*.44&&word.x<width*.56&&word.y>height*.20&&word.y<height*.39);
  if(vs){
   const sameSide=(row,left)=>left?row.left>width*.14&&row.right<width*.44:row.left>width*.66&&row.right<width*.94;
-  const nicknameRows=rows.filter(row=>row.top>height*.34&&row.bottom<height*.47&&row.text.length<=60);
+  const nicknameRows=rows.filter(row=>row.top>height*.34&&row.bottom<height*.47&&row.text.length<=60&&(isRivalNickname(row.text,context)||isOwnNickname(row.text)));
   const ownUser=nicknameRows.find(row=>isOwnNickname(row.text));
   const club=left=>{
    const nickname=nicknameRows.find(row=>sameSide(row,left)&&row.top>height*.375);
@@ -119,11 +130,12 @@ export function parseMatchOverlay(ocr={},width,height,context={}){
    const prefix=sidePrefix(left),team=clubs[left?0:1];if(!prefix)continue;
    if(team)setHeader(prefix+'Name',team.text);
    if(prefix==='rival'){
-    const nickname=nicknameRows.filter(row=>sameSide(row,left)&&(!team||row.top>team.bottom)&&!isOwnNickname(row.text)).sort((a,b)=>a.top-b.top)[0];
+    const nickname=nicknameRows.filter(row=>sameSide(row,left)&&(!team||row.top>team.bottom)&&isRivalNickname(row.text,context)).sort((a,b)=>a.top-b.top)[0];
     if(nickname)setHeader('rivalNickname',nickname.text);
    }
   }
   if(ownLeft!==null)setHeader('location',ownLeft?'Casa':'Fora');
+  const strengthCandidates={my:[],rival:[]};
   for(const word of words){
    if(word.y<height*.20||word.y>height*.31)continue;
    const left=word.x>width*.28&&word.x<width*.38,right=word.x>width*.62&&word.x<width*.72;if(!left&&!right)continue;
@@ -131,9 +143,13 @@ export function parseMatchOverlay(ocr={},width,height,context={}){
    if(/^\+?\d{1,2}%$/.test(word.text))setHeader(prefix+'Bonus',+word.text.replace(/[^\d]/g,''));
    else if(/^\d{1,3}$/.test(word.text)&&+word.text>0&&+word.text<=400){
     const isSplitBonus=words.some(other=>/^[+%]$/.test(other.text)&&Math.abs(other.y-word.y)<Math.max(other.h,word.h)&&Math.abs(other.x-word.x)<width*.025);
-    if(!isSplitBonus)setHeader(prefix+'Strength',+word.text);
+    // The two strength circles contain large centered digits. A small round,
+    // objective or player rating inside the same broad region is not a badge.
+    const badge=word.h>=height*.025&&word.h<=height*.075&&word.w>=width*.014&&word.w<=width*.065&&word.w/word.h>=.4&&word.w/word.h<=3;
+    if(!isSplitBonus&&badge)strengthCandidates[prefix].push(+word.text);
    }
   }
+  for(const prefix of ['my','rival']){const values=[...new Set(strengthCandidates[prefix])];if(values.length===1)setHeader(prefix+'Strength',values[0]);}
   return out;
  }
  const validTeam=row=>row.left>width*.025&&row.left<width*.4&&row.top>height*.18&&row.bottom<height*.27&&/[\p{L}]/u.test(row.text)&&!isOwnNickname(row.text)&&!/(?:nota mais|jogador|marcador|idade|posi[cg]ao|objetivo|analista)/.test(normalize(row.text));
@@ -162,7 +178,7 @@ export function parseMatchOverlay(ocr={},width,height,context={}){
  if(!prefix)return out;
  setHeader(prefix+'Name',teamRow.text);
  if(prefix==='rival'){
-  const nickname=rows.filter(row=>row.left<width*.4&&row.top>teamRow.bottom&&row.top-teamRow.bottom<height*.065&&row.text.length<60&&!isOwnNickname(row.text)&&!/(?:nota mais|jogador|marcador|posi[cg]ao)/.test(normalize(row.text))).sort((a,b)=>a.top-b.top)[0];
+  const nickname=rows.filter(row=>row.left<width*.4&&row.top>teamRow.bottom&&row.top-teamRow.bottom<height*.065&&isRivalNickname(row.text,context)).sort((a,b)=>a.top-b.top)[0];
   if(nickname)setHeader('rivalNickname',nickname.text);
  }
  // The money at the very top is cash. Only the squad-value header is accepted.
@@ -175,10 +191,11 @@ export function parseMatchOverlay(ocr={},width,height,context={}){
  }
  if(header.teamVerified&&identity(header.team)===clubIdentity){
   for(const [metaKey,field] of [['GK','GK'],['DEF','DEF'],['MID','MID'],['ATT','ATT']])if(header[metaKey]!=null)setHeader(prefix+field,header[metaKey]);
-  if(header.strength!=null)setHeader(prefix+'Strength',header.strength);
  }
  const force=words.find(word=>normalize(word.text)==='equipa'&&word.x>width*.79&&word.x<width*.92&&word.y>height*.18&&word.y<height*.35);
- if(force){const number=words.filter(word=>/^\d{1,3}$/.test(word.text)&&Math.abs(word.x+word.w/2-force.x-force.w/2)<width*.026&&word.y>force.y&&word.y-force.y<height*.10).sort((a,b)=>a.y-b.y)[0];if(number&&+number.text>0&&+number.text<=400)setHeader(prefix+'Strength',+number.text);}
+ const forceNumbers=words.filter(word=>/^\d{1,3}$/.test(word.text)&&+word.text>0&&+word.text<=400&&word.x>width*.81&&word.x<width*.88&&word.y>height*.28&&word.y<height*.39&&word.h>=height*.032&&word.h<=height*.085&&word.w>=width*.014&&word.w<=width*.065&&word.w/word.h>=.4&&word.w/word.h<=3);
+ const centeredForce=forceNumbers.filter(word=>force?Math.abs(word.x+word.w/2-force.x-force.w/2)<width*.019&&word.y>=force.y+force.h+height*.004&&word.y-force.y<height*.10&&word.h>=force.h*1.25:header.teamVerified&&header.GK!=null&&header.DEF!=null&&header.MID!=null&&header.ATT!=null);
+ const forceValues=[...new Set(centeredForce.map(word=>+word.text))];if(forceValues.length===1)setHeader(prefix+'Strength',forceValues[0]);
  // Position, objective, round and formation numbers never supply the player count.
  for(const label of words){
   if(!/^jogadores[:.]?$/i.test(normalize(label.text))||label.y<height*.09||label.y>height*.50)continue;

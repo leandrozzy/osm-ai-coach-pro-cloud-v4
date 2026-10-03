@@ -58,7 +58,10 @@ export function detectMatchPixels(image,evidence={}){
  if(label&&match.rivalName&&(!context.myTeam||normalize(match.rivalName)!==normalize(context.myTeam))){
   const lock=padlock(image,label);if(lock){match.secretTraining='Sim';meta.rivalReportLocked=true;meta.iconEvidence=[{kind:'padlock',...lock}];}
  }
- const referee=rows.find(row=>/^arbitro$/.test(normalize(row.text))&&row.left>image.width*.47&&row.right<image.width*.57&&row.top>image.height*.40&&row.bottom<image.height*.54);
+ // OCR sometimes groups the label and neighbouring text into one row. Locate
+ // the label word itself; the colour is still established by the thermometer.
+ const wordLabels=rows.flatMap(row=>(row.words||[]).map(word=>({text:String(word.WordText||''),left:Number(word.Left)*sx,right:(Number(word.Left)+Number(word.Width))*sx,top:Number(word.Top)*sy,bottom:(Number(word.Top)+Number(word.Height))*sy})));
+ const referee=wordLabels.find(word=>/^arbitro\s*[:.;]?$/i.test(normalize(word.text))&&word.left>image.width*.35&&word.right<image.width*.72&&word.top>image.height*.30&&word.bottom<image.height*.68);
  if(referee){const found=thermometer(image,referee);if(found){match.referee=found.color;meta.iconEvidence=[...(meta.iconEvidence||[]),{kind:'referee-thermometer',confidence:found.confidence,box:found.box}];}}
  return {match,meta};
 }
