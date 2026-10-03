@@ -6,8 +6,9 @@ import {mergeMatchTexts,parseMatchOverlay} from '../src/parser-match.js';
 import {known} from '../src/domain.js';
 import {sanitizeProviderMatch} from '../src/match-grounding.js';
 import {cachedCapability,probeModels} from '../lib/model-catalog.js';
+import {cachedOcrRead} from '../lib/ocr-cache.js';
 function usefulRead(type,data){
- if(type==='match')return Object.values(data.match||{}).filter(known).length>=2;
+ if(type==='match')return Object.entries(data.match||{}).filter(([field,value])=>!field.startsWith('_')&&known(value)).length>=2;
  if(type==='squad')return data.players?.some(row=>known(row.name));
  return data.calendar?.some(row=>['opponent','date','time','score','home','cup'].some(field=>known(row[field])));
 }
@@ -60,7 +61,7 @@ export default async function handler(req,res){
  const remaining=30000-(Date.now()-started);if(!ocr||remaining<500)return;
  // Scout report crops have faint text and must not be dropped behind full screens.
  const selected=ocrImages.map((image,index)=>({...image,index})).slice(0,type==='match'?4:2);
- const results=await Promise.allSettled(selected.map(i=>ocrRead({key:ocr,image:i.url,budgetMs:remaining})));let read=blankExtraction();attempts.push('ocrspace');
+ const results=await Promise.allSettled(selected.map(i=>cachedOcrRead(ocr,i.url,i.region,()=>ocrRead({key:ocr,image:i.url,budgetMs:remaining}))));let read=blankExtraction();attempts.push(results.every(r=>r.status==='fulfilled'&&r.value.cacheHit)?'ocrspace-cache':'ocrspace');
  results.forEach((r,selectedIndex)=>{const image=selected[selectedIndex],index=image.index;if(r.status==='fulfilled'){ocrResults.push({index,...r.value});read.warnings.push(...r.value.warnings||[]);if(image.region==='full'){
  const literal=overlayExtraction(type,r.value,image.width,image.height);
  if(type==='match'){
@@ -78,7 +79,7 @@ export default async function handler(req,res){
  const frameIndex=Number.isInteger(image.frameIndex)?image.frameIndex:index;
  if(type==='calendar')for(const row of parseCalendarOverlay(r.value.lines,image.width,image.height)){const literalRow=normalizeExtraction({calendar:[row]},'calendar','OCR.space card',{sourceKind:'ocr-layout',fields:['round','date','time','displayedScore']});const normalized=literalRow.calendar[0]||literalRow.calendarFragments[0];if(normalized)calendarEvidence.push({frameIndex,row:{...normalized,_card:row._card}});}
  if(type==='squad')squadEvidence.push({frameIndex,players:parseSquadOverlay(r.value.lines,image.width,image.height),width:image.width,height:image.height});
- if(type==='match')matchEvidence.push({frameIndex,ocr:{text:r.value.text,lines:r.value.lines},width:image.width,height:image.height,region:'full',context});
+ if(type==='match'||type==='squad')matchEvidence.push({frameIndex,ocr:{text:r.value.text,lines:r.value.lines},width:image.width,height:image.height,region:'full',context});
  }}else failures.push(errorInfo('ocrspace',r.reason));});
  if(type==='match'&&ocrResults.length)read=fuseExtraction(read,normalizeExtraction(mergeMatchTexts(ocrResults.map(r=>r.text),{myTeam:context.myTeam,rivalName:context.rivalName}),'match','OCR.space explícito',{sourceKind:'ocr-explicit',fields:['rivalFormation','rivalPlan','rivalMarking','rivalOffside','rivalTackling','stadium','trainingCamp','myTrainingCamp']}));
  return read;
@@ -86,7 +87,7 @@ export default async function handler(req,res){
  if(body.forceOCR===true){const results=await Promise.allSettled([visual(),readOCR()]);for(const result of results)if(result.status==='fulfilled'&&result.value)output=fuseExtraction(output,result.value);}
  else{const data=await visual();if(data)output=fuseExtraction(output,data);if(!usefulRead(type,output)){const read=await readOCR();if(read)output=fuseExtraction(output,read);}}
  const usefulOcr=ocrResults.filter(r=>r.text?.trim().length>=40);
- if(groq&&usefulOcr.length&&coverage(type,output).percent<35&&Date.now()-started<30000&&!body.disabled?.includes('groq-text')&&!failures.some(f=>f.provider==='groq'&&[401,403,429,503].includes(f.status))){
+ if(body.useText!==false&&groq&&usefulOcr.length&&coverage(type,output).percent<35&&Date.now()-started<30000&&!body.disabled?.includes('groq-text')&&!failures.some(f=>f.provider==='groq'&&[401,403,429,503].includes(f.status))){
  try{
   // A failed visual model does not imply there is no compatible text model.
   let supported=cachedCapability('groq',groq,{visual:false,preferred:body.models?.groqText});
@@ -98,6 +99,6 @@ export default async function handler(req,res){
  // Keep the reading reviewable. The final save validates the destination club
  // after combining all image batches, local evidence and video fallback.
  const quality=coverage(type,output);
- return res.status(200).json({data:output,coverage:quality,attempts,failures,preferredProvider,elapsedMs:Date.now()-started,teamEvidence,needsVideo:!quality.complete,...(type==='calendar'?{calendarEvidence}:type==='squad'?{squadEvidence}:{matchEvidence})});
+ return res.status(200).json({data:output,coverage:quality,attempts,failures,preferredProvider,elapsedMs:Date.now()-started,teamEvidence,needsVideo:!quality.complete,...(type==='calendar'?{calendarEvidence}:type==='squad'?{squadEvidence,matchEvidence}:{matchEvidence})});
  }catch(e){return res.status(400).json({error:'Solicitação inválida: '+e.message});}
 }

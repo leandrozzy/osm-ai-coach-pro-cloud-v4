@@ -79,7 +79,8 @@ export default async function handler(req,res){
  else return res.status(400).json({error:'Vídeo obrigatório; use upload multipart para arquivos acima de 3 MB.'});
  const images=Array.isArray(body.images)?body.images:[];
  if(images.length>2||images.some(i=>typeof i!=='string'||i.length>1400000||!/^data:image\/(?:jpeg|png);base64,/.test(i)))return res.status(400).json({error:'Referências de imagem inválidas.'});
- const data=await twelveRead({key,type:body.type,video,images,context:body.context||{}});
+ const budgetMs=Number.isFinite(body.budgetMs)?Math.min(45000,Math.max(1000,Math.floor(body.budgetMs))):45000;
+ const data=await twelveRead({key,type:body.type,video,images,context:body.context||{},budgetMs});
  return res.status(200).json({data,coverage:coverage(body.type,data),provider:'twelvelabs'});
  }
  return res.status(400).json({error:'Ação inválida.'});
