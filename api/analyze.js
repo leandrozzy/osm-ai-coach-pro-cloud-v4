@@ -1,10 +1,11 @@
 import {allowed,requestBody,keyFor,errorInfo} from '../lib/http.js';
 import {groqRead,ocrRead,googleRead} from '../lib/providers.js';
 import {blankExtraction,normalizeExtraction,fuseExtraction,coverage} from '../src/extraction.js';
-import {overlayExtraction,structuredOcr,parseCalendarOverlay,parseSquadOverlay} from '../src/ocr-layout.js';
+import {overlayExtraction,overlayWords,structuredOcr,parseCalendarOverlay,parseSquadOverlay} from '../src/ocr-layout.js';
 import {mergeMatchTexts,parseMatchOverlay} from '../src/parser-match.js';
 import {mapOcrRegion,parseReportControls} from '../src/report-controls.js';
 import {known} from '../src/domain.js';
+import {parseCalendarBoundaryWords} from '../src/calendar-ocr.js';
 import {sanitizeProviderMatch} from '../src/match-grounding.js';
 import {cachedCapability,probeModels} from '../lib/model-catalog.js';
 import {cachedOcrRead} from '../lib/ocr-cache.js';
@@ -73,11 +74,16 @@ export default async function handler(req,res){
   const header=Object.fromEntries(headerFields.map(field=>[field,match[field]]));
   read=fuseExtraction(read,normalizeExtraction({match:header},type,'OCR.space cabeçalhos',{sourceKind:'ocr-layout',fields:headerFields}));
   const report=Object.fromEntries(Object.entries(match).filter(([field])=>!field.startsWith('_')&&!headerFields.includes(field)));
-  read=fuseExtraction(read,normalizeExtraction({match:report},type,'OCR.space relatório',{sourceKind:'ocr-explicit',fields:['rivalFormation','rivalPlan','rivalMarking','rivalOffside','rivalTackling','stadium','trainingCamp','myTrainingCamp']}));
+  read=fuseExtraction(read,normalizeExtraction({match:report},type,'OCR.space relatório',{sourceKind:'ocr-explicit',fields:['rivalFormation','rivalPlan','rivalMarking','rivalOffside','rivalTackling','stadium','trainingCamp']}));
  }
  if(literal.meta?.teamVerified===true&&known(literal.meta.team))teamEvidence.push({team:literal.meta.team,frameIndex:Number.isInteger(image.frameIndex)?image.frameIndex:index,verified:true});
  read=fuseExtraction(read,normalizeExtraction(literal,type,type==='squad'?'OCR.space posição da linha':'OCR.space card',{sourceKind:'ocr-layout',fields:type==='squad'?['position','strength','age','value']:['round','date','time','displayedScore']}));
  const frameIndex=Number.isInteger(image.frameIndex)?image.frameIndex:index;
+ if(type==='calendar'){
+  const boundaries=parseCalendarBoundaryWords(overlayWords(r.value.lines),image.width,image.height);
+  for(const field of ['sawTop','sawBottom'])if(boundaries[field+'Proof'])boundaries[field+'Proof'].frameIndex=frameIndex;
+  if(boundaries.sawTop||boundaries.sawBottom)read=fuseExtraction(read,normalizeExtraction({meta:boundaries},type,'OCR.space card',{sourceKind:'ocr-layout',metaFields:['sawTop','sawBottom']}));
+ }
  if(type==='calendar')for(const row of parseCalendarOverlay(r.value.lines,image.width,image.height)){const literalRow=normalizeExtraction({calendar:[row]},'calendar','OCR.space card',{sourceKind:'ocr-layout',fields:['round','date','time','displayedScore']});const normalized=literalRow.calendar[0]||literalRow.calendarFragments[0];if(normalized)calendarEvidence.push({frameIndex,row:{...normalized,_card:row._card}});}
  if(type==='squad')squadEvidence.push({frameIndex,players:parseSquadOverlay(r.value.lines,image.width,image.height),width:image.width,height:image.height});
  if(type==='match'||type==='squad')matchEvidence.push({frameIndex,ocr:{text:r.value.text,lines:r.value.lines},width:image.width,height:image.height,region:'full',context});
@@ -93,7 +99,7 @@ export default async function handler(req,res){
    const regions=group.map(({result,image})=>mapOcrRegion(result,image.region==='full'?{...image,crop:{left:0,top:0,width,height,sourceWidth:width,sourceHeight:height}}:image)).filter(region=>region&&region.width===width&&region.height===height);
    return {text:group.map(item=>item.result.text).join('\n'),lines:regions.flatMap(region=>region.lines),width,height};
   });
-  const reportFields=['rivalFormation','rivalPlan','rivalMarking','rivalOffside','rivalTackling','stadium','trainingCamp','myTrainingCamp'];
+  const reportFields=['rivalFormation','rivalPlan','rivalMarking','rivalOffside','rivalTackling','stadium','trainingCamp'];
   // Joining text recovers the literal report sentences. A preceding OCR line
   // may be a drawing: do not reintroduce its letters as a nickname after the
   // header parser has rejected that line's geometry.
