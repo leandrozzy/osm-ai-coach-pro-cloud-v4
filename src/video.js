@@ -1,5 +1,6 @@
 import {extractFrames,extractAdditionalFrames,imageToCanvas} from './frame-extractor.js';
-import {visualBatches,selectCompletionFrames} from './frame-selection.js';
+import {visualBatches} from './frame-selection.js';
+import {recoverOriginalFrames} from './frame-recovery.js';
 import {videoRequired,disableFailedProvider} from './reading-policy.js';
 import {matchFields} from './domain.js';
 import {applyScreenEvidence} from './visual-evidence.js';
@@ -126,7 +127,7 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
     if(videoJob&&!videoRequired(type,data))stopVideo();else if(!additional&&!visualAvailable())startVideo();
    }
   }catch(e){errors.push(e.message);next=frames.length;}done+=batch.length;
-  if(additional)for(const frame of batch){frame.canvas.width=0;frame.canvas.height=0;}
+  if(additional&&(!options.vision||!providers.has('twelvelabs')))for(const frame of batch){frame.canvas.width=0;frame.canvas.height=0;}
  }};
  // At most three visual batches; a failed provider can use one bounded fallback
  // on the same screens so the first club headers are not lost.
@@ -134,24 +135,42 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
  const cloudJob=async()=>{if(options.vision&&providers.size&&!coverage(type,data).complete)await worker();};
  const readings=await Promise.allSettled([localJob(),cloudJob()]);
  for(const reading of readings)if(reading.status==='rejected')errors.push(reading.reason?.message||'Falha ao completar a leitura.');
- // One targeted OCR pass covers relevant pauses omitted by the initial sample.
- // Local recognition and OCR.space share these original additional frames.
- if((localAvailable||options.vision&&providers.has('ocrspace')&&!disabled.has('ocrspace'))&&!expired()&&limit-(Date.now()-started)>12000){
-  const missing=coverage(type,data).missing,extras=[];
-  for(const reserve of reserves){
-   if(!missing.length||extras.length>=4)break;
-   const probes=selectCompletionFrames(reserve.probes,{type,missing,limit:4-extras.length,excludeTimes:frames.filter(f=>f.fileIndex===reserve.fileIndex).map(f=>f.time)});
-   if(!probes.length)continue;onUpdate('Completando campos pendentes nas telas originais…');
-   try{const decoded=await extractAdditionalFrames(reserve.file,{probes,signal:options.signal,maxFrames:4-extras.length});extras.push(...decoded.map(frame=>({...frame,name:reserve.file.name,fileIndex:reserve.fileIndex})));reserve.probes=reserve.probes.filter(probe=>!decoded.some(frame=>Math.abs(Number(probe.time)-Number(frame.time))<.04));}catch(e){errors.push(e.message);}
-  }
-  if(extras.length){next=frames.length;frames.push(...extras);previews.push(...extras.map(f=>({url:f.canvas.toDataURL('image/jpeg',.25),name:f.name,time:f.time})));for(const frame of extras)await localScreen(frame);if(options.vision&&providers.has('ocrspace')&&!disabled.has('ocrspace'))await worker(true);}
- }
+ // Revisit retained original pauses in small batches, refreshing the missing
+ // fields after each read. Local and cloud readers share the same canvases.
+ const recovery=await recoverOriginalFrames({
+  reserves,type,signal:options.signal,getMissing:()=>{
+   const missing=coverage(type,data).missing;
+   if(type==='match')for(const [field,label] of matchFields)if((data.conflicts||[]).some(conflict=>conflict.field==='match.'+field&&!conflict.resolved)&&!missing.includes(label))missing.push(label+' (divergência)');
+   return missing;
+  },
+  excludeTimes:fileIndex=>frames.filter(frame=>frame.fileIndex===fileIndex).map(frame=>frame.time),
+  remainingMs:()=>localAvailable||options.vision&&providers.has('ocrspace')&&!disabled.has('ocrspace')?limit-(Date.now()-started):0,
+  decode:(reserve,probes)=>{
+   onUpdate('Completando campos pendentes nas telas originais…');
+   return extractAdditionalFrames(reserve.file,{probes,signal:options.signal,maxFrames:probes.length});
+  },
+  onFrames:extras=>{
+   next=frames.length;frames.push(...extras);
+   previews.push(...extras.map(frame=>({url:frame.canvas.toDataURL('image/jpeg',.25),name:frame.name,time:frame.time})));
+  },
+  readBatch:async extras=>{
+   try{
+    for(const frame of extras)await localScreen(frame);
+    if(options.vision&&providers.has('ocrspace')&&!disabled.has('ocrspace'))await worker(true);
+   }finally{
+    // A later video fallback also needs these newly recovered original panels.
+    // Keep at most eight extras until the global finally when it is configured.
+    if(!options.vision||!providers.has('twelvelabs'))for(const frame of extras){frame.canvas.width=0;frame.canvas.height=0;}
+   }
+  },
+  onError:error=>errors.push(error.message)
+ });
  if(videoRequired(type,data))startVideo();else stopVideo();
  if(videoJob)await videoJob;
  if(expired())errors.push('Limite atingido ou cancelado: revise os dados parciais.');
  if(type==='squad'){const checked=refineSquadRoster(data,rosterEvidence);data=checked.data;data.warnings.push(...checked.warnings);}
  const quality=coverage(type,data);
- if(quality.missing.length&&reserves.some(reserve=>reserve.probes.length))errors.push('Há pausas adicionais no vídeo. Use Completar leitura para os campos ainda pendentes.');
+ if(!quality.complete&&recovery.remainingRelevant)errors.push('Há pausas adicionais no vídeo. Use Completar leitura para os campos ainda pendentes.');
  if(!quality.complete)errors.push('Leitura parcial: '+quality.missing.slice(0,12).join('; '));
  const unresolved=data.conflicts.filter(c=>!c.resolved);if(unresolved.length)errors.push(unresolved.length+' divergências entre leituras: confira os valores na mídia.');
  return {...data,rosterEvidence,readingTeams:[...new Set(readingTeams)],files:[...files],type,previews,errors:[...new Set([...errors,...data.warnings])],mode:[...new Set(attempts)].join(' + ')||'Sem resposta',frames:frames.length,coverage:quality,elapsedMs:Date.now()-started,createdAt:new Date().toISOString()};

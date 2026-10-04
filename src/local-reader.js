@@ -4,7 +4,7 @@ import {parseMatchOverlay} from './parser-match.js';
 import {overlayExtraction,parseSquadOverlay,parseSquadMeta,parseCalendarOverlay} from './ocr-layout.js';
 import {applyScreenEvidence} from './visual-evidence.js';
 import {detectMatchPixels} from './match-icons.js';
-import {parseReportControls} from './report-controls.js';
+import {parseReportControls,reportControlRegions} from './report-controls.js';
 import {known} from './domain.js';
 
 const rect=(name,left,top,right,bottom,gamma=2.6,pageSegMode=11,scale=1)=>({name,left,top,right,bottom,gamma,pageSegMode,scale});
@@ -27,6 +27,17 @@ export function localReadRegions(width,height,type,{layout,region}={}){
  else regions=[rect('jogos do calendário',0,0,1,1,1,3)];
  return regions.map(r=>({...r,x:Math.max(0,Math.floor(r.left*width)),y:Math.max(0,Math.floor(r.top*height)),width:Math.max(1,Math.ceil((r.right-r.left)*width)),height:Math.max(1,Math.ceil((r.bottom-r.top)*height))}));
 }
+export function localRecoveryRegions(ocr,type,data,context={}){
+ if(type!=='match')return [];
+ return reportControlRegions(ocr,Number(ocr.width),Number(ocr.height),context).filter(area=>!known(data.match?.[area.field]));
+}
+/** A fresh, enlarged regional pass replaces the same physical words, while
+ * retaining the original narrative that establishes the report's club. */
+export function mergeLocalRegion(ocr,recovered,area){
+ const inside=word=>Number(word.Left)>=area.x-1&&Number(word.Top)>=area.y-1&&Number(word.Left)+Number(word.Width)<=area.x+area.width+1&&Number(word.Top)+Number(word.Height)<=area.y+area.height+1;
+ const lines=(ocr.lines||[]).map(line=>({...line,Words:(line.Words||[]).filter(word=>!inside(word))})).filter(line=>line.Words.length);
+ return {...ocr,text:[ocr.text,recovered.text].filter(Boolean).join('\n'),lines:[...lines,...(recovered.lines||[])],confidence:recovered.confidence||ocr.confidence};
+}
 function cropForReading(source,region){
  const scale=region.scale||1,canvas=document.createElement('canvas');canvas.width=Math.round(region.width*scale);canvas.height=Math.round(region.height*scale);
  const ctx=canvas.getContext('2d',{willReadFrequently:true});
@@ -47,6 +58,23 @@ export function localNumericRegions(canvas,evidence,context={}){
   const x=Math.max(0,Math.floor(area.box.left)),y=Math.max(0,Math.floor(area.box.top)),right=Math.min(canvas.width,Math.ceil(area.box.right)),bottom=Math.min(canvas.height,Math.ceil(area.box.bottom));
   return {...area,name:'força '+area.club,x,y,width:right-x,height:bottom-y,scale:3,gamma:1,pageSegMode:7};
  }).filter(area=>area.width>=8&&area.height>=8&&area.width*area.height<=30000);
+}
+export function localBonusRegions(canvas,evidence,context={}){
+ if(!evidence)return [];
+ let local;try{local=detectMatchPixels(canvas.getContext('2d',{willReadFrequently:true}).getImageData(0,0,canvas.width,canvas.height),{...evidence,context:{...evidence.context,...context}});}catch{return [];}
+ return (local.meta?.localOcrRegions||[]).filter(area=>area.kind==='bonus'&&['myBonus','rivalBonus'].includes(area.field)&&known(area.club)&&area.box).slice(0,2).map(area=>{
+  const x=Math.max(0,Math.floor(area.box.left)),y=Math.max(0,Math.floor(area.box.top)),right=Math.min(canvas.width,Math.ceil(area.box.right)),bottom=Math.min(canvas.height,Math.ceil(area.box.bottom));
+  return {...area,name:'bônus '+area.club,x,y,width:right-x,height:bottom-y,scale:3,gamma:1,pageSegMode:7};
+ }).filter(area=>area.width>=8&&area.height>=8&&area.width*area.height<=30000);
+}
+export function bonusRecoveryOverlay(ocr,target){
+ const text=String(ocr.text||'').replace(/\s/g,''),number=text.match(/^\+(\d{1,3})%$/);
+ if(!number||+number[1]>100||!target?.box)return null;
+ const words=(ocr.lines||[]).flatMap(line=>line.Words||[]);if(!words.length||words.map(word=>String(word.WordText)).join('').replace(/\s/g,'')!==text)return null;
+ const box=target.box;
+ if(!['left','top','right','bottom'].every(key=>Number.isFinite(box[key]))||box.right<=box.left||box.bottom<=box.top)return null;
+ if(words.some(word=>![word.Left,word.Top,word.Width,word.Height].every(Number.isFinite)||word.Width<=0||word.Height<=0||Number(word.Confidence??ocr.confidence)<50||!Number.isFinite(Number(word.Confidence??ocr.confidence))||word.Left<box.left-2||word.Top<box.top-2||word.Left+word.Width>box.right+2||word.Top+word.Height>box.bottom+2))return null;
+ return {...ocr,text};
 }
 export function numericRecoveryOverlay(ocr){
  const value=String(ocr.text||'').trim();
@@ -116,8 +144,22 @@ export async function readLocalScreen(canvas,type,{signal,context={},onUpdate,la
    warnings.push(error.message);break;
   }finally{crop.width=0;crop.height=0;}
  }
- const ocr={text:results.map(r=>r.text).join('\n'),lines:results.flatMap(r=>r.lines),width:canvas.width,height:canvas.height,confidence:results.length?results.reduce((sum,r)=>sum+r.confidence,0)/results.length:0,provider:'tesseract-local'};
+ let ocr={text:results.map(r=>r.text).join('\n'),lines:results.flatMap(r=>r.lines),width:canvas.width,height:canvas.height,confidence:results.length?results.reduce((sum,r)=>sum+r.confidence,0)/results.length:0,provider:'tesseract-local'};
  let parsed=extractionFromLocalOcr(ocr,type,{context,frameIndex});
+ // Layout classification is a sampling hint. A same-frame literal report
+ // can identify a lower control even when that screen was classified unknown
+ // and the first pass read only its upper half.
+ for(const area of localRecoveryRegions(ocr,type,parsed.data,context).slice(0,2)){
+  const remaining=budgetMs-(Date.now()-started);if(signal?.aborted||remaining<500)break;
+  try{onUpdate?.('Conferindo '+area.name+' na tela original.',{phase:'report-control',field:area.field});}catch{}
+  const crop=cropForReading(canvas,area);
+  try{
+   const recovered=await localOCR(crop,{signal,onUpdate,languages,budgetMs:Math.min(2000,remaining),pageSegMode:area.pageSegMode,mapping:{offsetX:area.x,offsetY:area.y,scale:area.scale,width:canvas.width,height:canvas.height}});
+   if(!recovered.lines?.length)continue;
+   ocr=mergeLocalRegion(ocr,recovered,area);parsed=extractionFromLocalOcr(ocr,type,{context,frameIndex});
+  }catch(error){if(signal?.aborted)break;warnings.push('Conferência do relatório: '+error.message);break;}
+  finally{crop.width=0;crop.height=0;}
+ }
  if(type==='match'||type==='squad'){
   const numericContext=type==='squad'&&parsed.data.meta?.teamVerified===true?{...context,myTeam:parsed.data.meta.team}:context;
   const targets=localNumericRegions(canvas,parsed.response.matchEvidence[0],numericContext);
@@ -141,6 +183,19 @@ export async function readLocalScreen(canvas,type,{signal,context={},onUpdate,la
    const consensus=numericStrengthConsensus(target,readings,{frameIndex});
    if(consensus)parsed.response.strengthEvidence.push(consensus);
   }
+ }
+ if(type==='match')for(const target of localBonusRegions(canvas,parsed.response.matchEvidence[0],context)){
+  const remaining=budgetMs-(Date.now()-started);if(signal?.aborted||remaining<500)break;
+  try{onUpdate?.('Conferindo o bônus visível de '+target.club+'.',{phase:'bonus',field:target.field});}catch{}
+  const crop=cropForReading(canvas,target);
+  try{
+   const raw=await localOCR(crop,{signal,onUpdate,languages,budgetMs:Math.min(1500,remaining),pageSegMode:7,characters:'+0123456789%',mapping:{offsetX:target.x,offsetY:target.y,scale:target.scale,width:canvas.width,height:canvas.height}});
+   const literal=bonusRecoveryOverlay(raw,target);if(!literal)continue;
+   const strengthEvidence=parsed.response.strengthEvidence;
+   ocr=mergeLocalRegion(ocr,literal,target);parsed=extractionFromLocalOcr(ocr,type,{context,frameIndex});
+   parsed.response.strengthEvidence=strengthEvidence;
+  }catch(error){if(signal?.aborted)break;warnings.push('Conferência do bônus: '+error.message);break;}
+  finally{crop.width=0;crop.height=0;}
  }
  const frames=[];frames[frameIndex]={canvas};
  const screened=applyScreenEvidence(parsed.data,parsed.response,frames,type);

@@ -36,17 +36,40 @@ function padlock(image,label){
  }
  return null;
 }
-function thermometer(image,label){
- const box={left:label.left-image.width*.039,right:label.left-image.width*.001,top:label.top-image.height*.052,bottom:label.bottom+image.height*.035};
+function thermometers(image,box){
+ const found=[];
  const predicates=[['Verde',(r,g,b)=>g>110&&g>r*1.4&&g>b*1.3],['Azul',(r,g,b)=>b>140&&b>r*1.6&&b>g*1.12],['Amarelo',(r,g,b)=>yellow(r,g,b)&&g>r*.73],['Laranja',(r,g,b)=>r>190&&g>80&&g<r*.73&&b<90],['Vermelho',(r,g,b)=>r>160&&r>g*1.7&&r>b*1.5]];
  for(const [color,predicate] of predicates)for(const part of components(image,box,predicate)){
   if(part.w<image.width*.005||part.w>image.width*.016||part.h<image.height*.029||part.h>image.height*.095||part.h/part.w<1.7||part.h/part.w>7||part.pixels.size/(part.w*part.h)<.5)continue;
   const widths=[];for(let y=part.top;y<part.bottom;y++){let left=image.width,right=-1;for(let x=part.left;x<part.right;x++)if(part.pixels.has(y*image.width+x)){left=Math.min(left,x);right=Math.max(right,x);}widths.push(right>=left?right-left+1:0);}
   const upper=Math.max(...widths.slice(0,Math.max(1,Math.floor(part.h*.4)))),lower=Math.max(...widths.slice(Math.floor(part.h*.65)));
   if(upper>part.w*.7||lower<part.w*.85)continue;
-  return {color,confidence:.94,box:{left:part.left,right:part.right,top:part.top,bottom:part.bottom}};
+  const candidateBox={left:part.left,right:part.right,top:part.top,bottom:part.bottom};
+  // Warm orange also satisfies the broader red threshold at some edges.
+  // Those masks describe the same physical object, not two referees; preserve
+  // the established colour order while keeping distinct objects ambiguous.
+  if(found.some(candidate=>{
+   const previous=candidate.box,overlap=Math.max(0,Math.min(previous.right,part.right)-Math.max(previous.left,part.left))*Math.max(0,Math.min(previous.bottom,part.bottom)-Math.max(previous.top,part.top));
+   return overlap/Math.max((previous.right-previous.left)*(previous.bottom-previous.top),part.w*part.h)>.75;
+  }))continue;
+  found.push({color,confidence:.94,box:candidateBox});
  }
- return null;
+ return found;
+}
+function thermometer(image,label){
+ return thermometers(image,{left:label.left-image.width*.039,right:label.left-image.width*.001,top:label.top-image.height*.052,bottom:label.bottom+image.height*.035})[0]||null;
+}
+function refereeBesideAvatar(image,parsed){
+ if(!parsed._versus||!parsed.myName||!parsed.rivalName)return null;
+ // The label can be unreadable and the central panel can move vertically.
+ // A thermometer still needs its actual narrow stem and bulb, next to the
+ // referee's small face. A shirt colour or a coloured button is insufficient.
+ const found=thermometers(image,{left:image.width*.46,right:image.width*.54,top:image.height*.32,bottom:image.height*.65}).filter(candidate=>{
+  const box=candidate.box,face={left:box.left-image.width*.027,right:box.left-image.width*.003,top:box.top,bottom:box.bottom+image.height*.005};
+  const skin=(r,g,b)=>r>140&&g>95&&b<160&&r>g*1.12&&g>b*1.15;
+  return opaqueBox(image,face)&&fraction(image,face,skin)>.08&&fraction(image,face,(r,g,b)=>Math.max(r,g,b)<90)>.07&&fraction(image,face,white)>.008;
+ });
+ return found.length===1?found[0]:null;
 }
 function visiblyEmptyManagerLine(image,area){
  if(!area||!['squad-header','versus'].includes(area.kind))return null;
@@ -88,7 +111,8 @@ function headerCircle(image,parsed){
  if(rings.length!==1)return null;
  const ring=rings[0];return {field:fields[0]==='myName'?'myStrength':'rivalStrength',club:parsed[fields[0]],box:{left:ring.left+ring.w*.23,right:ring.right-ring.w*.23,top:ring.top+ring.h*.33,bottom:ring.bottom-ring.h*.17}};
 }
-function versusCircles(image,parsed){
+const bonusGreen=(r,g,b)=>g>130&&g>r*1.5&&g>b*1.15&&r<160;
+function versusCircles(image,parsed,mode='strength'){
  if(!parsed._versus||!parsed.myName||!parsed.rivalName)return [];
  const cyan=(r,g,b)=>r<160&&g>125&&b>160&&g>r*1.2&&b>r*1.4,found=[];
  for(const left of [true,false]){
@@ -97,10 +121,32 @@ function versusCircles(image,parsed){
   const ring=rings[0],own=parsed.location===(left?'Casa':'Fora'),box={left:ring.left+ring.w*.19,right:ring.right-ring.w*.19,top:ring.top+ring.h*.22,bottom:ring.bottom-ring.h*.20};
   // The bonus tab replaces white strength digits with a green +3% inside the
   // same circle. That display supplies no strength crop or scalar fallback.
-  if(fraction(image,box,(r,g,b)=>Math.min(r,g,b)>145&&Math.max(r,g,b)-Math.min(r,g,b)<65)<.03)continue;
-  found.push({field:own?'myStrength':'rivalStrength',club:own?parsed.myName:parsed.rivalName,box});
+  if(fraction(image,box,mode==='bonus'?bonusGreen:(r,g,b)=>Math.min(r,g,b)>145&&Math.max(r,g,b)-Math.min(r,g,b)<65)<.03)continue;
+  found.push({field:own?(mode==='bonus'?'myBonus':'myStrength'):(mode==='bonus'?'rivalBonus':'rivalStrength'),club:own?parsed.myName:parsed.rivalName,box});
  }
  return found;
+}
+function bonusGlyphs(image,box){
+ const parts=components(image,box,bonusGreen).filter(part=>part.h>=image.height*.004&&part.pixels.size>=8).sort((a,b)=>a.left-b.left);
+ if(parts.length<5)return false;
+ const maximumH=Math.max(...parts.map(part=>part.h)),plus=parts[0];
+ if(maximumH<image.height*.012||plus.h<maximumH*.3||plus.h>maximumH*.75||plus.w/plus.h<.6||plus.w/plus.h>1.5)return false;
+ const rowWidth=y=>{const xs=[];for(let x=plus.left;x<plus.right;x++)if(plus.pixels.has(y*image.width+x))xs.push(x);return xs.length?Math.max(...xs)-Math.min(...xs)+1:0;};
+ const middle=Math.max(...Array.from({length:Math.max(1,Math.round(plus.h*.35))},(_,i)=>rowWidth(plus.top+Math.floor(plus.h*.35)+i)));
+ if(middle<plus.w*.8||rowWidth(plus.top)>plus.w*.6||rowWidth(plus.bottom-1)>plus.w*.6)return false;
+ // The percent sign has two small circles and a separate ascending diagonal.
+ // The up arrows above the badge, and white strength numerals, cannot satisfy
+ // this sequence inside its native cyan circle.
+ for(const slash of parts.slice(1)){
+  if(slash.h<maximumH*.75||slash.w/slash.h<.25||slash.w/slash.h>.9||slash.pixels.size/(slash.w*slash.h)>.5)continue;
+  const centerAt=y=>{const xs=[];for(let x=slash.left;x<slash.right;x++)if(slash.pixels.has(y*image.width+x))xs.push(x);return xs.length?xs.reduce((a,b)=>a+b,0)/xs.length:null;};
+  const first=centerAt(slash.top+1),last=centerAt(slash.bottom-2);if(first===null||last===null||first-last<slash.h*.3)continue;
+  const dots=parts.filter(part=>part!==slash&&part!==plus&&part.h>=maximumH*.3&&part.h<=maximumH*.75&&part.w/part.h>.4&&part.w/part.h<1.3);
+  const upper=dots.find(part=>part.left>plus.right&&part.left+part.w/2<first&&Math.abs(part.top-slash.top)<maximumH*.25);
+  const lower=dots.find(part=>part.left+part.w/2>last&&Math.abs(part.bottom-slash.bottom)<maximumH*.25&&upper&&part.top>upper.top+maximumH*.25);
+  if(upper&&lower&&parts.some(part=>part!==plus&&part!==slash&&part!==upper&&part!==lower&&part.left>=plus.right&&part.right<=upper.right&&part.h>=maximumH*.75))return true;
+ }
+ return false;
 }
 export function detectMatchPixels(image,evidence={}){
  const empty={match:{},meta:{}};
@@ -162,6 +208,25 @@ export function detectMatchPixels(image,evidence={}){
    delete match[field];meta._headerFields=meta._headerFields.filter(key=>key!==field);meta._ocrFields=meta._ocrFields.filter(key=>key!==field);
   }
  }
+ for(const badge of versusCircles(image,parsed,'bonus')){
+  if(!opaqueBox(image,badge.box)||!bonusGlyphs(image,badge.box))continue;
+  meta.localOcrRegions=[...(meta.localOcrRegions||[]),{...badge,kind:'bonus',reason:'GREEN_PERCENTAGE_REQUIRES_LITERAL'}];
+  const words=matchOcrRows(ocr).flatMap(row=>row.words).filter(word=>{
+   const text=String(word.WordText||'').trim(),box={left:Number(word.Left)*sx,right:(Number(word.Left)+Number(word.Width))*sx,top:Number(word.Top)*sy,bottom:(Number(word.Top)+Number(word.Height))*sy};
+   return /^[+%\d]+$/.test(text)&&box.left>=badge.box.left-2&&box.right<=badge.box.right+2&&box.top>=badge.box.top-2&&box.bottom<=badge.box.bottom+2;
+  }).sort((a,b)=>Number(a.Left)-Number(b.Left));
+  const literal=words.map(word=>String(word.WordText||'').trim()).join('');
+  if(!/^\+\d{1,3}%$/.test(literal)||words.some(word=>!Number.isFinite(Number(word.Confidence??ocr.confidence))||Number(word.Confidence??ocr.confidence)<50))continue;
+  const value=Number(literal.slice(1,-1));if(value>100)continue;match[badge.field]=value;
+  if(!meta._headerFields.includes(badge.field))meta._headerFields.push(badge.field);
+  if(!meta._ocrFields.includes(badge.field))meta._ocrFields.push(badge.field);
+  meta.iconEvidence=[...(meta.iconEvidence||[]),{kind:'bonus-percentage',field:badge.field,club:badge.club,value,confidence:.96,box:badge.box,corroboration:'green-plus-and-percentage-with-literal'}];
+ }
+ if(parsed._versus)for(const field of ['myBonus','rivalBonus']){
+  if(!parsed._headerFields?.includes(field)||match[field]==null||meta.iconEvidence?.some(icon=>icon.kind==='bonus-percentage'&&icon.field===field))continue;
+  meta.pendingMatchFacts=[...(meta.pendingMatchFacts||[]),{field,value:match[field],reason:'Percentual não confirmado no círculo de bônus identificado na imagem original.',source:'OCR do círculo de bônus'}];
+  delete match[field];meta._headerFields=meta._headerFields.filter(key=>key!==field);meta._ocrFields=meta._ocrFields.filter(key=>key!==field);
+ }
  if(parsed._weakHeaderFields?.includes('human')&&parsed._evidence?.human?.kind==='manager-line'){
   const proof=parsed._evidence.human,raw=proof.box;
   if(raw){
@@ -197,15 +262,8 @@ export function detectMatchPixels(image,evidence={}){
  // the label word itself; the colour is still established by the thermometer.
  const wordLabels=rows.flatMap(row=>(row.words||[]).map(word=>({text:String(word.WordText||''),left:Number(word.Left)*sx,right:(Number(word.Left)+Number(word.Width))*sx,top:Number(word.Top)*sy,bottom:(Number(word.Top)+Number(word.Height))*sy})));
  let referee=wordLabels.find(word=>/^arbitro\s*[:.;]?$/i.test(normalize(word.text))&&word.left>image.width*.35&&word.right<image.width*.72&&word.top>image.height*.30&&word.bottom<image.height*.68);
- if(!referee&&parsed._versus&&match.myName&&match.rivalName){
-  // An OCR failure of the label is independent of the actual icon. This
-  // fallback is restricted to the central referee avatar on a grounded VS
-  // screen; the detector still requires the thin stem and round bulb.
-  const avatar={left:image.width*.467,right:image.width*.494,top:image.height*.421,bottom:image.height*.505};
-  const skin=(r,g,b)=>r>140&&g>95&&b<160&&r>g*1.12&&g>b*1.15;
-  if(fraction(image,avatar,skin)>.08)referee={left:image.width*.507,right:image.width*.535,top:image.height*.462,bottom:image.height*.493};
- }
- if(referee){const found=thermometer(image,referee);if(found){match.referee=found.color;meta.iconEvidence=[...(meta.iconEvidence||[]),{kind:'referee-thermometer',confidence:found.confidence,box:found.box}];}}
+ const refereeIcon=(referee?thermometer(image,referee):null)||refereeBesideAvatar(image,parsed);
+ if(refereeIcon){match.referee=refereeIcon.color;meta.iconEvidence=[...(meta.iconEvidence||[]),{kind:'referee-thermometer',confidence:refereeIcon.confidence,box:refereeIcon.box}];}
  return {match,meta};
 }
 export function detectMatchIcons(canvas,evidence={}){

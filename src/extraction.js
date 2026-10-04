@@ -44,8 +44,8 @@ function evidenceFor(record,type,source,options={},prior={}){
  const kind=sourceKind(source,options);
  const preserve=options.preserveEvidence===true||!source||['pixels','ocr-layout','ocr-explicit','ocr-consensus','manual'].includes(kind);
  const sources=preserve?cleanFieldSources(prior):{};
- const allowed=kind==='ocr-consensus'?(type==='match'?['myStrength','rivalStrength']:[]):kind==='pixels'?(type==='calendar'?['home','cup','result']:type==='squad'?['position','strength','training','forSale']:['secretTraining','referee','human','myStrength','rivalStrength']):kind==='ocr-layout'?(type==='calendar'?['round','date','time','displayedScore']:type==='squad'?['position','strength','age','value']:matchHeaderFields):kind==='ocr-explicit'?matchFields.map(([key])=>key).filter(key=>!textIdentityFields.has(key)):Object.keys(record);
- const selected=Array.isArray(options.fields)?options.fields:type==='match'&&kind==='ocr-layout'?[]:type==='match'&&kind==='pixels'?allowed.filter(key=>!['myStrength','rivalStrength'].includes(key)):allowed;
+ const allowed=kind==='ocr-consensus'?(type==='match'?['myStrength','rivalStrength']:[]):kind==='pixels'?(type==='calendar'?['home','cup','result']:type==='squad'?['position','strength','training','forSale']:['secretTraining','referee','human','myStrength','rivalStrength','myBonus','rivalBonus']):kind==='ocr-layout'?(type==='calendar'?['round','date','time','displayedScore']:type==='squad'?['position','strength','age','value']:matchHeaderFields):kind==='ocr-explicit'?matchFields.map(([key])=>key).filter(key=>!textIdentityFields.has(key)):Object.keys(record);
+ const selected=Array.isArray(options.fields)?options.fields:type==='match'&&kind==='ocr-layout'?[]:type==='match'&&kind==='pixels'?allowed.filter(key=>!['myStrength','rivalStrength','myBonus','rivalBonus'].includes(key)):allowed;
  for(const key of Object.keys(record)){
  if(key.startsWith('_')||key==='id'||!known(record[key]))continue;
  const trusted=kind&&allowed.includes(key)&&selected.includes(key);
