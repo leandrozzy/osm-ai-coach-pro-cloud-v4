@@ -119,32 +119,39 @@ function versusCircles(image,parsed,mode='strength'){
   const rings=components(image,{left:image.width*(left?.28:.62),right:image.width*(left?.38:.72),top:image.height*.18,bottom:image.height*.33},cyan).filter(part=>part.h>image.height*.065&&part.h<image.height*.145&&part.w/part.h>.82&&part.w/part.h<1.18&&part.pixels.size/(part.w*part.h)>.035&&part.pixels.size/(part.w*part.h)<.42);
   if(rings.length!==1)continue;
   const ring=rings[0],own=parsed.location===(left?'Casa':'Fora'),box={left:ring.left+ring.w*.19,right:ring.right-ring.w*.19,top:ring.top+ring.h*.22,bottom:ring.bottom-ring.h*.20};
-  // The bonus tab replaces white strength digits with a green +3% inside the
-  // same circle. That display supplies no strength crop or scalar fallback.
-  if(fraction(image,box,mode==='bonus'?bonusGreen:(r,g,b)=>Math.min(r,g,b)>145&&Math.max(r,g,b)-Math.min(r,g,b)<65)<.03)continue;
-  found.push({field:own?(mode==='bonus'?'myBonus':'myStrength'):(mode==='bonus'?'rivalBonus':'rivalStrength'),club:own?parsed.myName:parsed.rivalName,box});
+  // The own percentage is green; a rival percentage can use the same white
+  // font as strength. The plus and percent glyphs, rather than colour alone,
+  // decide whether this native circle is a percentage or a strength crop.
+  const percentageInk=fraction(image,box,bonusGreen)>=.03&&bonusGlyphs(image,box,bonusGreen)?'green':fraction(image,box,white)>=.03&&bonusGlyphs(image,box,white)?'white':null;
+  const partialPercentage=mode==='strength'&&fraction(image,box,white)>=.03&&bonusGlyphs(image,box,white,false);
+  if(mode==='bonus'?!percentageInk:percentageInk||partialPercentage||fraction(image,box,(r,g,b)=>Math.min(r,g,b)>145&&Math.max(r,g,b)-Math.min(r,g,b)<65)<.03)continue;
+  found.push({field:own?(mode==='bonus'?'myBonus':'myStrength'):(mode==='bonus'?'rivalBonus':'rivalStrength'),club:own?parsed.myName:parsed.rivalName,box,...(mode==='bonus'?{ink:percentageInk}:{})});
  }
  return found;
 }
-function bonusGlyphs(image,box){
- const parts=components(image,box,bonusGreen).filter(part=>part.h>=image.height*.004&&part.pixels.size>=8).sort((a,b)=>a.left-b.left);
- if(parts.length<5)return false;
+function bonusGlyphs(image,box,predicate=bonusGreen,requirePlus=true){
+ const parts=components(image,box,predicate).filter(part=>part.h>=image.height*.004&&part.pixels.size>=8).sort((a,b)=>a.left-b.left);
+ if(parts.length<(requirePlus?5:4))return false;
  const maximumH=Math.max(...parts.map(part=>part.h)),plus=parts[0];
- if(maximumH<image.height*.012||plus.h<maximumH*.3||plus.h>maximumH*.75||plus.w/plus.h<.6||plus.w/plus.h>1.5)return false;
- const rowWidth=y=>{const xs=[];for(let x=plus.left;x<plus.right;x++)if(plus.pixels.has(y*image.width+x))xs.push(x);return xs.length?Math.max(...xs)-Math.min(...xs)+1:0;};
- const middle=Math.max(...Array.from({length:Math.max(1,Math.round(plus.h*.35))},(_,i)=>rowWidth(plus.top+Math.floor(plus.h*.35)+i)));
- if(middle<plus.w*.8||rowWidth(plus.top)>plus.w*.6||rowWidth(plus.bottom-1)>plus.w*.6)return false;
+ if(maximumH<image.height*.012)return false;
+ if(requirePlus){
+  if(plus.h<maximumH*.3||plus.h>maximumH*.75||plus.w/plus.h<.6||plus.w/plus.h>1.5)return false;
+  const rowWidth=y=>{const xs=[];for(let x=plus.left;x<plus.right;x++)if(plus.pixels.has(y*image.width+x))xs.push(x);return xs.length?Math.max(...xs)-Math.min(...xs)+1:0;};
+  const middle=Math.max(...Array.from({length:Math.max(1,Math.round(plus.h*.35))},(_,i)=>rowWidth(plus.top+Math.floor(plus.h*.35)+i)));
+  if(middle<plus.w*.8||rowWidth(plus.top)>plus.w*.6||rowWidth(plus.bottom-1)>plus.w*.6)return false;
+ }
  // The percent sign has two small circles and a separate ascending diagonal.
- // The up arrows above the badge, and white strength numerals, cannot satisfy
+ // The up arrows above the badge and bare strength numerals cannot satisfy
  // this sequence inside its native cyan circle.
- for(const slash of parts.slice(1)){
+ for(const slash of parts){
   if(slash.h<maximumH*.75||slash.w/slash.h<.25||slash.w/slash.h>.9||slash.pixels.size/(slash.w*slash.h)>.5)continue;
   const centerAt=y=>{const xs=[];for(let x=slash.left;x<slash.right;x++)if(slash.pixels.has(y*image.width+x))xs.push(x);return xs.length?xs.reduce((a,b)=>a+b,0)/xs.length:null;};
   const first=centerAt(slash.top+1),last=centerAt(slash.bottom-2);if(first===null||last===null||first-last<slash.h*.3)continue;
-  const dots=parts.filter(part=>part!==slash&&part!==plus&&part.h>=maximumH*.3&&part.h<=maximumH*.75&&part.w/part.h>.4&&part.w/part.h<1.3);
-  const upper=dots.find(part=>part.left>plus.right&&part.left+part.w/2<first&&Math.abs(part.top-slash.top)<maximumH*.25);
+  const dots=parts.filter(part=>part!==slash&&(!requirePlus||part!==plus)&&part.h>=maximumH*.3&&part.h<=maximumH*.75&&part.w/part.h>.4&&part.w/part.h<1.3);
+  const start=requirePlus?plus.right:box.left;
+  const upper=dots.find(part=>part.left>start&&part.left+part.w/2<first&&Math.abs(part.top-slash.top)<maximumH*.25);
   const lower=dots.find(part=>part.left+part.w/2>last&&Math.abs(part.bottom-slash.bottom)<maximumH*.25&&upper&&part.top>upper.top+maximumH*.25);
-  if(upper&&lower&&parts.some(part=>part!==plus&&part!==slash&&part!==upper&&part!==lower&&part.left>=plus.right&&part.right<=upper.right&&part.h>=maximumH*.75))return true;
+  if(upper&&lower&&parts.some(part=>(!requirePlus||part!==plus)&&part!==slash&&part!==upper&&part!==lower&&part.left>=start&&part.right<=upper.right&&part.h>=maximumH*.75))return true;
  }
  return false;
 }
@@ -209,8 +216,8 @@ export function detectMatchPixels(image,evidence={}){
   }
  }
  for(const badge of versusCircles(image,parsed,'bonus')){
-  if(!opaqueBox(image,badge.box)||!bonusGlyphs(image,badge.box))continue;
-  meta.localOcrRegions=[...(meta.localOcrRegions||[]),{...badge,kind:'bonus',reason:'GREEN_PERCENTAGE_REQUIRES_LITERAL'}];
+  if(!opaqueBox(image,badge.box))continue;
+  meta.localOcrRegions=[...(meta.localOcrRegions||[]),{...badge,kind:'bonus',reason:'VISIBLE_PERCENTAGE_REQUIRES_LITERAL'}];
   const words=matchOcrRows(ocr).flatMap(row=>row.words).filter(word=>{
    const text=String(word.WordText||'').trim(),box={left:Number(word.Left)*sx,right:(Number(word.Left)+Number(word.Width))*sx,top:Number(word.Top)*sy,bottom:(Number(word.Top)+Number(word.Height))*sy};
    return /^[+%\d]+$/.test(text)&&box.left>=badge.box.left-2&&box.right<=badge.box.right+2&&box.top>=badge.box.top-2&&box.bottom<=badge.box.bottom+2;
@@ -220,7 +227,7 @@ export function detectMatchPixels(image,evidence={}){
   const value=Number(literal.slice(1,-1));if(value>100)continue;match[badge.field]=value;
   if(!meta._headerFields.includes(badge.field))meta._headerFields.push(badge.field);
   if(!meta._ocrFields.includes(badge.field))meta._ocrFields.push(badge.field);
-  meta.iconEvidence=[...(meta.iconEvidence||[]),{kind:'bonus-percentage',field:badge.field,club:badge.club,value,confidence:.96,box:badge.box,corroboration:'green-plus-and-percentage-with-literal'}];
+  meta.iconEvidence=[...(meta.iconEvidence||[]),{kind:'bonus-percentage',field:badge.field,club:badge.club,value,confidence:.96,box:badge.box,ink:badge.ink,corroboration:'plus-and-percentage-with-literal'}];
  }
  if(parsed._versus)for(const field of ['myBonus','rivalBonus']){
   if(!parsed._headerFields?.includes(field)||match[field]==null||meta.iconEvidence?.some(icon=>icon.kind==='bonus-percentage'&&icon.field===field))continue;

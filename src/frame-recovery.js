@@ -2,7 +2,7 @@ import {selectCompletionFrames} from './frame-selection.js';
 
 const sameTime=(a,b)=>Number.isFinite(Number(a))&&Number.isFinite(Number(b))&&Math.abs(Number(a)-Number(b))<.04;
 const eligible=probe=>Number.isFinite(Number(probe?.time))&&probe.layout?.usable!==false&&
- (probe.layout?.kind&&probe.layout.kind!=='unknown'||Number(probe.stableFrames)>=2);
+ (probe.wasSelected===true||probe.layout?.kind&&probe.layout.kind!=='unknown'||Number(probe.stableFrames)>=2);
 
 /** Read retained original pauses without resampling the video. The caller
  * registers the decoded canvases and owns their disposal after both readers. */

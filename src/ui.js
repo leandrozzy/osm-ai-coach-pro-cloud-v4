@@ -161,7 +161,21 @@ async function runAnalysis(retry=false){
  const files=retry?[...(review?.files||[])]:[...(root.querySelector('#media')?.files||[])];if(!files.length)throw Error('Escolha ao menos um vídeo ou imagem.');
  const slotId=getSlot().id,state=getState(),reader=retry?(review?.reader||'hybrid'):root.querySelector('[name=reader]').value;
  busy=true;review=null;progress='Preparando mídia…';analysisController=new AbortController();const controller=analysisController;let deadline;render();
- try{deadline=setTimeout(()=>controller.abort(),retry||state.settings.profile==='complete'?180000:90000);const operation=analyzeMedia(files,analysisType,{signal:controller.signal,vision:reader!=='local',localRecovery:reader!=='vision',fallback:state.settings.fallback,username:state.settings.username,myTeam:slotTeam(getSlot()),rivalName:getSlot().match.rivalName,competitionType:getSlot().competitionType,model:state.settings.model,visionModel:state.settings.visionModel,profile:retry?'complete':state.settings.profile},message=>{if(controller.signal.aborted)return;progress=message;const e=root.querySelector('.progress');if(e)e.textContent=message;});const result=await operation;let merged=previous?fuseExtraction(previous,result):result;const evidence=[...(previous?.rosterEvidence||[]),...(result.rosterEvidence||[])];if(analysisType==='squad'){const checked=refineSquadRoster({...merged,playerCandidates:[...(previous?.playerCandidates||[]),...(result.playerCandidates||[])]},evidence);merged=checked.data;result.errors=[...new Set([...result.errors,...checked.warnings])];}review={...result,...merged,reader,rosterEvidence:evidence,readingTeams:[...new Set([...(previous?.readingTeams||[]),...(result.readingTeams||[])])],coverage:coverage(analysisType,merged),slot:slotId};progress=review.coverage?.complete?'Leitura pronta para revisão.':'Leitura parcial. Revise campos NI e avisos antes de aplicar.';}
+ try{
+  deadline=setTimeout(()=>controller.abort(),retry||state.settings.profile==='complete'?180000:90000);
+  const result=await analyzeMedia(files,analysisType,{resume:previous,signal:controller.signal,vision:reader!=='local',localRecovery:reader!=='vision',fallback:state.settings.fallback,username:state.settings.username,myTeam:slotTeam(getSlot()),rivalName:getSlot().match.rivalName,competitionType:getSlot().competitionType,model:state.settings.model,visionModel:state.settings.visionModel,profile:retry?'complete':state.settings.profile},message=>{
+   if(controller.signal.aborted)return;progress=message;const e=root.querySelector('.progress');if(e)e.textContent=message;
+  });
+  let merged=previous&&!result.resumed?fuseExtraction(previous,result):result;
+  const evidence=result.resumed?result.rosterEvidence:[...(previous?.rosterEvidence||[]),...(result.rosterEvidence||[])];
+  if(analysisType==='squad'){
+   const candidates=result.resumed?result.playerCandidates:[...(previous?.playerCandidates||[]),...(result.playerCandidates||[])];
+   const checked=refineSquadRoster({...merged,playerCandidates:candidates||[]},evidence);merged=checked.data;
+   result.errors=[...new Set([...result.errors,...checked.warnings])];
+  }
+  review={...result,...merged,readingSession:result.readingSession,resumed:result.resumed,previews:result.previews,frames:result.frames,errors:result.errors,elapsedMs:result.elapsedMs,reader,rosterEvidence:evidence,readingTeams:[...new Set([...(previous?.readingTeams||[]),...(result.readingTeams||[])])],coverage:coverage(analysisType,merged),slot:slotId};
+  progress=review.coverage?.complete?'Leitura pronta para revisão.':'Leitura parcial. Revise campos NI e avisos antes de aplicar.';
+ }
  catch(e){if(previous)review=previous;progress=e.message+' Dados existentes preservados.';}
  finally{clearTimeout(deadline);controller.abort();busy=false;render();}
 }

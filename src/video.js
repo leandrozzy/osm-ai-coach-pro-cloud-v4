@@ -1,6 +1,7 @@
 import {extractFrames,extractAdditionalFrames,imageToCanvas} from './frame-extractor.js';
 import {visualBatches} from './frame-selection.js';
 import {recoverOriginalFrames} from './frame-recovery.js';
+import {createReadingSession,restoreReadingSession,pendingReadingFields} from './reading-session.js';
 import {videoRequired,disableFailedProvider} from './reading-policy.js';
 import {matchFields} from './domain.js';
 import {applyScreenEvidence} from './visual-evidence.js';
@@ -44,7 +45,11 @@ export function batchOcrImages(batch,type){
 }
 export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
  if(files.length>24||files.some(f=>f.size>150*1024*1024))throw Error('Máximo 24 arquivos, 150 MB por arquivo.');
- const started=Date.now(),limit=options.profile==='complete'?180000:90000,frames=[],reserves=[],errors=[],attempts=[],rosterEvidence=[],readingTeams=[],disabled=new Set();let data=blankExtraction();
+ const started=Date.now(),limit=options.profile==='complete'?180000:90000,frames=[],reserves=[],sessionReserves=[],errors=[],attempts=[],rosterEvidence=[],readingTeams=[],disabled=new Set();let data=blankExtraction();
+ const context={username:options.username,myTeam:options.myTeam||'NI',rivalName:options.rivalName,competitionType:options.competitionType};
+ const restored=restoreReadingSession(options.resume,files,type,context),seed=restored!==null?options.resume:null;
+ if(seed){data={...fuseExtraction(data,seed),playerCandidates:structuredClone(seed.playerCandidates||[])};rosterEvidence.push(...seed.rosterEvidence||[]);readingTeams.push(...seed.readingTeams||[]);attempts.push(...String(seed.mode||'Leitura anterior').split(' + ').filter(Boolean));}
+ const localCompleted=new Set(),cloudCompleted=new Set();
  const localEnabled=options.localRecovery===true||!options.vision,localReadFrames=new Set();let localAvailable=localEnabled;
  const userSignal=options.signal,deadlineController=new AbortController(),cancel=()=>deadlineController.abort();
  let videoController=null;
@@ -53,23 +58,30 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
  const deadlineTimer=setTimeout(cancel,limit);options={...options,signal:deadlineController.signal};
  try{
  const expired=()=>options.signal?.aborted||Date.now()-started>=limit;
- const context={username:options.username,myTeam:options.myTeam||'NI',rivalName:options.rivalName,competitionType:options.competitionType};
- const statusRequest=options.vision?apiStatus(options.signal):Promise.resolve(null),providers=new Set(sessionProviders());
+ const statusRequest=options.vision&&(!seed||restored.length)?apiStatus(options.signal):Promise.resolve(null),providers=new Set(sessionProviders());
  const configured=async()=>{const status=await statusRequest;for(const [provider,value] of Object.entries(status?.providers||{}))if(value===true||value?.configured)providers.add(provider);};
  if(!localEnabled)await configured();
- if(options.vision&&!providers.size&&!localEnabled)throw Error('Nenhuma chave detectada. Abra Configurações, salve uma chave Google/Groq/OCR.space/TwelveLabs e tente novamente.');
- onUpdate(localEnabled?'Preparando leitura local das telas…':'APIs detectadas: '+[...providers].join(', '));
- for(const file of files){
+ if(options.vision&&!providers.size&&!localEnabled&&(!seed||restored.length))throw Error('Nenhuma chave detectada. Abra Configurações, salve uma chave Google/Groq/OCR.space/TwelveLabs e tente novamente.');
+ onUpdate(seed?'Retomando as telas pendentes da leitura anterior…':localEnabled?'Preparando leitura local das telas…':'APIs detectadas: '+[...providers].join(', '));
+ if(seed)reserves.push(...restored);
+ else for(const file of files){
   if(expired())break;onUpdate('Preparando '+file.name);
   try{if(file.type.startsWith('video/')){const selected=await extractFrames(file,{type,profile:options.profile,signal:options.signal});const fileIndex=files.indexOf(file);frames.push(...selected.map(f=>({...f,name:file.name,fileIndex})));if(selected.omittedFrames?.length)reserves.push({file,fileIndex,probes:selected.omittedFrames});}else if(file.type.startsWith('image/'))frames.push({canvas:await imageToCanvas(file),name:file.name,fileIndex:files.indexOf(file),time:0});else errors.push('Formato não suportado: '+file.name);}catch(e){errors.push(e.message);}
  }
- if(!frames.length)throw Error(options.signal.aborted?(userSignal?.aborted?'Leitura cancelada.':'Tempo limite ao preparar as telas. Tente um trecho menor; os dados salvos foram preservados.'):'Nenhuma tela extraída.');
- const previews=frames.map(f=>({url:f.canvas.toDataURL('image/jpeg',.25),name:f.name,time:f.time}));
+ if(!frames.length&&!seed)throw Error(options.signal.aborted?(userSignal?.aborted?'Leitura cancelada.':'Tempo limite ao preparar as telas. Tente um trecho menor; os dados salvos foram preservados.'):'Nenhuma tela extraída.');
+ for(const frame of frames)frame.wasSelected=true;
+ // Keep an untouched queue until the final checkpoint. A cancelled decode or
+ // partially read frame remains available even if this attempt consumed it.
+ sessionReserves.push(...reserves.map(reserve=>({fileIndex:reserve.fileIndex,probes:reserve.probes.map(probe=>({...probe}))})));
+ const previews=(seed?.previews||[]).map(preview=>({...preview}));
+ const previewFrames=batch=>{for(const frame of batch)if(!previews.some(preview=>(preview.fileIndex===frame.fileIndex||preview.fileIndex==null&&preview.name===frame.name)&&Math.abs(Number(preview.time)-Number(frame.time))<.04))previews.push({url:frame.canvas.toDataURL('image/jpeg',.25),name:frame.name,fileIndex:frame.fileIndex,time:frame.time});};
+ previewFrames(frames);
  const captureEvidence=(response,batch)=>{
   for(const proof of response.teamEvidence||[])if(proof.verified===true&&typeof proof.team==='string'&&proof.team.trim()&&proof.team!=='NI')readingTeams.push(proof.team.trim());
   if(type==='squad')for(const evidence of response.squadEvidence||[]){const frame=batch[evidence.frameIndex];if(frame)rosterEvidence.push(...(evidence.players||[]).map(row=>({...row,width:evidence.width,height:evidence.height,frameId:frame.name+':'+frame.time})));}
  };
  const localScreen=async frame=>{
+  if(frame.localDone===true){localCompleted.add(frame);return;}
   if(!localAvailable||expired()||localReadFrames.has(frame))return;
   localReadFrames.add(frame);
   onUpdate('Leitura local '+localReadFrames.size+'/'+frames.length+' · '+frame.name);
@@ -79,6 +91,7 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
    data=fuseExtraction(data,read.data);captureEvidence(read.response||{},[frame]);
    const checked=applyScreenEvidence(data,read.response||{},[frame],type);data=checked.data;
    attempts.push('OCR local estruturado',...checked.used);errors.push(...read.warnings||[]);
+   if(!options.signal.aborted&&!(read.warnings||[]).some(message=>/prazo|tempo limite|cancelad/i.test(message)))localCompleted.add(frame);
   }catch(e){
    errors.push('OCR local: '+e.message);
    if(/carregar|download|inicializ|indispon[ií]vel|motor|bootstrap/i.test(e.message)||['OCR_INIT','OCR_UNAVAILABLE'].includes(e.code))localAvailable=false;
@@ -86,14 +99,14 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
  };
  // Initialize and read the first original screen before using the providers.
  // The remaining local screens can run while cloud requests are pending.
- if(localEnabled)await localScreen(frames[0]);
+ if(localEnabled&&frames.length)await localScreen(frames[0]);
  if(localEnabled)await configured();
  const batchSize=type==='match'?3:2;
- let next=0,done=0,videoJob=null;const visualSlots=visualBatches(frames.length,3,{batchSize});
+ let next=0,done=0,videoJob=null,resumeVisualCalls=0;const visualSlots=visualBatches(frames.length,3,{batchSize});
  const visualAvailable=()=>providers.has('google')&&!disabled.has('google')||providers.has('groq')&&!disabled.has('groq')&&!disabled.has('groq-visual');
  const startVideo=()=>{
   const remaining=limit-(Date.now()-started);
-  if(videoJob||!options.vision||!providers.has('twelvelabs')||!videoRequired(type,data)||remaining<5000||expired())return;
+  if(videoJob||seed&&!frames.length||!options.vision||!providers.has('twelvelabs')||!videoRequired(type,data)||remaining<5000||expired())return;
   videoController=new AbortController();options.signal?.addEventListener('abort',stopVideo,{once:true});
   videoJob=(async()=>{
    for(const file of files.filter(f=>f.type.startsWith('video/'))){
@@ -102,23 +115,30 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
      const budgetMs=Math.min(50000,limit-(Date.now()-started));
      const missing=coverage(type,data).missing;
      const targetFields=type==='match'?matchFields.filter(([key,label])=>missing.some(field=>field===label||field.startsWith(label+' ('))||(data.conflicts||[]).some(conflict=>conflict.field==='match.'+key&&!conflict.resolved)).map(([key])=>key):[...new Set(missing.map(field=>field.includes(': ')?field.split(': ').at(-1):field==='Início da lista não confirmado'?'meta.sawTop':field==='Fim da lista não confirmado'?'meta.sawBottom':'').filter(field=>/^[A-Za-z][A-Za-z0-9.]{0,50}$/.test(field)))];
-     const r=await analyzeVideo(file,type,{...context,targetFields},videoController.signal,onUpdate,{frames:frames.filter(f=>f.fileIndex===files.indexOf(file)&&f.canvas.width>0),budgetMs});
+     const sampled=frames.filter(f=>f.fileIndex===files.indexOf(file)&&f.canvas.width>0);
+     const r=await analyzeVideo(file,type,{...context,targetFields},videoController.signal,onUpdate,{frames:sampled,budgetMs});
+     if(coverage(type,r.data||blankExtraction()).count>0)for(const frame of sampled)cloudCompleted.add(frame);
      data=fuseExtraction(data,type==='match'?sanitizeProviderMatch(r.data,context):r.data);attempts.push('twelvelabs');
     }catch(e){if(!videoController.signal.aborted)errors.push('TwelveLabs: '+e.message);break;}
    }
   })();
  };
- if(providers.has('twelvelabs')&&!providers.has('groq')&&!providers.has('ocrspace')&&!providers.has('google'))startVideo();
+ if(!seed&&providers.has('twelvelabs')&&!providers.has('groq')&&!providers.has('ocrspace')&&!providers.has('google'))startVideo();
  const worker=async(additional=false)=>{while(next<frames.length&&!expired()){
   if(coverage(type,data).complete)break;
-  const index=next;next+=batchSize;const batch=frames.slice(index,index+batchSize);
+  const index=next;next+=batchSize;const batch=frames.slice(index,index+batchSize).filter(frame=>frame.cloudDone!==true);
+  if(!batch.length)continue;
   onUpdate('Lendo '+done+'/'+frames.length+' telas · provedores disponíveis');
   try{
    if(!options.vision||!providers.size){done+=batch.length;continue;}
    if([...providers].filter(p=>p!=='twelvelabs').every(p=>disabled.has(p))){startVideo();if(!localEnabled)errors.push('Leitura por imagem indisponível: confira os avisos das APIs.');next=frames.length;break;}
    if(options.vision&&providers.size){
-    const images=batch.map(f=>visualImage(f.canvas));
-    const r=await apiRequest('analyze',{type,images,useVisual:!additional&&visualSlots.has(Math.floor(index/batchSize)),useText:!additional,forceOCR:true,preferredProvider:disabled.has('google')?'groq':'google',ocrImages:batchOcrImages(batch,type),focusImages:additional?[]:batch.slice(0,2).map((f,j)=>focusImage(f.canvas,type,index+j)).filter(Boolean),context,disabled:[...disabled],models:{groqVision:options.visionModel,groqText:options.model}},options.signal,Math.max(1000,Math.min(35000,limit-(Date.now()-started))));
+    const images=batch.map(f=>visualImage(f.canvas)),useVisual=seed?resumeVisualCalls<3&&visualAvailable():!additional&&visualSlots.has(Math.floor(index/batchSize));
+    if(seed&&useVisual)resumeVisualCalls++;
+    const targeted=seed&&type==='match'?{...context,targetFields:matchFields.filter(([,label])=>pendingReadingFields(type,data).some(field=>field===label||field.startsWith(label+' ('))).map(([field])=>field)}:context;
+    const r=await apiRequest('analyze',{type,images,useVisual,useText:seed?useVisual:!additional,forceOCR:true,preferredProvider:disabled.has('google')?'groq':'google',ocrImages:batchOcrImages(batch,type),focusImages:additional?[]:batch.slice(0,2).map((f,j)=>focusImage(f.canvas,type,index+j)).filter(Boolean),context:targeted,disabled:[...disabled],models:{groqVision:options.visionModel,groqText:options.model}},options.signal,Math.max(1000,Math.min(35000,limit-(Date.now()-started))));
+    const useful=coverage(type,r.data||blankExtraction()).count>0||(r.matchEvidence||[]).length||(r.squadEvidence||[]).length||(r.calendarEvidence||[]).length;
+    if(useful)for(const frame of batch)cloudCompleted.add(frame);
     data=fuseExtraction(data,type==='match'?sanitizeProviderMatch(r.data,context):r.data);attempts.push(...r.attempts||[]);
     captureEvidence(r,batch);
 
@@ -137,26 +157,23 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
  for(const reading of readings)if(reading.status==='rejected')errors.push(reading.reason?.message||'Falha ao completar a leitura.');
  // Revisit retained original pauses in small batches, refreshing the missing
  // fields after each read. Local and cloud readers share the same canvases.
- const recovery=await recoverOriginalFrames({
-  reserves,type,signal:options.signal,getMissing:()=>{
-   const missing=coverage(type,data).missing;
-   if(type==='match')for(const [field,label] of matchFields)if((data.conflicts||[]).some(conflict=>conflict.field==='match.'+field&&!conflict.resolved)&&!missing.includes(label))missing.push(label+' (divergência)');
-   return missing;
-  },
+ await recoverOriginalFrames({
+  reserves,type,signal:options.signal,getMissing:()=>pendingReadingFields(type,data),
   excludeTimes:fileIndex=>frames.filter(frame=>frame.fileIndex===fileIndex).map(frame=>frame.time),
-  remainingMs:()=>localAvailable||options.vision&&providers.has('ocrspace')&&!disabled.has('ocrspace')?limit-(Date.now()-started):0,
-  decode:(reserve,probes)=>{
+  remainingMs:()=>localAvailable||options.vision&&(seed?visualAvailable()||providers.has('ocrspace')&&!disabled.has('ocrspace')||providers.has('twelvelabs'):providers.has('ocrspace')&&!disabled.has('ocrspace'))?limit-(Date.now()-started):0,
+  decode:async(reserve,probes)=>{
    onUpdate('Completando campos pendentes nas telas originais…');
+   if(reserve.file.type.startsWith('image/'))return [{...probes[0],canvas:await imageToCanvas(reserve.file)}];
    return extractAdditionalFrames(reserve.file,{probes,signal:options.signal,maxFrames:probes.length});
   },
   onFrames:extras=>{
    next=frames.length;frames.push(...extras);
-   previews.push(...extras.map(frame=>({url:frame.canvas.toDataURL('image/jpeg',.25),name:frame.name,time:frame.time})));
+   previewFrames(extras);
   },
   readBatch:async extras=>{
    try{
     for(const frame of extras)await localScreen(frame);
-    if(options.vision&&providers.has('ocrspace')&&!disabled.has('ocrspace'))await worker(true);
+    if(options.vision&&(seed?visualAvailable()||providers.has('ocrspace')&&!disabled.has('ocrspace'):providers.has('ocrspace')&&!disabled.has('ocrspace')))await worker(true);
    }finally{
     // A later video fallback also needs these newly recovered original panels.
     // Keep at most eight extras until the global finally when it is configured.
@@ -170,10 +187,12 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
  if(expired())errors.push('Limite atingido ou cancelado: revise os dados parciais.');
  if(type==='squad'){const checked=refineSquadRoster(data,rosterEvidence);data=checked.data;data.warnings.push(...checked.warnings);}
  const quality=coverage(type,data);
- if(!quality.complete&&recovery.remainingRelevant)errors.push('Há pausas adicionais no vídeo. Use Completar leitura para os campos ainda pendentes.');
+ const readingSession=createReadingSession({files,type,context,reserves:sessionReserves,frames,localEnabled,vision:options.vision,localDone:localCompleted,cloudDone:cloudCompleted});
+ const pendingScreens=readingSession.pending.some(entry=>entry.probes.some(probe=>probe.layout?.usable!==false&&(probe.wasSelected||probe.layout?.kind&&probe.layout.kind!=='unknown'||probe.stableFrames>=2)));
+ if(!quality.complete&&pendingScreens)errors.push('Há telas ainda não concluídas. Use Completar leitura para os campos pendentes.');
  if(!quality.complete)errors.push('Leitura parcial: '+quality.missing.slice(0,12).join('; '));
  const unresolved=data.conflicts.filter(c=>!c.resolved);if(unresolved.length)errors.push(unresolved.length+' divergências entre leituras: confira os valores na mídia.');
- return {...data,rosterEvidence,readingTeams:[...new Set(readingTeams)],files:[...files],type,previews,errors:[...new Set([...errors,...data.warnings])],mode:[...new Set(attempts)].join(' + ')||'Sem resposta',frames:frames.length,coverage:quality,elapsedMs:Date.now()-started,createdAt:new Date().toISOString()};
+ return {...data,rosterEvidence,readingTeams:[...new Set(readingTeams)],files:[...files],type,previews,readingSession,resumed:!!seed,errors:[...new Set([...errors,...data.warnings])],mode:[...new Set(attempts)].join(' + ')||'Sem resposta',frames:previews.length,coverage:quality,elapsedMs:Date.now()-started,createdAt:new Date().toISOString()};
  }finally{
   clearTimeout(deadlineTimer);userSignal?.removeEventListener('abort',cancel);
   options.signal?.removeEventListener('abort',stopVideo);stopVideo();
