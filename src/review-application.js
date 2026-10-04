@@ -1,9 +1,10 @@
 import {known,cleanMatch,cleanPlayers,matchFields} from './domain.js';
 import {normalize} from './utils.js';
 import {dedupePlayers} from './parser-squad.js';
-import {cleanCalendar,fuseExtraction} from './extraction.js';
+import {cleanCalendar,fuseExtraction,relevantConflicts} from './extraction.js';
 import {rivalHuman} from './slots.js';
 import {isRivalNickname} from './parser-match.js';
+import {synchronizePreparation} from './preparation.js';
 
 export const slotTeam=slot=>known(slot.myTeam)?slot.myTeam:known(slot.match?.myName)?slot.match.myName:'NI';
 export const readingTeam=(type,parsed,meta={})=>type==='match'?parsed?.myName:parsed?.meta?.team||meta.team;
@@ -17,7 +18,7 @@ export function applyReading(slot,type,parsed,{meta={},teams=[],conflicts=[],use
  if(known(team)&&known(current)&&!sameTeam(team,current))throw Error('Esta leitura é de '+team+', mas S'+slot.id+' pertence a '+current+'. Escolha o slot desse clube em “Salvar no slot” ou corrija o nome lido antes de confirmar.');
  const next=structuredClone(slot);
  if(type==='match'){
-  const unresolved=conflicts.filter(c=>!c.resolved&&String(c.field).startsWith('match.')).map(c=>c.field.slice(6)).filter(field=>known(parsed?.[field])&&(parsed?._fieldSources?.[field]?.rank||0)<4);
+  const unresolved=relevantConflicts('match',conflicts).filter(c=>!c.resolved).map(c=>c.field.slice(6)).filter(field=>known(parsed?.[field])&&(parsed?._fieldSources?.[field]?.rank||0)<4);
   if(unresolved.length)throw Error('Escolha o valor correto nos campos divergentes antes de confirmar, ou marque NI quando não for possível identificar.');
   const match=cleanMatch(parsed);if(Object.keys(match).length<=1)throw Error('Nenhum dado válido identificado. Preencha manualmente.');
   const savedSources={...next.match._fieldSources};
@@ -56,8 +57,12 @@ export function applyReading(slot,type,parsed,{meta={},teams=[],conflicts=[],use
   next.match._lastReader=mode;next.match._lastReadAt=at;next.tacticStale=!!next.tactics;
  }else if(type==='squad'){
   const rows=cleanPlayers(Array.isArray(parsed)?parsed:parsed?.players||[]);if(!rows.length)throw Error('Nenhum jogador válido. Confira nomes e posições.');
-  next.squad.players=dedupePlayers([...next.squad.players,...rows]);next.squad.updatedAt=at;
   const headerMeta=parsed?.meta||meta;if(known(headerMeta.cash))next.director.cash=String(headerMeta.cash).slice(0,80);
+  const complete=headerMeta.sawTop===true&&headerMeta.sawBottom===true&&['sawTop','sawBottom'].every(field=>(headerMeta._fieldSources?.[field]?.rank||0)>=2);
+  const nameKey=value=>normalize(value).replace(/[\s.\-’']/g,'');
+  const aliases=(parsed?.playerCandidates||[]).filter(candidate=>candidate._rosterPending===true&&known(candidate._rosterAliasOf)&&rows.some(row=>nameKey(row.name)===nameKey(candidate._rosterAliasOf)));
+  const preserved=next.squad.players.filter(player=>(player._fieldSources?.name?.rank||0)>=4||!aliases.some(alias=>nameKey(alias.name)===nameKey(player.name)));
+  next.squad.players=dedupePlayers(complete?rows:[...preserved,...rows]);next.squad.updatedAt=at;
   const groundedStrength=(headerMeta._fieldSources?.strength?.rank||0)>=2?headerMeta.strength:undefined;
   const fields={myName:'team',mySquadValue:'squadValue',myStrength:'strength',myGK:'GK',myDEF:'DEF',myMID:'MID',myATT:'ATT',myPlayers:'expectedPlayers'};
   const facts=cleanMatch({myName:headerMeta.team,mySquadValue:headerMeta.squadValue,myStrength:groundedStrength,myGK:headerMeta.GK,myDEF:headerMeta.DEF,myMID:headerMeta.MID,myATT:headerMeta.ATT,myPlayers:headerMeta.expectedPlayers});
@@ -67,7 +72,9 @@ export function applyReading(slot,type,parsed,{meta={},teams=[],conflicts=[],use
  }else if(type==='calendar'){
   const rows=cleanCalendar(Array.isArray(parsed)?parsed:[]);if(!rows.length)throw Error('Nenhum jogo válido. Confira a rodada ou data.');
   next.calendar=fuseExtraction({calendar:next.calendar},{calendar:rows}).calendar;
+  const readingMeta=parsed?.meta||meta;
+  next.calendarMeta={...next.calendarMeta,...readingMeta};
  }else throw Error('Tipo de leitura inválido.');
  if(!known(current)&&known(team))next.myTeam=String(team).slice(0,120);
- return next;
+ return synchronizePreparation(next);
 }

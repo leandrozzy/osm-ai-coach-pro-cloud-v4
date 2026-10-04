@@ -1,6 +1,35 @@
-import {cleanMatch,cleanPlayers,matchFields,known,num,scoreOutcome} from './domain.js';
+import {cleanMatch,cleanPlayers,matchFields,autoMatchFields,reportTacticFields,confirmedMatchSecretTraining,confirmedMatchField,known,num,scoreOutcome} from './domain.js';
 import {normalize} from './utils.js';
 const safeText=(v,max=100)=>known(v)&&['string','number'].includes(typeof v)?String(v).trim().slice(0,max):'NI';
+function listFrameReference(raw){
+ if(!raw||!Number.isInteger(raw.fileIndex)||raw.fileIndex<0||!Number.isFinite(raw.time)||raw.time<0)return null;
+ return {fileIndex:raw.fileIndex,time:raw.time,...(typeof raw.name==='string'?{name:raw.name.slice(0,200)}:{}),...(typeof raw.frameId==='string'?{frameId:raw.frameId.slice(0,200)}:{})};
+}
+/** Keep only bounded, dated calendar evidence. Provider claims without a
+ * literal-layout/pixel/manual source cannot attach a proof image to a list. */
+export function cleanCalendarBoundaryProof(raw,field){
+ const kind=field==='sawTop'?'calendar-start-round':field==='sawBottom'?'calendar-terminal-day':null;
+ if(!raw||typeof raw!=='object'||raw.kind!==kind||!kind)return null;
+ const width=raw.width,height=raw.height,box=raw.box;
+ if(!Number.isFinite(width)||!Number.isFinite(height)||width<=0||height<=0||width>16000||height>16000||!box||!['left','right','top','bottom'].every(key=>Number.isFinite(box[key]))||box.left<0||box.top<0||box.right>width||box.bottom>height||box.right<=box.left||box.bottom<=box.top)return null;
+ const date=String(raw.date||''),parts=date.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);if(!parts)return null;
+ const parsedDate=new Date(Date.UTC(+parts[3],+parts[2]-1,+parts[1]));
+ if(+parts[3]<1900||+parts[3]>2200||parsedDate.getUTCFullYear()!==+parts[3]||parsedDate.getUTCMonth()!==+parts[2]-1||parsedDate.getUTCDate()!==+parts[1])return null;
+ const marker=safeText(raw.marker,160),normalized=normalize(marker);
+ if(field==='sawTop'&&(raw.round!==1||!/^jornada\s*1$/.test(normalized)))return null;
+ if(field==='sawBottom'&&(raw.noMatch!==true||!normalized.includes('ultimo dia')||!/(?:resumo da|resumo) (?:epoca|temporada)/.test(normalized)))return null;
+ const textBoxes={};
+ for(const key of ['marker','date',...(field==='sawBottom'?['summary']:[])]){
+  const cell=raw.textBoxes?.[key];
+  if(!cell||!['left','right','top','bottom'].every(k=>Number.isFinite(cell[k]))||cell.left<box.left||cell.right>box.right||cell.top<box.top||cell.bottom>box.bottom||cell.right<=cell.left||cell.bottom<=cell.top)return null;
+  textBoxes[key]=Object.fromEntries(['left','right','top','bottom'].map(k=>[k,cell[k]]));
+ }
+ const out={kind,marker,date,width,height,box:Object.fromEntries(['left','right','top','bottom'].map(key=>[key,box[key]])),textBoxes,...(field==='sawTop'?{round:1}:{noMatch:true})};
+ for(const key of ['frameIndex','fileIndex'])if(Number.isInteger(raw[key])&&raw[key]>=0&&raw[key]<=5000)out[key]=raw[key];
+ if(Number.isFinite(raw.time)&&raw.time>=0&&raw.time<=864000)out.time=raw.time;
+ for(const key of ['frameId','name'])if(typeof raw[key]==='string'&&raw[key].trim())out[key]=raw[key].trim().slice(0,200);
+ return out;
+}
 export const blankExtraction=()=>({match:{},_matchFieldSources:{},players:[],calendar:[],calendarFragments:[],meta:{},sources:[],conflicts:[],warnings:[]});
 function cleanPendingMatchFacts(rows){
  return (Array.isArray(rows)?rows:[]).filter(row=>row&&matchFields.some(([field])=>field===row.field)&&known(row.value)&&['string','number','boolean'].includes(typeof row.value)).slice(0,80).map(row=>({field:row.field,value:typeof row.value==='string'?row.value.slice(0,120):row.value,reason:safeText(row.reason,240),source:safeText(row.source,160)}));
@@ -10,7 +39,6 @@ const textIdentityFields=new Set(['name','opponent','nickname','stage','myName',
 const monetaryFields=new Set(['value','cash','squadValue','mySquadValue','rivalSquadValue']);
 const metaFactFields=['team','cash','squadValue','strength','GK','DEF','MID','ATT','expectedPlayers','expectedRounds'];
 const matchHeaderFields=['myName','rivalName','rivalNickname','human','myStrength','rivalStrength','myGK','rivalGK','myDEF','rivalDEF','myMID','rivalMID','myATT','rivalATT','mySquadValue','rivalSquadValue','myPlayers','rivalPlayers','myBonus','rivalBonus','location'];
-const reportTacticFields=['rivalFormation','rivalPlan','rivalMarking','rivalOffside','rivalTackling'];
 function monetaryAmount(value){
  const text=String(value).trim().replace(/^(?:R\$|US\$|EUR|USD|[€$£])\s*/i,'').replace(/\s+/g,'');
  const match=text.match(/^(\d+(?:[.,]\d+)*)([KMB])?$/i);if(!match)return null;
@@ -44,7 +72,7 @@ function evidenceFor(record,type,source,options={},prior={}){
  const kind=sourceKind(source,options);
  const preserve=options.preserveEvidence===true||!source||['pixels','ocr-layout','ocr-explicit','ocr-consensus','manual'].includes(kind);
  const sources=preserve?cleanFieldSources(prior):{};
- const allowed=kind==='ocr-consensus'?(type==='match'?['myStrength','rivalStrength']:[]):kind==='pixels'?(type==='calendar'?['home','cup','result']:type==='squad'?['position','strength','training','forSale']:['secretTraining','referee','human','myStrength','rivalStrength','myBonus','rivalBonus']):kind==='ocr-layout'?(type==='calendar'?['round','date','time','displayedScore']:type==='squad'?['position','strength','age','value']:matchHeaderFields):kind==='ocr-explicit'?matchFields.map(([key])=>key).filter(key=>!textIdentityFields.has(key)):Object.keys(record);
+ const allowed=kind==='ocr-consensus'?(type==='match'?['myStrength','rivalStrength']:[]):kind==='pixels'?(type==='calendar'?['home','cup','result']:type==='squad'?['position','strength','shirtNumber','training','forSale']:['secretTraining','referee','human','myStrength','rivalStrength','myBonus','rivalBonus']):kind==='ocr-layout'?(type==='calendar'?['round','date','time','displayedScore']:type==='squad'?['position','strength','shirtNumber','age','value']:matchHeaderFields):kind==='ocr-explicit'?matchFields.map(([key])=>key).filter(key=>!textIdentityFields.has(key)):Object.keys(record);
  const selected=Array.isArray(options.fields)?options.fields:type==='match'&&kind==='ocr-layout'?[]:type==='match'&&kind==='pixels'?allowed.filter(key=>!['myStrength','rivalStrength','myBonus','rivalBonus'].includes(key)):allowed;
  for(const key of Object.keys(record)){
  if(key.startsWith('_')||key==='id'||!known(record[key]))continue;
@@ -68,7 +96,7 @@ function metaEvidenceFor(record,source,options={},prior={}){
 }
 const fieldRank=(row,key)=>Number(row?._fieldSources?.[key]?.rank)||0;
 const derivedSource=(rank,source)=>({kind:'derived',rank,source});
-function confirmedReportLock(data){return data.meta?.rivalReportLocked===true&&data.match?.secretTraining==='Sim'&&data._matchFieldSources?.secretTraining?.kind==='pixels'&&data._matchFieldSources.secretTraining.rank===3;}
+export function confirmedReportLock(data){return data?.meta?.rivalReportLocked===true&&confirmedMatchSecretTraining(data.match||{},data._matchFieldSources||{})&&data._matchFieldSources?.secretTraining?.kind==='pixels';}
 function enforceReportPrivacy(data){
  if(!confirmedReportLock(data))return data;
  const hidden=reportTacticFields.filter(key=>(data._matchFieldSources?.[key]?.rank||0)<4);
@@ -93,7 +121,7 @@ function enforceMatchConsistency(data){
  return data;
 }
 export function relevantConflicts(type,conflicts=[]){
- return type==='match'?conflicts.filter(c=>c.field?.startsWith('match.')&&matchFields.some(([key])=>c.field==='match.'+key)):conflicts;
+ return type==='match'?conflicts.filter(c=>c.field?.startsWith('match.')&&autoMatchFields.some(([key])=>c.field==='match.'+key)):conflicts;
 }
 export function normalizeDate(v){
  const m=String(v||'').match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2}|\d{4})$/);
@@ -137,6 +165,14 @@ export function normalizeExtraction(raw={},type,source='',options={}){
  // A model's claim to have seen a list boundary cannot certify list completeness.
  // Literal OCR layout, an actual pixel check or the user's review can certify it.
  for(const field of ['sawTop','sawBottom'])if(source&&out.meta[field]&&(out.meta._fieldSources[field]?.rank||0)<2)out.meta[field]=false;
+ if(type==='calendar')for(const field of ['sawTop','sawBottom']){
+  const proof=out.meta[field]===true&&(out.meta._fieldSources[field]?.rank||0)>=2?cleanCalendarBoundaryProof(m[field+'Proof'],field):null;
+  if(proof)out.meta[field+'Proof']=proof;
+ }
+ if(type==='squad')for(const field of ['sawTop','sawBottom']){
+  const frame=out.meta[field]===true&&(out.meta._fieldSources[field]?.rank||0)>=2?listFrameReference(m[field+'Frame']):null;
+  if(frame)out.meta[field+'Frame']=frame;
+ }
  if(type==='match'&&(!source||options.preserveEvidence===true))out.meta.pendingMatchFacts=cleanPendingMatchFacts(m.pendingMatchFacts);
  // Squad accounting fields have no editable counterpart in match review.
  // A number from an unrelated screen must not become a match disagreement.
@@ -312,6 +348,14 @@ export function fuseExtraction(first,second){
  if(out.meta.rivalReportLocked&&(!known(out.match.secretTraining)||(out._matchFieldSources.secretTraining?.rank||0)<2))out.match.secretTraining='Sim';
  out.meta.sawTop=am.sawTop===true||bm.sawTop===true;out.meta.sawBottom=am.sawBottom===true||bm.sawBottom===true;
  for(const field of ['sawTop','sawBottom']){const first=am[field]===true?am._fieldSources?.[field]:null,second=bm[field]===true?bm._fieldSources?.[field]:null;if(second&&(!first||second.rank>first.rank))out.meta._fieldSources[field]={...second};else if(first)out.meta._fieldSources[field]={...first};}
+ for(const field of ['sawTop','sawBottom']){
+  const first=am[field]===true&&(am._fieldSources?.[field]?.rank||0)>=2?cleanCalendarBoundaryProof(am[field+'Proof'],field):null;
+  const second=bm[field]===true&&(bm._fieldSources?.[field]?.rank||0)>=2?cleanCalendarBoundaryProof(bm[field+'Proof'],field):null;
+  const proof=second&&(!first||(bm._fieldSources?.[field]?.rank||0)>(am._fieldSources?.[field]?.rank||0))?second:first;
+  if(proof)out.meta[field+'Proof']=proof;else delete out.meta[field+'Proof'];
+  const frame=(bm[field]===true&&(bm._fieldSources?.[field]?.rank||0)>=2?listFrameReference(bm[field+'Frame']):null)||(am[field]===true&&(am._fieldSources?.[field]?.rank||0)>=2?listFrameReference(am[field+'Frame']):null);
+  if(frame)out.meta[field+'Frame']=frame;else delete out.meta[field+'Frame'];
+ }
  out.meta.visibleNames=[...new Set([...(am.visibleNames||[]),...(bm.visibleNames||[])])];
  out.meta.hiddenFields=[...new Set([...(am.hiddenFields||[]),...(bm.hiddenFields||[])])];
  out.conflicts=uniqueConflicts(conflicts);
@@ -324,7 +368,18 @@ export function fuseExtraction(first,second){
 export function coverage(type,data){
  const missing=[],hidden=[],notApplicable=[];let present=0,total=0,checksPassed=0,checksTotal=0;
  const check=(passed,label)=>{checksTotal++;if(passed)checksPassed++;else missing.push(label);};
- if(type==='match'){for(const [key,label] of matchFields){if(confirmedReportLock(data)&&reportTacticFields.includes(key)&&!known(data.match?.[key])){hidden.push(label);continue;}if(key==='rivalNickname'&&data.match?.human===false&&(data._matchFieldSources?.human?.rank||0)>=2&&!known(data.match?.[key])){notApplicable.push(label+' (CPU)');continue;}total++;const pending=(data.meta?.pendingMatchFacts||[]).some(fact=>fact.field===key)&&(data._matchFieldSources?.[key]?.rank||0)<2;if(known(data.match?.[key])&&!pending)present++;else missing.push(label+(pending?' (leitura sem comprovação)':''));}}
+ if(type==='match'){
+  const match=data.match||{},sources=data._matchFieldSources||match._fieldSources||{},secret=confirmedMatchSecretTraining(match,sources);
+  for(const [key,label] of autoMatchFields){
+   const confirmed=confirmedMatchField(match,key,sources);
+   if(secret&&reportTacticFields.includes(key)&&!confirmed){hidden.push(label);continue;}
+   if(key==='rivalNickname'&&match.human===false&&(sources.human?.rank||0)>=2&&!known(match[key])){notApplicable.push(label+' (CPU)');continue;}
+   total++;
+   const pending=(data.meta?.pendingMatchFacts||[]).some(fact=>fact.field===key)&&(sources[key]?.rank||0)<2;
+   if(confirmed&&!pending)present++;
+   else missing.push(label+(pending||known(match[key])&&!confirmed?' (leitura sem comprovação)':''));
+  }
+ }
  else{
  const rows=type==='squad'?data.players:data.calendar;
  const fields=type==='squad'?['name','position','strength','age','value','forSale','training']:['round','date','time','opponent','home','cup','score','result'];

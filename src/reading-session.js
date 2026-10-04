@@ -1,5 +1,5 @@
 import {blankExtraction,coverage,relevantConflicts} from './extraction.js';
-import {matchFields} from './domain.js';
+import {autoMatchFields} from './domain.js';
 
 const sameTime=(first,second)=>Math.abs(first-second)<.04;
 const fileKey=file=>({name:String(file?.name||''),type:String(file?.type||''),size:Number(file?.size)||0,lastModified:Number(file?.lastModified)||0});
@@ -60,8 +60,8 @@ export function pendingReadingFields(type,data){
  const source=data||blankExtraction(),missing=[...coverage(type,source).missing];
  if(type==='match')for(const conflict of relevantConflicts(type,source.conflicts||[])){
   if(conflict.resolved)continue;
-  const label=matchFields.find(([field])=>conflict.field==='match.'+field)?.[1];
+  const label=autoMatchFields.find(([field])=>conflict.field==='match.'+field)?.[1];
   if(label&&!missing.some(item=>item===label||item.startsWith(label+' (')))missing.push(label+' (divergência)');
  }
- return missing;
+ return missing.sort((first,second)=>Number(!first.startsWith('Marcação rival'))-Number(!second.startsWith('Marcação rival')));
 }

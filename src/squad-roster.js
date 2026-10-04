@@ -22,13 +22,16 @@ function oneLetterApart(a,b){
 function supportsNearbyName(player,row){
  return oneLetterApart(nameKey(player.name),nameKey(row.name))&&['position','age','value','strength'].filter(key=>sameAttribute(key,player,row)).length>=2;
 }
-function sameObservedRow(low,high){
+function sameObservedRow(low,high,nearbyName=false){
  if(low.frameId==null||high.frameId==null||low.frameId===high.frameId||!low._nameBox||!high._nameBox)return false;
  // Never equate rows from different input files just because their prices
  // happen to match. Timestamped frames of one file retain that identity.
  const file=id=>typeof id==='string'&&id.includes(':')?id.slice(0,id.lastIndexOf(':')):null;
  if(file(low.frameId)&&file(high.frameId)&&file(low.frameId)!==file(high.frameId))return false;
- if(!sameAttribute('strength',low,high)||!sameAttribute('value',low,high))return false;
+ if(nearbyName){
+  if(!supportsNearbyName(low,high))return false;
+  for(const field of ['strength','value','age','position'])if(known(low[field])&&known(high[field])&&!sameAttribute(field,low,high))return false;
+ }else if(!sameAttribute('strength',low,high)||!sameAttribute('value',low,high))return false;
  for(const field of ['age','position'])if(known(low[field])&&known(high[field])&&!sameAttribute(field,low,high))return false;
  const width=Number(low.width||high.width),tolerance=Number.isFinite(width)?Math.max(4,width*.004):4;
  const a=low._nameBox,b=high._nameBox,ah=a.bottom-a.top,bh=b.bottom-b.top;
@@ -45,8 +48,21 @@ function sameObservedRow(low,high){
 function provedAliases(byName,records){
  const aliases=new Map();
  for(const [key,lowRows] of byName){
-  if(!lowRows.length||!lowRows.every(row=>Number.isFinite(row._rowNameConfidence)&&row._rowNameConfidence<=0))continue;
-  const matches=[...byName].filter(([other,highRows])=>other!==key&&records.has(other)&&lowRows.every(low=>highRows.some(high=>high._rowNameConfidence>=70&&sameObservedRow(low,high))));
+  if(!lowRows.length||!lowRows.every(row=>Number.isFinite(row._rowNameConfidence)))continue;
+  const zeroConfidence=lowRows.every(row=>row._rowNameConfidence<=0);
+  const matches=[...byName].filter(([other,highRows])=>{
+   if(other===key||!records.has(other))return false;
+   if(zeroConfidence&&lowRows.every(low=>highRows.some(high=>high._rowNameConfidence>=70&&sameObservedRow(low,high))))return true;
+   // A readable OCR typo (Ounah/Ounahi in the original Tobol video) can
+   // otherwise create a nineteenth player. Require one spelling edit, two
+   // matching attributes, both neighbouring rows and the same scroll geometry.
+   // The preferred spelling must be better read on two independent frames.
+   if(!oneLetterApart(key,other))return false;
+   return lowRows.every(low=>{
+    const proved=highRows.filter(high=>Number.isFinite(high._rowNameConfidence)&&high._rowNameConfidence>=Math.max(70,low._rowNameConfidence+5)&&sameObservedRow(low,high,true));
+    return new Set(proved.map(row=>row.frameId)).size>=2;
+   });
+  });
   if(matches.length===1)aliases.set(key,records.get(matches[0][0]).name);
  }
  return aliases;
@@ -74,7 +90,7 @@ export function refineSquadRoster(initial,evidenceRows=[]){
  const accept=row=>{const clean={...row};delete clean._rosterPending;delete clean._rosterReason;accepted.push(clean);};
  for(const row of unique.values()){
   const key=nameKey(row.name);
-  if(!manualName(row)&&aliases.has(key))pending.push({...row,_rosterPending:true,_rosterAliasOf:aliases.get(key),_rosterReason:'Nome OCR com confiança zero na mesma linha de '+aliases.get(key)+'. Confira a leitura preservada antes de incluir outro jogador.'});
+  if(!manualName(row)&&aliases.has(key))pending.push({...row,_rosterPending:true,_rosterAliasOf:aliases.get(key),_rosterReason:'Variação OCR do nome na mesma linha de '+aliases.get(key)+', comprovada pelos atributos e pelas duas linhas vizinhas. Confira a leitura preservada antes de incluir outro jogador.'});
   else if(manualName(row)||byName.has(key)){accept(row);if(byName.has(key))claimed.add(key);}
   else nearby.push(row);
  }
@@ -84,7 +100,7 @@ export function refineSquadRoster(initial,evidenceRows=[]){
   else pending.push({...row,_rosterPending:true,_rosterReason:'Nome sugerido pela IA sem confirmação em uma linha legível. Confira a tela e marque para incluir.'});
  }
  const duplicates=pending.filter(row=>row._rosterAliasOf).length,suggestions=pending.length-duplicates,warnings=[];
- if(duplicates)warnings.push(duplicates+' leitura'+(duplicates===1?'':'s')+' de nome com confiança zero repete'+(duplicates===1?'':'m')+' uma linha confirmada. Preservadas para revisão, sem duplicar a contagem do elenco.');
+ if(duplicates)warnings.push(duplicates+' variação'+(duplicates===1?'':'s')+' OCR de nome repete'+(duplicates===1?'':'m')+' uma linha confirmada. Preservadas para revisão, sem duplicar a contagem do elenco.');
  if(suggestions)warnings.push(suggestions+' nome'+(suggestions===1?'':'s')+' sugerido'+(suggestions===1?'':'s')+' pela IA sem linha OCR confirmada. '+(suggestions===1?'O jogador foi preservado':'Os jogadores foram preservados')+' para revisão e só '+(suggestions===1?'entra':'entram')+' no elenco se você marcar para incluir. O OCR pode ter deixado nomes válidos ilegíveis.');
  const next={...data,players:accepted,playerCandidates:pending};
  return {data:next,playerCandidates:pending,verified:true,warnings};

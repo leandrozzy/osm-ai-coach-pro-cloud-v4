@@ -5,8 +5,16 @@ import {coverage} from './extraction.js';
 // reconfirm every optional field or the end of an already legible list.
 export function videoRequired(type,data){
  const quality=coverage(type,data);
- if(type==='match')return ['myName','rivalName','myStrength','rivalStrength','location','referee'].some(field=>!known(data.match?.[field])||(data.conflicts||[]).some(conflict=>conflict.field==='match.'+field&&!conflict.resolved));
+ if(type==='match')return ['myName','rivalName','myStrength','rivalStrength','location','referee','rivalMarking'].some(field=>!(field==='rivalMarking'&&quality.hidden.includes('Marcação rival'))&&(!known(data.match?.[field])||field==='rivalMarking'&&(data._matchFieldSources?.rivalMarking?.rank||0)<2||(data.conflicts||[]).some(conflict=>conflict.field==='match.'+field&&!conflict.resolved)));
  return quality.count===0||(quality.filledFields/Math.max(1,quality.requiredFields)<.55);
+}
+
+// Read the small tactical controls early, while OCR still has a useful budget.
+// Layout selects a screen to inspect; it never supplies the marking value.
+export function prioritizeReadingFrames(frames,type,data){
+ if(type!=='match'||!coverage(type,data).missing.some(label=>label.startsWith('Marcação rival'))&&!(data.conflicts||[]).some(conflict=>conflict.field==='match.rivalMarking'&&!conflict.resolved))return [...frames];
+ const priority={'report-details':0,'roster-header':1,'comparison':2,'report-field':3,'report-cover':4};
+ return frames.map((frame,index)=>({frame,index})).sort((a,b)=>(priority[a.frame.layout?.kind]??5)-(priority[b.frame.layout?.kind]??5)||a.index-b.index).map(item=>item.frame);
 }
 export function disableFailedProvider(disabled,failure){
  const f=failure;

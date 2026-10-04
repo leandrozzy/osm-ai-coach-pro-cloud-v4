@@ -1,10 +1,12 @@
 import {localOCR} from './ocr.js';
 import {blankExtraction,normalizeExtraction,fuseExtraction} from './extraction.js';
 import {parseMatchOverlay} from './parser-match.js';
-import {overlayExtraction,parseSquadOverlay,parseSquadMeta,parseCalendarOverlay} from './ocr-layout.js';
+import {overlayExtraction,overlayWords,parseSquadOverlay,parseSquadMeta,parseCalendarOverlay} from './ocr-layout.js';
 import {applyScreenEvidence} from './visual-evidence.js';
 import {detectMatchPixels} from './match-icons.js';
 import {parseReportControls,reportControlRegions} from './report-controls.js';
+import {parseCalendarBoundaryWords} from './calendar-ocr.js';
+import {squadShirtOcrImage,readSquadShirtNumbers} from './squad-icons.js';
 import {known} from './domain.js';
 
 const rect=(name,left,top,right,bottom,gamma=2.6,pageSegMode=11,scale=1)=>({name,left,top,right,bottom,gamma,pageSegMode,scale});
@@ -109,7 +111,8 @@ export function extractionFromLocalOcr(ocr,type,{context={},frameIndex=0}={}){
  if(!width||!height)return {data:blankExtraction(),response};
  let data;
  if(type==='match'){
-  const literal=parseMatchOverlay(ocr,width,height,context),fields=(literal._headerFields||[]).filter(key=>known(literal[key]));
+  const literal=parseMatchOverlay(ocr,width,height,context);delete literal.myTrainingCamp;
+  const fields=(literal._headerFields||[]).filter(key=>known(literal[key]));
   data=normalizeExtraction({match:literal},type,'Texto local associado às linhas',{sourceKind:'ocr-explicit',fields:Object.keys(literal).filter(field=>!field.startsWith('_')&&!(literal._weakHeaderFields||[]).includes(field))});
   if(fields.length)data=fuseExtraction(data,normalizeExtraction({match:Object.fromEntries(fields.map(key=>[key,literal[key]]))},type,'Cabeçalhos lidos no aparelho',{sourceKind:'ocr-layout',fields}));
   const controls=parseReportControls(ocr,width,height,context),controlFields=Object.keys(controls).filter(key=>!key.startsWith('_')&&known(controls[key]));
@@ -118,6 +121,11 @@ export function extractionFromLocalOcr(ocr,type,{context={},frameIndex=0}={}){
   if(header.teamVerified===true&&header.team===literal.myName&&literal._headerFields?.includes('myName'))response.teamEvidence.push({team:header.team,frameIndex,verified:true});
  }else{
   const literal=overlayExtraction(type,ocr,width,height);
+  if(type==='calendar'){
+   const boundaries=parseCalendarBoundaryWords(overlayWords(ocr.lines),width,height);
+   for(const field of ['sawTop','sawBottom'])if(boundaries[field+'Proof'])boundaries[field+'Proof'].frameIndex=frameIndex;
+   literal.meta={...literal.meta,...boundaries};
+  }
   data=normalizeExtraction(literal,type,'OCR local nas linhas',{sourceKind:'ocr-layout',fields:type==='squad'?['position','strength','age','value']:['round','date','time','displayedScore']});
   if(data.meta?.teamVerified===true&&known(data.meta.team))response.teamEvidence.push({team:data.meta.team,frameIndex,verified:true});
  }
@@ -131,6 +139,25 @@ export function extractionFromLocalOcr(ocr,type,{context={},frameIndex=0}={}){
 }
 export async function readLocalScreen(canvas,type,{signal,context={},onUpdate,layout,region,budgetMs=12000,languages='eng',frameIndex=0}={}){
  const started=Date.now(),results=[],warnings=[],regions=localReadRegions(canvas.width,canvas.height,type,{layout,region});
+ const combined=()=>({text:results.map(r=>r.text).join('\n'),lines:results.flatMap(r=>r.lines),width:canvas.width,height:canvas.height,confidence:results.length?results.reduce((sum,r)=>sum+r.confidence,0)/results.length:0,provider:'tesseract-local'});
+ const earlyRecoveries=[];
+ const recoverControls=async original=>{
+  let current=original,parsed=extractionFromLocalOcr(current,type,{context,frameIndex});
+  for(const area of localRecoveryRegions(current,type,parsed.data,context).slice(0,2)){
+   for(const variant of [area,{...area,gamma:1.3,invert:true}]){
+    const remaining=budgetMs-(Date.now()-started);if(signal?.aborted||remaining<500||known(parsed.data.match?.[area.field]))break;
+    try{onUpdate?.('Conferindo '+area.name+' na tela original.',{phase:'report-control',field:area.field});}catch{}
+    const crop=cropForReading(canvas,variant);
+    try{
+     const recovered=await localOCR(crop,{signal,onUpdate,languages,budgetMs:Math.min(1800,remaining),pageSegMode:variant.pageSegMode,mapping:{offsetX:area.x,offsetY:area.y,scale:area.scale,width:canvas.width,height:canvas.height}});
+     if(!recovered.lines?.length)continue;
+     current=mergeLocalRegion(current,recovered,area);parsed=extractionFromLocalOcr(current,type,{context,frameIndex});earlyRecoveries.push({recovered,area});
+    }catch(error){if(signal?.aborted)break;warnings.push('Conferência do relatório: '+error.message);break;}
+    finally{crop.width=0;crop.height=0;}
+   }
+  }
+  return current;
+ };
  for(const [index,area] of regions.entries()){
   if(signal?.aborted){if(!results.length)throw Object.assign(Error('Leitura local cancelada.'),{name:'AbortError'});break;}
   const remaining=budgetMs-(Date.now()-started);if(remaining<300){warnings.push('Prazo da leitura local atingido; os dados reconhecidos foram preservados.');break;}
@@ -143,22 +170,28 @@ export async function readLocalScreen(canvas,type,{signal,context={},onUpdate,la
    if(!results.length)throw error;
    warnings.push(error.message);break;
   }finally{crop.width=0;crop.height=0;}
+  // The first report crop carries the club caption and narrative. Recover
+  // its tiny marking control before OCR of the much larger tactical panel.
+  if(type==='match'&&index===0&&regions.length>1)await recoverControls(combined());
  }
- let ocr={text:results.map(r=>r.text).join('\n'),lines:results.flatMap(r=>r.lines),width:canvas.width,height:canvas.height,confidence:results.length?results.reduce((sum,r)=>sum+r.confidence,0)/results.length:0,provider:'tesseract-local'};
+ let ocr=combined();for(const {recovered,area} of earlyRecoveries)ocr=mergeLocalRegion(ocr,recovered,area);
  let parsed=extractionFromLocalOcr(ocr,type,{context,frameIndex});
  // Layout classification is a sampling hint. A same-frame literal report
  // can identify a lower control even when that screen was classified unknown
  // and the first pass read only its upper half.
- for(const area of localRecoveryRegions(ocr,type,parsed.data,context).slice(0,2)){
-  const remaining=budgetMs-(Date.now()-started);if(signal?.aborted||remaining<500)break;
-  try{onUpdate?.('Conferindo '+area.name+' na tela original.',{phase:'report-control',field:area.field});}catch{}
-  const crop=cropForReading(canvas,area);
-  try{
-   const recovered=await localOCR(crop,{signal,onUpdate,languages,budgetMs:Math.min(2000,remaining),pageSegMode:area.pageSegMode,mapping:{offsetX:area.x,offsetY:area.y,scale:area.scale,width:canvas.width,height:canvas.height}});
-   if(!recovered.lines?.length)continue;
-   ocr=mergeLocalRegion(ocr,recovered,area);parsed=extractionFromLocalOcr(ocr,type,{context,frameIndex});
-  }catch(error){if(signal?.aborted)break;warnings.push('Conferência do relatório: '+error.message);break;}
-  finally{crop.width=0;crop.height=0;}
+ if(!earlyRecoveries.length){ocr=await recoverControls(ocr);parsed=extractionFromLocalOcr(ocr,type,{context,frameIndex});}
+ if(type==='squad'&&!signal?.aborted&&budgetMs-(Date.now()-started)>500){
+  const native=canvas.getContext('2d',{willReadFrequently:true}).getImageData(0,0,canvas.width,canvas.height),prepared=squadShirtOcrImage(native,parsed.response.squadEvidence[0]?.players||[]);
+  if(prepared){
+   const page=document.createElement('canvas');page.width=prepared.image.width;page.height=prepared.image.height;
+   try{
+    const ctx=page.getContext('2d',{willReadFrequently:true}),image=ctx.getImageData(0,0,page.width,page.height);image.data.set(prepared.image.data);ctx.putImageData(image,0,0);
+    const raw=await localOCR(page,{signal,onUpdate,languages,budgetMs:Math.min(2200,budgetMs-(Date.now()-started)),pageSegMode:6,characters:'0123456789',mapping:{width:page.width,height:page.height}});
+    const shirts=readSquadShirtNumbers(raw,prepared);
+    if(shirts.length)parsed.data=fuseExtraction(parsed.data,normalizeExtraction({players:shirts},type,'Números dentro das camisas originais',{sourceKind:'ocr-layout',fields:['shirtNumber']}));
+   }catch(error){if(!signal?.aborted)warnings.push('Número da camisa: '+error.message);}
+   finally{page.width=0;page.height=0;}
+  }
  }
  if(type==='match'||type==='squad'){
   const numericContext=type==='squad'&&parsed.data.meta?.teamVerified===true?{...context,myTeam:parsed.data.meta.team}:context;

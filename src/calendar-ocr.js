@@ -8,6 +8,16 @@ const datePattern=/^\d{1,2}[-/]\d{1,2}[-/](?:\d{2}|\d{4})$/;
 const timePattern=/^(?:[01]\d|2[0-3]):[0-5]\d$/;
 const scorePattern=/^\d{1,2}\s*[x×:\-–—]\s*\d{1,2}$/;
 const stagePattern=/^(?:meias? finais?|semi[ -]?finais?|final|quartos?(?: de)? final|oitavos?(?: de)? final|preliminar(?:es)?(?: (?:da |de )?copa)?|qualificacao)$/;
+const terminalDay=text=>/^ultimodia$/.test(normalize(text).replace(/\s/g,''));
+const seasonSummary=text=>/^resumo(?:da)?(?:epoca|temporada)$/.test(normalize(text).replace(/\s/g,''));
+function calendarDate(text){
+ const parts=String(text).match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2}|\d{4})$/);if(!parts)return null;
+ const day=+parts[1],month=+parts[2],year=parts[3].length===2?2000+Number(parts[3]):+parts[3],date=new Date(Date.UTC(year,month-1,day));
+ if(year<1900||year>2200||date.getUTCFullYear()!==year||date.getUTCMonth()!==month-1||date.getUTCDate()!==day)return null;
+ return String(day).padStart(2,'0')+'/'+String(month).padStart(2,'0')+'/'+year;
+}
+const lineBox=line=>({left:Math.min(...line.words.map(w=>w.x)),right:Math.max(...line.words.map(w=>w.x+w.w)),top:Math.min(...line.words.map(w=>w.y)),bottom:Math.max(...line.words.map(w=>w.y+w.h))});
+const confidentLine=line=>line.words.every(word=>!Number.isFinite(word.confidence)||word.confidence>=45);
 
 function groupedLines(words){
  const groups=[];
@@ -97,4 +107,45 @@ export function parseCalendarWords(input,width,height,layout={}){
  }
  // Retain the home/away scoreboard as evidence; score stays NI until home is known.
  return rows.flatMap(evidence=>cleanCalendar([evidence]).map(row=>({...row,displayedScore:evidence.displayedScore,_card:evidence._card})));
+}
+
+/** Preserve visible calendar boundaries independently from games. The dated
+ * season-summary cell is deliberately excluded by parseCalendarWords, but it
+ * proves the final day only when both labels appear in that same native cell. */
+export function parseCalendarBoundaryWords(input,width,height,layout={}){
+ const out={};if(!Number.isFinite(width)||!Number.isFinite(height)||width<=0||height<=0)return out;
+ const card=layout.kind==='calendar-card',columns=card?1:6;
+ if(!card&&(width/height<1.8||width/height>2.6))return out;
+ const words=input.filter(w=>w.text?.trim()&&[w.x,w.y,w.w,w.h].every(Number.isFinite)&&w.w>0&&w.h>0&&w.x>=0&&w.y>=0&&w.x+w.w<=width+1&&w.y+w.h<=height+1);
+ const anchors=anchorsIn(words,width,columns),columnWidth=width/columns,rowYs=[];
+ for(const anchor of [...anchors].sort((a,b)=>a.y-b.y))if(!rowYs.some(y=>Math.abs(y-anchor.y)<Math.max(18,columnWidth*.08)))rowYs.push(anchor.y);
+ const gaps=rowYs.slice(1).map((y,index)=>y-rowYs[index]).filter(gap=>gap>columnWidth*.7&&gap<columnWidth*1.4);
+ const cardHeight=Number.isFinite(layout.cardHeight)&&layout.cardHeight>0?layout.cardHeight:median(gaps)||columnWidth*1.02;
+ const cellLines=(column,anchorY)=>groupedLines(words.filter(w=>centerX(w)>=column*columnWidth&&centerX(w)<(column+1)*columnWidth&&centerY(w)>=anchorY-cardHeight*.06&&centerY(w)<Math.min(height,anchorY+cardHeight*1.02)));
+ const makeProof=(kind,column,anchorY,marker,dateLine,extra={})=>({kind,marker:marker.text,date:calendarDate(dateLine.text.replace(/\s/g,'')),width,height,box:{left:column*columnWidth,right:(column+1)*columnWidth,top:Math.max(0,anchorY-cardHeight*.065),bottom:Math.min(height,anchorY+cardHeight*1.02)},textBoxes:{marker:lineBox(marker),date:lineBox(dateLine)},...extra});
+ const start=anchors.find(anchor=>anchor.round===1&&anchor.column===0);
+ if(start){
+  const lines=cellLines(start.column,start.y),label=lines.filter(line=>Math.abs(line.y-start.y)<cardHeight*.08).map(line=>{
+   const header=line.words.filter(word=>word.x>=start.word.x-1&&centerX(word)<columnWidth*.8);
+   return {...line,words:header,text:header.map(word=>word.text).join(' ')};
+  }).find(line=>/^jornada\s*1$/.test(normalize(line.text))&&confidentLine(line));
+  const dateLine=lines.find(line=>line.y>start.y+cardHeight*.05&&line.y<start.y+cardHeight*.38&&calendarDate(line.text.replace(/\s/g,''))&&confidentLine(line));
+  if(label&&dateLine){out.sawTop=true;out.sawTopProof=makeProof('calendar-start-round',0,start.y,label,dateLine,{round:1});}
+ }
+ const terminal=[];
+ for(let column=0;column<columns;column++){
+  const columnWords=words.filter(w=>centerX(w)>=column*columnWidth&&centerX(w)<(column+1)*columnWidth);
+  for(const marker of groupedLines(columnWords).filter(line=>terminalDay(line.text)&&confidentLine(line))){
+   const anchorY=marker.y,lines=cellLines(column,anchorY);
+   const summary=lines.find(line=>seasonSummary(line.text)&&line.y>anchorY+cardHeight*.45&&line.y<anchorY+cardHeight*1.02&&confidentLine(line));
+   const dateLine=lines.find(line=>line.y>anchorY+cardHeight*.05&&line.y<anchorY+cardHeight*.38&&calendarDate(line.text.replace(/\s/g,''))&&confidentLine(line));
+   if(!summary||!dateLine)continue;
+   // A final match/round never proves the boundary. Likewise, another actual
+   // match cell after this alleged terminal day contradicts a list-end claim.
+   if(anchors.some(anchor=>anchor.y>anchorY+cardHeight*.12||Math.abs(anchor.y-anchorY)<cardHeight*.08&&anchor.column>=column))continue;
+   terminal.push(makeProof('calendar-terminal-day',column,anchorY,marker,dateLine,{marker:marker.text+' · '+summary.text,noMatch:true,textBoxes:{marker:lineBox(marker),date:lineBox(dateLine),summary:lineBox(summary)}}));
+  }
+ }
+ if(terminal.length===1){out.sawBottom=true;out.sawBottomProof=terminal[0];}
+ return out;
 }

@@ -1,5 +1,5 @@
 import {clamp} from './utils.js';
-import {num,known,formations,styles,tackles} from './domain.js';
+import {num,known,confirmedMatchSecretTraining,confirmedMatchField,formations,styles,tackles} from './domain.js';
 const templates={
  '4-3-3 A':['Jogar pelas alas',74,76,78,'Atacar apenas','Pressionar na frente','Defender atrás'],
  '4-3-3 B':['Jogo de passes',72,74,76,'Atacar apenas','Manter posição','Defender atrás'],
@@ -25,8 +25,10 @@ export function generateTactic(match={},settings={},learning={}){
  const [style,p,m,r,attack,midfield,defense]=templates[formation];
  const secret=match.secretTraining==='Sim';const away=match.location==='Fora';
  const missing=['myStrength','rivalStrength','referee','location'].filter(k=>!known(match[k]));
+ if(!confirmedMatchSecretTraining(match)&&!confirmedMatchField(match,'rivalMarking'))missing.push('rivalMarking');
+ const missingLabels={myStrength:'minha força',rivalStrength:'força rival',referee:'árbitro',location:'local',rivalMarking:'marcação rival'};
  const sectorBoost=att!==null&&rDef!==null?Math.round(clamp((att-rDef)/5,-4,4)):0;
- return {formation,style,pressure:clamp(p+(away?-4:0)-(secret?4:0)),mentality:clamp(m+(away?-3:0)+sectorBoost),tempo:r,marking:'À zona',offside:'Não',tackling:settings.refereeMap?.[match.referee]||({Verde:'Agressivo',Azul:'Agressivo',Amarelo:'Normal',Laranja:'Cauteloso',Vermelho:'Cauteloso'}[match.referee])||'Cauteloso',attack,midfield,defense,strongAvailable:diff!==null&&diff>=13,source:'Motor local',createdAt:new Date().toISOString(),provisional:missing.length>0,reason:`Diferença de força: ${diff??'NI'}. Local: ${match.location||'NI'}. Rival: ${match.human===true?'humano':match.human===false?'CPU':'NI'}. Árbitro: ${match.referee||'NI'}. ${secret?'Treino secreto: maior cautela. ':''}${match.trainingCamp==='Sim'?'Campo rival considerado. ':''}${learned?'Histórico compartilhado favoreceu esta formação. ':''}${missing.length?'Provisória: faltam força, árbitro ou local. ':''}Recomendação heurística; vitória não é garantida.`};
+ return {formation,style,pressure:clamp(p+(away?-4:0)-(secret?4:0)),mentality:clamp(m+(away?-3:0)+sectorBoost),tempo:r,marking:'À zona',offside:'Não',tackling:settings.refereeMap?.[match.referee]||({Verde:'Agressivo',Azul:'Agressivo',Amarelo:'Normal',Laranja:'Cauteloso',Vermelho:'Cauteloso'}[match.referee])||'Cauteloso',attack,midfield,defense,strongAvailable:diff!==null&&diff>=13,source:'Motor local',createdAt:new Date().toISOString(),provisional:missing.length>0,reason:`Diferença de força: ${diff??'NI'}. Local: ${match.location||'NI'}. Rival: ${match.human===true?'humano':match.human===false?'CPU':'NI'}. Árbitro: ${match.referee||'NI'}. Marcação rival: ${confirmedMatchField(match,'rivalMarking')?match.rivalMarking:confirmedMatchSecretTraining(match)?'oculta pelo treino secreto':'NI'}. ${secret?'Treino secreto: maior cautela. ':''}${match.trainingCamp==='Sim'?'Campo rival considerado. ':''}${learned?'Histórico compartilhado favoreceu esta formação. ':''}${missing.length?'Provisória: faltam '+missing.map(key=>missingLabels[key]).join(', ')+'. ':''}Recomendação heurística; vitória não é garantida.`};
 }
 export function generateStrong433(match={},settings={}){
  const a=num(match.myStrength),b=num(match.rivalStrength);if(a===null||b===null||a-b<13)throw Error('A tática forte requer vantagem de força confirmada de pelo menos 13.');

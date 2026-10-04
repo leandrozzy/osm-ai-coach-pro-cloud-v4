@@ -1,6 +1,27 @@
 import {matchOcrRows,parseRivalReportText,parsePlan} from './parser-match.js';
 import {normalize,NI} from './utils.js';
 
+const clubKey=value=>normalize(value).replace(/[^\p{L}\p{N}]/gu,'');
+/** Recover a damaged report sentence only when its real club caption and
+ * report prose still occupy the two expected areas of this same frame. */
+export function reportControlIdentity(ocr={},width,height,context={}){
+ if(!(width>0&&height>0&&width/height>=1.8&&width/height<=2.6))return null;
+ const direct=parseRivalReportText(ocr.text||'',context);
+ if(direct.rivalName)return {club:direct.rivalName,kind:'literal-report-sentence'};
+ const text=normalize(ocr.text||'').replace(/\s+/g,' ');
+ if(!/(?:pelo que pude ver|ordens aos jogadores|entradas\s+(?:normal|agressivo|cauteloso|imprudente)|parece que vao jogar num)/.test(text))return null;
+ const rows=matchOcrRows(ocr);
+ const captions=rows.filter(row=>row.left>width*.10&&row.right<width*.44&&row.top>height*.22&&row.bottom<height*.30&&/[\p{L}]/u.test(row.text)&&row.words.every(word=>Number(word.Height)>=height*.012&&Number(word.Height)<=height*.045&&(word.Confidence==null||Number(word.Confidence)>=50)));
+ const candidates=captions.filter(row=>{
+  const key=clubKey(row.text);if(!key||key===clubKey(context.myTeam))return false;
+  const narrative=rows.filter(line=>line.left<width*.055&&line.right<width*.415&&line.top>height*.34&&line.bottom<height*.61).map(line=>normalize(line.text)).join(' ');
+  return /(?:ordens aos jogadores|entradas\s+(?:normal|agressivo|cauteloso|imprudente)|parece que vao jogar num)/.test(narrative)&&
+   (clubKey(narrative).includes(key)||/pelo que pude ver/.test(narrative));
+ });
+ const clubs=[...new Set(candidates.map(row=>row.text.trim()))];
+ return clubs.length===1?{club:clubs[0],kind:'club-caption-and-report-lines'}:null;
+}
+
 /** Restore OCR crop coordinates before pairing captions with their values. */
 export function mapOcrRegion(ocr={},image={}){
  const crop=image.crop,width=Number(image.width),height=Number(image.height);
@@ -24,8 +45,7 @@ export function mapOcrRegion(ocr={},image={}){
 /** Report controls use two columns: reading order alone swaps or loses values. */
 export function parseReportControls(ocr={},width,height,context={}){
  if(!(width>0&&height>0&&width/height>=1.8&&width/height<=2.6))return {};
- const report=parseRivalReportText(ocr.text||'',context);
- if(!report.rivalName)return {};
+ if(!reportControlIdentity(ocr,width,height,context))return {};
  // Graphic shapes can be recognised as a huge word and merge unrelated
  // captions into one OCR row. Only text-sized words in this panel are labels.
  const textWords=(ocr.lines||[]).flatMap(line=>(line.Words||[]).map(word=>({...word,Top:Number(word.Top??line.MinTop),Height:Number(word.Height??line.MaxHeight)}))).filter(word=>Number(word.Left)>=width*.50&&word.Height>=height*.008&&word.Height<=height*.06);
@@ -68,7 +88,16 @@ export function parseReportControls(ocr={},width,height,context={}){
   const values=[...new Set(captions(pattern).map(caption=>caption.inline?accept(caption.inline.replace(/\s+/g,'')):valueBelow(caption,accept)).filter(Boolean))];
   if(values.length===1)out[field]=values[0];
  };
- readControl('rivalMarking',/^marca[cg¢]ao\s*[:\-]?\s*(.*)$/,text=>/^(?:azona|zona)$/.test(text)?'À zona':text==='individual'?'Individual':null);
+ const markingPattern=/^marca[cg¢]ao\s*[:\-]?\s*(.*)$/;
+ const markingValue=text=>/^(?:azona|zona)$/.test(text)?'À zona':text==='individual'?'Individual':null;
+ readControl('rivalMarking',markingPattern,markingValue);
+ // The native scout report's low-contrast blue caption is often omitted,
+ // while its white value is clearly read. A literal value at that control's
+ // position remains evidence; a value elsewhere on the page does not.
+ if(!out.rivalMarking&&!captions(markingPattern).length){
+  const values=[...new Set(rows.filter(row=>row.left>=width*.62&&row.right<=width*.73&&row.top>=height*.69&&row.bottom<=height*.76&&row.words.every(word=>word.Height<=height*.04&&(word.Confidence==null||Number(word.Confidence)>=50))).map(row=>markingValue(clean(row.text).replace(/\s+/g,''))).filter(Boolean))];
+  if(values.length===1)out.rivalMarking=values[0];
+ }
  readControl('rivalOffside',/^(?:fazer\s+)?(?:fora[- ]de[- ]jogo|impedimento)\s*[:\-]?\s*(.*)$/,text=>text==='sim'?'Sim':text==='nao'?'Não':null);
  const plans=[...new Set(rows.map(row=>parsePlan(row.text)).filter(value=>value!==NI))];
  if(plans.length===1)out.rivalPlan=plans[0];
@@ -79,7 +108,7 @@ export function parseReportControls(ocr={},width,height,context={}){
  * These bounded areas contain only the report's actual two control captions.
  * The caller retains the original narrative to keep ownership on this frame. */
 export function reportControlRegions(ocr={},width,height,context={}){
- if(!(width>0&&height>0&&width/height>=1.8&&width/height<=2.6)||!parseRivalReportText(ocr.text||'',context).rivalName)return [];
+ if(!reportControlIdentity(ocr,width,height,context))return [];
  const found=parseReportControls(ocr,width,height,context);
  return [['rivalMarking','marcação do relatório',.62,.73],['rivalOffside','impedimento do relatório',.91,.995]].filter(([field])=>!found[field]).map(([field,name,left,right])=>({field,name,left,top:.63,right,bottom:.77,gamma:2,pageSegMode:6,scale:3,x:Math.floor(left*width),y:Math.floor(.63*height),width:Math.ceil((right-left)*width),height:Math.ceil(.14*height)}));
 }

@@ -12,6 +12,7 @@ export function sanitizeProviderMatch(initial,context={}){
  if(!initial?.match)return initial;
  const out={...initial,match:{...initial.match},_matchFieldSources:{...initial._matchFieldSources},meta:{...initial.meta,pendingMatchFacts:[...(initial.meta?.pendingMatchFacts||[])]},warnings:[...(initial.warnings||[])]};
  const drop=field=>{if((out._matchFieldSources[field]?.rank||0)>=4)return;delete out.match[field];delete out._matchFieldSources[field];};
+ drop('myTrainingCamp');
  const pending=(field,reason)=>{const value=out.match[field];if(!known(value)||(out._matchFieldSources[field]?.rank||0)>=4)return;out.meta.pendingMatchFacts.push({field,value,reason,source:out._matchFieldSources[field]?.source||'Leitura da API'});drop(field);};
  const own=known(context.myTeam)?identity(context.myTeam):'',username=identity(context.username||'leandrozzy');
  if(known(out.match.rivalNickname)&&!isRivalNickname(out.match.rivalNickname,context)){

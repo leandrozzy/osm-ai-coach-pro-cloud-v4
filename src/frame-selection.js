@@ -166,7 +166,8 @@ export function selectCompletionFrames(probes=[],{type='match',missing=[],limit=
   const desired=type==='match'&&wanted.size?wanted.has(kind):known;
   const stable=Math.min(1,(probe.stableFrames||1)/4);
   const spread=selected.length?Math.min(...selected.map(other=>Math.abs(Number(probe.time)-Number(other.time)))):0;
-  return (desired?4:0)+(known?1:0)+stable*.5+Math.min(1,spread/8)*.2+Math.min(1,(probe.sharpness||0)/50)*.1;
+  const marking=type==='match'&&/marcacao|marking/.test(words)&&kind==='report-details';
+  return (marking?2:0)+(desired?4:0)+(known?1:0)+stable*.5+Math.min(1,spread/8)*.2+Math.min(1,(probe.sharpness||0)/50)*.1;
  };
  while(selected.length<maximum&&available.length){
   available.sort((a,b)=>score(b)-score(a));const next=available.shift();

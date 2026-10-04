@@ -38,7 +38,7 @@ export function applyScreenEvidence(initial,response,frames,type){
   const icons=[];
   for(const row of evidence.players||[]){
    const facts=detectSquadPixels(image,{...row,width:evidence.width,height:evidence.height});
-   if(facts.training!==null||facts.forSale!==null)icons.push({name:row.name,training:facts.training,forSale:facts.forSale});
+   if(facts.training!==null||facts.forSale!==null||Number.isInteger(facts.shirtNumber))icons.push({name:row.name,training:facts.training,forSale:facts.forSale,shirtNumber:facts.shirtNumber});
    const attributes=detectSquadAttributePixels(image,row);
    const proved=Object.fromEntries(Object.entries(attributes).filter(([,value])=>value!==null));
    if(Object.keys(proved).length){
@@ -46,7 +46,7 @@ export function applyScreenEvidence(initial,response,frames,type){
     used.add('posições e atributos nas telas');
    }
   }
-  if(icons.length){data=fuseExtraction(data,normalizeExtraction({players:icons},type,'Camisas e setas nas telas',{sourceKind:'pixels',fields:['training','forSale']}));used.add('camisas e setas locais');}
+  if(icons.length){data=fuseExtraction(data,normalizeExtraction({players:icons},type,'Camisas e setas nas telas',{sourceKind:'pixels',fields:['training','forSale','shirtNumber']}));used.add('camisas e setas locais');}
  }
  if(type==='squad')for(const evidence of response.matchEvidence||[]){
   const image=imageFor(evidence.frameIndex);if(!image)continue;
@@ -87,7 +87,7 @@ export function applyScreenEvidence(initial,response,frames,type){
   for(const proof of local.meta?.iconEvidence||[])if(proof.kind==='bonus-percentage'&&['myBonus','rivalBonus'].includes(proof.field)&&known(local.match?.[proof.field]))pixelFields.push(proof.field);
   const headerFields=(local.meta?._headerFields||[]).filter(key=>known(local.match[key])&&!pixelFields.includes(key));
   if(headerFields.length)data=fuseExtraction(data,normalizeExtraction({match:Object.fromEntries(headerFields.map(key=>[key,local.match[key]]))},type,'Cabeçalhos identificados nas telas',{sourceKind:'ocr-layout',fields:headerFields}));
-  const literalMatch={...local.match};for(const key of [...pixelFields,...headerFields])delete literalMatch[key];
+  const literalMatch={...local.match};delete literalMatch.myTrainingCamp;for(const key of [...pixelFields,...headerFields])delete literalMatch[key];
   if(Object.keys(literalMatch).length||pending.length)data=fuseExtraction(data,normalizeExtraction({match:literalMatch,meta:{...local.meta,rivalReportLocked:false}},type,'Relatório e cabeçalhos nas telas',{sourceKind:'ocr-explicit',preserveEvidence:true,fields:['myStrength','rivalStrength','myGK','rivalGK','myDEF','rivalDEF','myMID','rivalMID','myATT','rivalATT','mySquadValue','rivalSquadValue','myPlayers','rivalPlayers','rivalFormation','rivalPlan','rivalMarking','rivalOffside','rivalTackling','stadium','trainingCamp','secretTraining','referee']}));
   if(pixelFields.length)data=fuseExtraction(data,normalizeExtraction({match:Object.fromEntries(pixelFields.map(key=>[key,local.match[key]])),meta:{rivalReportLocked:local.meta?.rivalReportLocked===true}},type,'Cadeado e árbitro nas telas',{sourceKind:'pixels',fields:pixelFields}));used.add('leitura local da partida');
  }

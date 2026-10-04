@@ -2,8 +2,8 @@ import {extractFrames,extractAdditionalFrames,imageToCanvas} from './frame-extra
 import {visualBatches} from './frame-selection.js';
 import {recoverOriginalFrames} from './frame-recovery.js';
 import {createReadingSession,restoreReadingSession,pendingReadingFields} from './reading-session.js';
-import {videoRequired,disableFailedProvider} from './reading-policy.js';
-import {matchFields} from './domain.js';
+import {videoRequired,disableFailedProvider,prioritizeReadingFrames} from './reading-policy.js';
+import {autoMatchFields} from './domain.js';
 import {applyScreenEvidence} from './visual-evidence.js';
 import {refineSquadRoster} from './squad-roster.js';
 import {sanitizeProviderMatch} from './match-grounding.js';
@@ -69,6 +69,7 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
   try{if(file.type.startsWith('video/')){const selected=await extractFrames(file,{type,profile:options.profile,signal:options.signal});const fileIndex=files.indexOf(file);frames.push(...selected.map(f=>({...f,name:file.name,fileIndex})));if(selected.omittedFrames?.length)reserves.push({file,fileIndex,probes:selected.omittedFrames});}else if(file.type.startsWith('image/'))frames.push({canvas:await imageToCanvas(file),name:file.name,fileIndex:files.indexOf(file),time:0});else errors.push('Formato não suportado: '+file.name);}catch(e){errors.push(e.message);}
  }
  if(!frames.length&&!seed)throw Error(options.signal.aborted?(userSignal?.aborted?'Leitura cancelada.':'Tempo limite ao preparar as telas. Tente um trecho menor; os dados salvos foram preservados.'):'Nenhuma tela extraída.');
+ frames.splice(0,frames.length,...prioritizeReadingFrames(frames,type,data));
  for(const frame of frames)frame.wasSelected=true;
  // Keep an untouched queue until the final checkpoint. A cancelled decode or
  // partially read frame remains available even if this attempt consumed it.
@@ -80,6 +81,19 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
   for(const proof of response.teamEvidence||[])if(proof.verified===true&&typeof proof.team==='string'&&proof.team.trim()&&proof.team!=='NI')readingTeams.push(proof.team.trim());
   if(type==='squad')for(const evidence of response.squadEvidence||[]){const frame=batch[evidence.frameIndex];if(frame)rosterEvidence.push(...(evidence.players||[]).map(row=>({...row,width:evidence.width,height:evidence.height,frameId:frame.name+':'+frame.time})));}
  };
+ const linkBoundaryFrames=(reading,batch)=>{
+  if(type==='match'||!reading?.meta)return reading;
+  const meta={...reading.meta};
+  for(const field of ['sawTop','sawBottom']){
+   if(type==='squad'&&meta[field]===true&&(meta._fieldSources?.[field]?.rank||0)>=2&&batch.length===1){
+    const frame=batch[0];meta[field+'Frame']={fileIndex:frame.fileIndex,time:frame.time,name:frame.name,frameId:frame.name+':'+frame.time};
+   }
+   const proof=meta[field+'Proof'];if(!proof||proof.frameId)continue;
+   const frame=Number.isInteger(proof.frameIndex)?batch[proof.frameIndex]:batch.length===1?batch[0]:null;
+   if(frame)meta[field+'Proof']={...proof,fileIndex:frame.fileIndex,time:frame.time,name:frame.name,frameId:frame.name+':'+frame.time};
+  }
+  return {...reading,meta};
+ };
  const localScreen=async frame=>{
   if(frame.localDone===true){localCompleted.add(frame);return;}
   if(!localAvailable||expired()||localReadFrames.has(frame))return;
@@ -88,7 +102,7 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
   try{
    const remaining=limit-(Date.now()-started),budgetMs=Math.min(localReadFrames.size===1?35000:15000,remaining);
    const read=await readLocalScreen(frame.canvas,type,{signal:options.signal,context,layout:frame.layout,budgetMs,onUpdate});
-   data=fuseExtraction(data,read.data);captureEvidence(read.response||{},[frame]);
+   data=fuseExtraction(data,linkBoundaryFrames(read.data,[frame]));captureEvidence(read.response||{},[frame]);
    const checked=applyScreenEvidence(data,read.response||{},[frame],type);data=checked.data;
    attempts.push('OCR local estruturado',...checked.used);errors.push(...read.warnings||[]);
    if(!options.signal.aborted&&!(read.warnings||[]).some(message=>/prazo|tempo limite|cancelad/i.test(message)))localCompleted.add(frame);
@@ -114,7 +128,7 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
     try{
      const budgetMs=Math.min(50000,limit-(Date.now()-started));
      const missing=coverage(type,data).missing;
-     const targetFields=type==='match'?matchFields.filter(([key,label])=>missing.some(field=>field===label||field.startsWith(label+' ('))||(data.conflicts||[]).some(conflict=>conflict.field==='match.'+key&&!conflict.resolved)).map(([key])=>key):[...new Set(missing.map(field=>field.includes(': ')?field.split(': ').at(-1):field==='Início da lista não confirmado'?'meta.sawTop':field==='Fim da lista não confirmado'?'meta.sawBottom':'').filter(field=>/^[A-Za-z][A-Za-z0-9.]{0,50}$/.test(field)))];
+     const targetFields=type==='match'?autoMatchFields.filter(([key,label])=>missing.some(field=>field===label||field.startsWith(label+' ('))||(data.conflicts||[]).some(conflict=>conflict.field==='match.'+key&&!conflict.resolved)).map(([key])=>key):[...new Set(missing.map(field=>field.includes(': ')?field.split(': ').at(-1):field==='Início da lista não confirmado'?'meta.sawTop':field==='Fim da lista não confirmado'?'meta.sawBottom':'').filter(field=>/^[A-Za-z][A-Za-z0-9.]{0,50}$/.test(field)))];
      const sampled=frames.filter(f=>f.fileIndex===files.indexOf(file)&&f.canvas.width>0);
      const r=await analyzeVideo(file,type,{...context,targetFields},videoController.signal,onUpdate,{frames:sampled,budgetMs});
      if(coverage(type,r.data||blankExtraction()).count>0)for(const frame of sampled)cloudCompleted.add(frame);
@@ -135,11 +149,11 @@ export async function analyzeMedia(files,type,options={},onUpdate=()=>{}){
    if(options.vision&&providers.size){
     const images=batch.map(f=>visualImage(f.canvas)),useVisual=seed?resumeVisualCalls<3&&visualAvailable():!additional&&visualSlots.has(Math.floor(index/batchSize));
     if(seed&&useVisual)resumeVisualCalls++;
-    const targeted=seed&&type==='match'?{...context,targetFields:matchFields.filter(([,label])=>pendingReadingFields(type,data).some(field=>field===label||field.startsWith(label+' ('))).map(([field])=>field)}:context;
+    const targeted=type==='match'?{...context,targetFields:autoMatchFields.filter(([,label])=>pendingReadingFields(type,data).some(field=>field===label||field.startsWith(label+' ('))).map(([field])=>field)}:context;
     const r=await apiRequest('analyze',{type,images,useVisual,useText:seed?useVisual:!additional,forceOCR:true,preferredProvider:disabled.has('google')?'groq':'google',ocrImages:batchOcrImages(batch,type),focusImages:additional?[]:batch.slice(0,2).map((f,j)=>focusImage(f.canvas,type,index+j)).filter(Boolean),context:targeted,disabled:[...disabled],models:{groqVision:options.visionModel,groqText:options.model}},options.signal,Math.max(1000,Math.min(35000,limit-(Date.now()-started))));
     const useful=coverage(type,r.data||blankExtraction()).count>0||(r.matchEvidence||[]).length||(r.squadEvidence||[]).length||(r.calendarEvidence||[]).length;
     if(useful)for(const frame of batch)cloudCompleted.add(frame);
-    data=fuseExtraction(data,type==='match'?sanitizeProviderMatch(r.data,context):r.data);attempts.push(...r.attempts||[]);
+    data=fuseExtraction(data,type==='match'?sanitizeProviderMatch(r.data,context):linkBoundaryFrames(r.data,batch));attempts.push(...r.attempts||[]);
     captureEvidence(r,batch);
 
     const local=applyScreenEvidence(data,r,batch,type);data=local.data;attempts.push(...local.used);

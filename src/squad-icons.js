@@ -41,3 +41,76 @@ export function detectSquadPixels(image,row={}){
 }
 function shirtArea(box){return (box.right-box.left)*(box.bottom-box.top);}
 export function detectSquadIcons(canvas,row){try{return detectSquadPixels(canvas.getContext('2d',{willReadFrequently:true}).getImageData(0,0,canvas.width,canvas.height),row);}catch{return {training:null,forSale:null,confidence:{training:0,forSale:0}};}}
+
+/**
+ * Make one small OCR page from the actual numerals inside the observed shirts.
+ * Table attributes, ages and names never enter this page. The compact layout
+ * also avoids spending an OCR call on every player.
+ */
+export function squadShirtOcrImage(image,players=[]){
+ const width=image?.width,height=image?.height;
+ if(!image?.data||!width||!height||width/height<1.8||width/height>2.6)return null;
+ const rows=[],unit=height/1080,slotWidth=50,slotHeight=33,scale=2;
+ for(const row of players){
+  const center=Number(row._rowY)*height;
+  if(!Number.isFinite(center)||center<height*.12||center+height*.01>=height)continue;
+  const shirt={left:width*.007,right:width*.036,top:center-height*.028,bottom:center+height*.028};
+  const foreground=sample(image,shirt,(r,g,b)=>Math.max(r,g,b)<238||Math.max(r,g,b)-Math.min(r,g,b)>35);
+  const body=foreground&&components(foreground.points,width).sort((a,b)=>b.pixels.size-a.pixels.size)[0];
+  if(!body||body.w<=width*.014||body.w>=width*.028||body.h<=height*.032||body.h>=height*.059||body.pixels.size<=shirtArea(shirt)*.13)continue;
+  let saturated=0,samples=0;
+  for(let y=Math.floor(center+height*.009);y<Math.min(height,Math.ceil(center+height*.015));y++)for(let x=Math.floor(width*.019);x<Math.ceil(width*.025);x++){
+   const i=(y*width+x)*4,r=image.data[i],g=image.data[i+1],b=image.data[i+2];
+   samples++;if(Math.max(r,g,b)-Math.min(r,g,b)>75)saturated++;
+  }
+  const threshold=saturated>samples*.6?145:205;
+  const native={left:Math.ceil(width*.016),right:Math.ceil(width*.0285),top:Math.floor(center-height*.018),bottom:Math.ceil(center+height*.0085)};
+  const ink=new Set();
+  for(let y=native.top;y<native.bottom;y++)for(let x=native.left;x<native.right;x++){
+   const i=(y*width+x)*4,r=image.data[i],g=image.data[i+1],b=image.data[i+2];
+   if(image.data[i+3]<240){ink.clear();break;}
+   if(Math.min(r,g,b)>threshold&&Math.max(r,g,b)-Math.min(r,g,b)<65)ink.add(y*width+x);
+  }
+  const parts=components(ink,width).filter(part=>!(part.h<height*.0067&&part.bottom<center-height*.010)).sort((a,b)=>a.left-b.left),joined=[];
+  for(const part of parts){
+   const same=joined.find(other=>part.left<=other.right&&part.right>=other.left);
+   if(!same){joined.push(part);continue;}
+   for(const point of part.pixels)same.pixels.add(point);
+   same.left=Math.min(same.left,part.left);same.right=Math.max(same.right,part.right);same.top=Math.min(same.top,part.top);same.bottom=Math.max(same.bottom,part.bottom);same.w=same.right-same.left+1;same.h=same.bottom-same.top+1;
+  }
+  const glyphs=joined.filter(part=>part.h>=height*.010&&part.w>=Math.max(1,width*.00035)&&part.pixels.size>=8*unit*unit).sort((a,b)=>a.left-b.left);
+  if(!glyphs.length||glyphs.length>2||glyphs.some(part=>part.left<=native.left||part.right>=native.right-1||part.top<=native.top||part.bottom>=native.bottom-1))continue;
+  // A two-digit shirt has two separate, aligned glyphs. Noise and a clipped
+  // neighbouring digit cannot corroborate a shorter OCR number.
+  if(glyphs.some(part=>Math.abs(part.top-glyphs[0].top)>height*.005||Math.abs(part.h-glyphs[0].h)>height*.005))continue;
+  const numeralInk=new Set(glyphs.flatMap(part=>[...part.pixels]));
+  rows.push({name:row.name,_rowY:row._rowY,native,ink:numeralInk,glyphs});
+ }
+ if(!rows.length)return null;
+ const outWidth=slotWidth*scale,outHeight=slotHeight*rows.length*scale,data=new Uint8ClampedArray(outWidth*outHeight*4);data.fill(255);
+ for(let n=0;n<rows.length;n++){
+  const row=rows[n],native=row.native,xOffset=(slotWidth-(native.right-native.left)/unit)/2,yOffset=n*slotHeight+3;
+  const x0=Math.floor(xOffset*scale),y0=Math.floor(yOffset*scale),w=Math.ceil((native.right-native.left)/unit*scale),h=Math.ceil((native.bottom-native.top)/unit*scale);
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+   const xx=native.left+Math.floor(x/scale*unit),yy=native.top+Math.floor(y/scale*unit);
+   if(row.ink.has(yy*width+xx)){const at=((y0+y)*outWidth+x0+x)*4;data[at]=data[at+1]=data[at+2]=0;}
+  }
+  const bounds={left:Math.min(...row.glyphs.map(part=>part.left)),right:Math.max(...row.glyphs.map(part=>part.right))+1,top:Math.min(...row.glyphs.map(part=>part.top)),bottom:Math.max(...row.glyphs.map(part=>part.bottom))+1};
+  row.box={left:x0+(bounds.left-native.left)/unit*scale,right:x0+(bounds.right-native.left)/unit*scale,top:y0+(bounds.top-native.top)/unit*scale,bottom:y0+(bounds.bottom-native.top)/unit*scale};
+  row.digitCount=row.glyphs.length;delete row.ink;delete row.glyphs;
+ }
+ return {image:{width:outWidth,height:outHeight,data},rows,scale};
+}
+
+/** Accept only a complete, confident OCR number covering all native shirt ink. */
+export function readSquadShirtNumbers(ocr,prepared){
+ if(!prepared?.rows?.length)return [];
+ const words=(ocr?.lines||[]).flatMap(line=>(line.Words||[]).map(word=>({text:String(word.WordText||''),left:Number(word.Left),top:Number(word.Top??line.MinTop),width:Number(word.Width),height:Number(word.Height??line.MaxHeight),confidence:Number(word.Confidence)})));
+ const result=[];
+ for(const row of prepared.rows){
+  const b=row.box,within=words.filter(word=>/^\d{1,2}$/.test(word.text)&&Number.isFinite(word.confidence)&&word.confidence>=50&&Number(word.text)>=1&&Number(word.text)<=99&&word.text.length===row.digitCount&&word.left>=b.left-3&&word.left+word.width<=b.right+3&&word.top>=b.top-3&&word.top+word.height<=b.bottom+3&&(word.width/(b.right-b.left))>=.8&&(word.height/(b.bottom-b.top))>=.8);
+  const values=new Set(within.map(word=>Number(word.text)));
+  if(values.size===1)result.push({name:row.name,shirtNumber:[...values][0]});
+ }
+ return result;
+}
