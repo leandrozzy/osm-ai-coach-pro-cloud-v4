@@ -1,5 +1,5 @@
 import {matchFields,known,positions} from './domain.js';
-import {coverage} from './extraction.js';
+import {coverage,relevantConflicts} from './extraction.js';
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 export function shirt(color='#3279e6',number=''){return '<svg class="shirt" viewBox="0 0 80 90" aria-hidden="true"><path fill="'+color+'" stroke="#ffffff" stroke-width="3" d="M24 9 8 18 2 38 18 45 22 33 22 80 58 80 58 33 62 45 78 38 72 18 56 9Q40 22 24 9Z"/><path fill="#fff" opacity=".25" d="M36 18h8v62h-8z"/><text x="40" y="55" text-anchor="middle" fill="white" font-size="25" font-weight="bold">'+esc(number)+'</text></svg>';}
 function control(path,label,value,type='text',options,evidence){
@@ -58,7 +58,8 @@ export function renderReview(review){
  }
  if(review.type==='squad'||review.type==='calendar')content+=listReviewControls(review);
  if(review.type!=='match'&&!review[review.type==='squad'?'players':'calendar'].length)content+='<p class="warning">Nenhum registro reconhecido. Confira os avisos e tente completar a leitura.</p>';
- const conflicts=(review.conflicts||[]).map((c,i)=>!c.resolved?conflictItem(c,i,review):'').join(''),resolved=(review.conflicts||[]).map((c,i)=>c.resolved?conflictItem(c,i,review):'').join('');
+ const visible=new Set(relevantConflicts(review.type,review.conflicts||[]));
+ const conflicts=(review.conflicts||[]).map((c,i)=>visible.has(c)&&!c.resolved?conflictItem(c,i,review):'').join(''),resolved=(review.conflicts||[]).map((c,i)=>visible.has(c)&&c.resolved?conflictItem(c,i,review):'').join('');
  return '<form id="reviewForm" onsubmit="return false">'+content+'</form>'+(conflicts?'<details open><summary>Valores divergentes: confira nas telas</summary><ul>'+conflicts+'</ul></details>':'')+(resolved?'<details><summary>Diferenças resolvidas pela leitura comprovada</summary><ul>'+resolved+'</ul></details>':'');
 }
 export function readReview(review,container){

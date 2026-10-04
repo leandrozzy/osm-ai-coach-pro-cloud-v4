@@ -47,7 +47,7 @@ export function applyReading(slot,type,parsed,{meta={},teams=[],conflicts=[],use
   const ownName=normalize(username).replace(/^@/,''),selfNickname=known(next.match.rivalNickname)&&normalize(next.match.rivalNickname).replace(/^@/,'')===ownName;
   const manualHuman=parsed?._fieldSources?.human?.kind==='manual'&&parsed._fieldSources.human.rank>=4;
   if(selfNickname||known(next.match.rivalNickname)&&!isRivalNickname(next.match.rivalNickname,{username})){delete next.match.rivalNickname;if(!manualHuman&&!known(match.human))next.match.human=null;}
-  if(match.human===false&&(parsed._fieldSources?.human?.rank||0)>=2&&!known(match.rivalNickname)){delete next.match.rivalNickname;delete next.match._fieldSources.rivalNickname;}
+  if(match.human===false&&(parsed._fieldSources?.human?.rank||0)>=2&&!known(match.rivalNickname)&&(next.match._fieldSources.rivalNickname?.rank||0)<3){delete next.match.rivalNickname;delete next.match._fieldSources.rivalNickname;}
   const nicknameSource=next.match._fieldSources.rivalNickname;
   const human=(nicknameSource?.rank||0)>=2?rivalHuman(next.match.rivalNickname,next.competitionType,username):null;
   const freshNickname=known(match.rivalNickname)&&(parsed._fieldSources?.rivalNickname?.rank||0)>=2;

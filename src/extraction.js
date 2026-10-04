@@ -5,7 +5,7 @@ export const blankExtraction=()=>({match:{},_matchFieldSources:{},players:[],cal
 function cleanPendingMatchFacts(rows){
  return (Array.isArray(rows)?rows:[]).filter(row=>row&&matchFields.some(([field])=>field===row.field)&&known(row.value)&&['string','number','boolean'].includes(typeof row.value)).slice(0,80).map(row=>({field:row.field,value:typeof row.value==='string'?row.value.slice(0,120):row.value,reason:safeText(row.reason,240),source:safeText(row.source,160)}));
 }
-const evidenceKinds={visual:1,'ocr-layout':2,'ocr-explicit':2,pixels:3,manual:4};
+const evidenceKinds={visual:1,'ocr-layout':2,'ocr-explicit':2,pixels:3,'ocr-consensus':3,manual:4};
 const textIdentityFields=new Set(['name','opponent','nickname','stage','myName','rivalName','rivalNickname']);
 const monetaryFields=new Set(['value','cash','squadValue','mySquadValue','rivalSquadValue']);
 const metaFactFields=['team','cash','squadValue','strength','GK','DEF','MID','ATT','expectedPlayers','expectedRounds'];
@@ -42,9 +42,9 @@ function sourceKind(source,options={}){
 }
 function evidenceFor(record,type,source,options={},prior={}){
  const kind=sourceKind(source,options);
- const preserve=options.preserveEvidence===true||!source||['pixels','ocr-layout','ocr-explicit','manual'].includes(kind);
+ const preserve=options.preserveEvidence===true||!source||['pixels','ocr-layout','ocr-explicit','ocr-consensus','manual'].includes(kind);
  const sources=preserve?cleanFieldSources(prior):{};
- const allowed=kind==='pixels'?(type==='calendar'?['home','cup','result']:type==='squad'?['position','strength','training','forSale']:['secretTraining','referee','human','myStrength','rivalStrength']):kind==='ocr-layout'?(type==='calendar'?['round','date','time','displayedScore']:type==='squad'?['position','strength','age','value']:matchHeaderFields):kind==='ocr-explicit'?matchFields.map(([key])=>key).filter(key=>!textIdentityFields.has(key)):Object.keys(record);
+ const allowed=kind==='ocr-consensus'?(type==='match'?['myStrength','rivalStrength']:[]):kind==='pixels'?(type==='calendar'?['home','cup','result']:type==='squad'?['position','strength','training','forSale']:['secretTraining','referee','human','myStrength','rivalStrength']):kind==='ocr-layout'?(type==='calendar'?['round','date','time','displayedScore']:type==='squad'?['position','strength','age','value']:matchHeaderFields):kind==='ocr-explicit'?matchFields.map(([key])=>key).filter(key=>!textIdentityFields.has(key)):Object.keys(record);
  const selected=Array.isArray(options.fields)?options.fields:type==='match'&&kind==='ocr-layout'?[]:type==='match'&&kind==='pixels'?allowed.filter(key=>!['myStrength','rivalStrength'].includes(key)):allowed;
  for(const key of Object.keys(record)){
  if(key.startsWith('_')||key==='id'||!known(record[key]))continue;
@@ -55,9 +55,9 @@ function evidenceFor(record,type,source,options={},prior={}){
  return Object.fromEntries(Object.entries(sources).filter(([key])=>known(record[key])));
 }
 function metaEvidenceFor(record,source,options={},prior={}){
- const kind=sourceKind(source,options),preserve=!source||options.preserveEvidence===true||['pixels','ocr-layout','ocr-explicit','manual'].includes(kind);
+ const kind=sourceKind(source,options),preserve=!source||options.preserveEvidence===true||['pixels','ocr-layout','ocr-explicit','ocr-consensus','manual'].includes(kind);
  const sources=preserve?cleanFieldSources(prior):{};
- const allowed=kind==='manual'?[...metaFactFields,'sawTop','sawBottom']:kind==='ocr-layout'?[...metaFactFields,'sawTop','sawBottom']:kind==='ocr-explicit'?metaFactFields.filter(field=>field!=='team'):kind==='pixels'?['strength','GK','DEF','MID','ATT','sawTop','sawBottom']:metaFactFields;
+ const allowed=kind==='ocr-consensus'?['strength']:kind==='manual'?[...metaFactFields,'sawTop','sawBottom']:kind==='ocr-layout'?[...metaFactFields,'sawTop','sawBottom']:kind==='ocr-explicit'?metaFactFields.filter(field=>field!=='team'):kind==='pixels'?['strength','GK','DEF','MID','ATT','sawTop','sawBottom']:metaFactFields;
  const selected=Array.isArray(options.metaFields)?options.metaFields:kind==='pixels'?[]:allowed;
  for(const key of [...metaFactFields,'sawTop','sawBottom']){
   if(!known(record[key]))continue;
@@ -80,6 +80,20 @@ function enforceReportPrivacy(data){
  data.conflicts=(data.conflicts||[]).filter(conflict=>!hidden.some(key=>conflict.field==='match.'+key));
  if(hidden.length)data.warnings=[...new Set([...(data.warnings||[]),'Treino secreto comprovado: os dados táticos do relatório rival estão ocultos e permanecem NI.'])];
  return data;
+}
+function enforceMatchConsistency(data){
+ const cpu=data._matchFieldSources?.human, nickname=data._matchFieldSources?.rivalNickname;
+ // An empty, visible manager band rules out weak OCR letters from flags or
+ // graphics. Keep actual competing text evidence and the user's choices.
+ const disputedHuman=(data.conflicts||[]).some(c=>c.field==='match.human'&&!c.resolved&&((c.first===true&&(c.firstRank||0)>=3)||(c.second===true&&(c.secondRank||0)>=3)));
+ if(data.match?.human!==false||(cpu?.rank||0)<3||(nickname?.rank||0)>=3||disputedHuman)return data;
+ delete data.match.rivalNickname;delete data._matchFieldSources.rivalNickname;
+ data.conflicts=(data.conflicts||[]).filter(c=>c.field!=='match.rivalNickname'||Math.max(c.firstRank||0,c.secondRank||0)>=3);
+ if(data.meta?.pendingMatchFacts)data.meta.pendingMatchFacts=data.meta.pendingMatchFacts.filter(fact=>fact.field!=='rivalNickname');
+ return data;
+}
+export function relevantConflicts(type,conflicts=[]){
+ return type==='match'?conflicts.filter(c=>c.field?.startsWith('match.')&&matchFields.some(([key])=>c.field==='match.'+key)):conflicts;
 }
 export function normalizeDate(v){
  const m=String(v||'').match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2}|\d{4})$/);
@@ -124,10 +138,13 @@ export function normalizeExtraction(raw={},type,source='',options={}){
  // Literal OCR layout, an actual pixel check or the user's review can certify it.
  for(const field of ['sawTop','sawBottom'])if(source&&out.meta[field]&&(out.meta._fieldSources[field]?.rank||0)<2)out.meta[field]=false;
  if(type==='match'&&(!source||options.preserveEvidence===true))out.meta.pendingMatchFacts=cleanPendingMatchFacts(m.pendingMatchFacts);
+ // Squad accounting fields have no editable counterpart in match review.
+ // A number from an unrelated screen must not become a match disagreement.
+ if(type==='match'){for(const key of [...metaFactFields,'sawTop','sawBottom','teamVerified','visibleNames'])delete out.meta[key];out.meta._fieldSources={};}
  }
  if(type==='match'&&out.meta.rivalReportLocked)out.match.secretTraining='Sim';
  if(type==='match')out._matchFieldSources=evidenceFor(out.match,type,source,options,raw._matchFieldSources||raw.match?._fieldSources);
- if(source)out.sources=[source];return type==='match'?enforceReportPrivacy(out):out;
+ if(source)out.sources=[source];return type==='match'?enforceMatchConsistency(enforceReportPrivacy(out)):out;
 }
 const rowKey=(r,type)=>type==='players'?normalize(r.name).replace(/[\s.]/g,''):known(r.round)?'round:'+r.round:'date:'+r.date+'|'+normalize(r.opponent);
 function mergeFields(a,b,conflicts,path){
@@ -135,11 +152,14 @@ function mergeFields(a,b,conflicts,path){
  for(const [k,v] of Object.entries(b)){if(k.startsWith('_')||k==='id'||!known(v))continue;
  if(!known(out[k])){out[k]=v;if(incomingSources[k])out._fieldSources[k]=incomingSources[k];}
  else if(!equivalentField(k,out[k],v)&&k!=='raw'){
- const firstRank=fieldRank(out,k),secondRank=incomingSources[k]?.rank||0,resolved=Math.max(firstRank,secondRank)>=2&&firstRank!==secondRank;
+ const firstRank=fieldRank(out,k),secondRank=incomingSources[k]?.rank||0;
+ const strengthField=['myStrength','rivalStrength','strength'].includes(k),firstKind=out._fieldSources[k]?.kind,secondKind=incomingSources[k]?.kind;
+ const consensusWins=strengthField&&firstRank===3&&secondRank===3&&((firstKind==='ocr-consensus'&&secondKind==='pixels')||(secondKind==='ocr-consensus'&&firstKind==='pixels'));
+ const resolved=Math.max(firstRank,secondRank)>=2&&firstRank!==secondRank||consensusWins;
  const first=out[k],firstSource=out._fieldSources[k]?.source||a._source||'Leitura anterior',secondSource=incomingSources[k]?.source||b._source||'Nova leitura';
- if(resolved&&secondRank>firstRank){out[k]=v;out._fieldSources[k]=incomingSources[k];}
- conflicts.push({field:path+'.'+k,first,second:v,resolved,preferred:out[k],firstSource,secondSource,firstRank,secondRank});
- }else if((incomingSources[k]?.rank||0)>fieldRank(out,k))out._fieldSources[k]=incomingSources[k];
+ if(resolved&&(secondRank>firstRank||consensusWins&&secondKind==='ocr-consensus')){out[k]=v;out._fieldSources[k]=incomingSources[k];}
+ conflicts.push({field:path+'.'+k,first,second:v,resolved,preferred:out[k],firstSource,secondSource,firstRank,secondRank,firstKind,secondKind});
+ }else if((incomingSources[k]?.rank||0)>fieldRank(out,k)||['myStrength','rivalStrength','strength'].includes(k)&&incomingSources[k]?.kind==='ocr-consensus'&&out._fieldSources[k]?.kind==='pixels')out._fieldSources[k]=incomingSources[k];
  }return out;
 }
 const calendarHasSchedule=row=>['round','date','time'].some(key=>known(row[key]));
@@ -239,12 +259,20 @@ function uniqueConflicts(conflicts){
  if(!prior||currentRanks[0]>priorRanks[0]||currentRanks[0]===priorRanks[0]&&currentRanks[1]>priorRanks[1]||currentRanks[0]===priorRanks[0]&&currentRanks[1]===priorRanks[1]&&!prior.resolved&&conflict.resolved)records.set(key,conflict);
  }return [...records.values()];
 }
+function outranksConflict(source,conflict){
+ const maximum=Math.max(conflict.firstRank||0,conflict.secondRank||0);
+ if(source.rank>maximum)return true;
+ // A previously agreeing crop still strengthens the provenance. Its two
+ // literal passes can also settle older template-vs-template disagreements,
+ // while a different two-pass observation remains a real disagreement.
+ return source.kind==='ocr-consensus'&&source.rank===3&&maximum===3&&['first','second'].every(side=>(conflict[side+'Rank']||0)<3||conflict[side+'Kind']==='pixels');
+}
 function settleMatchConflicts(data){
  for(const conflict of data.conflicts||[]){
  if(!conflict.field?.startsWith('match.'))continue;
  const key=conflict.field.slice(6),value=data.match[key],source=data._matchFieldSources[key];
- if(!known(value)||!source||source.rank<2||source.rank<=Math.max(conflict.firstRank||0,conflict.secondRank||0))continue;
- if(!equivalentField(key,value,conflict.first)&&!equivalentField(key,value,conflict.second))continue;
+ if(!known(value)||!source||source.rank<2||!outranksConflict(source,conflict))continue;
+ if(!equivalentField(key,value,conflict.first)&&!equivalentField(key,value,conflict.second)&&!['ocr-consensus','manual'].includes(source.kind))continue;
  conflict.resolved=true;conflict.preferred=value;conflict.resolutionSource=source.source;
  }return data;
 }
@@ -252,8 +280,8 @@ function settleMetaConflicts(data){
  for(const conflict of data.conflicts||[]){
   if(!conflict.field?.startsWith('meta.'))continue;
   const key=conflict.field.slice(5),value=data.meta[key],source=data.meta._fieldSources?.[key];
-  if(!known(value)||!source||source.rank<2||source.rank<=Math.max(conflict.firstRank||0,conflict.secondRank||0))continue;
-  if(!equivalentField(key,value,conflict.first)&&!equivalentField(key,value,conflict.second))continue;
+  if(!known(value)||!source||source.rank<2||!outranksConflict(source,conflict))continue;
+  if(!equivalentField(key,value,conflict.first)&&!equivalentField(key,value,conflict.second)&&!['ocr-consensus','manual'].includes(source.kind))continue;
   conflict.resolved=true;conflict.preferred=value;conflict.resolutionSource=source.source;
  }return data;
 }
@@ -291,7 +319,7 @@ export function fuseExtraction(first,second){
  settleMetaConflicts(out);
  const pending=cleanPendingMatchFacts([...(am.pendingMatchFacts||[]),...(bm.pendingMatchFacts||[])]);
  out.meta.pendingMatchFacts=[...new Map(pending.map(fact=>[fact.field+'|'+JSON.stringify(fact.value)+'|'+fact.reason,fact])).values()].filter(fact=>!known(out.match[fact.field])||(out._matchFieldSources[fact.field]?.rank||0)<2||out.conflicts.some(conflict=>conflict.field==='match.'+fact.field&&!conflict.resolved));
- return enforceReportPrivacy(out);
+ return enforceMatchConsistency(enforceReportPrivacy(out));
 }
 export function coverage(type,data){
  const missing=[],hidden=[],notApplicable=[];let present=0,total=0,checksPassed=0,checksTotal=0;
@@ -316,7 +344,7 @@ export function coverage(type,data){
  const expected=num(type==='squad'?data.meta?.expectedPlayers:data.meta?.expectedRounds);
  if(expected!==null)check(expected===(rows||[]).length,'Quantidade esperada '+expected+', capturada '+(rows||[]).length);
  }
- const conflicts=uniqueConflicts(data.conflicts||[]),unresolved=conflicts.filter(conflict=>!conflict.resolved).length,resolved=conflicts.length-unresolved;
+ const conflicts=uniqueConflicts(relevantConflicts(type,data.conflicts||[])),unresolved=conflicts.filter(conflict=>!conflict.resolved).length,resolved=conflicts.length-unresolved;
  // Contradictions and unobserved list boundaries are requirements of a complete
  // reading too. Counting them prevents a filled but disputed form from reporting
  // 100%, and flooring prevents one absent date in 34 games from rounding to 100%.

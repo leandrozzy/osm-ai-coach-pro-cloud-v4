@@ -33,7 +33,8 @@ function cropForReading(source,region){
  ctx.drawImage(source,region.x,region.y,region.width,region.height,0,0,canvas.width,canvas.height);
  const image=ctx.getImageData(0,0,canvas.width,canvas.height);
  for(let at=0;at<image.data.length;at+=4){
-  const gray=.299*image.data[at]+.587*image.data[at+1]+.114*image.data[at+2],value=Math.round(255*Math.pow(gray/255,region.gamma));
+  const gray=.299*image.data[at]+.587*image.data[at+1]+.114*image.data[at+2],tone=Math.round(255*Math.pow(gray/255,region.gamma));
+  const value=region.invert?255-tone:tone;
   image.data[at]=image.data[at+1]=image.data[at+2]=value;image.data[at+3]=255;
  }
  ctx.putImageData(image,0,0);return canvas;
@@ -57,9 +58,26 @@ export function numericRecoveryOverlay(ocr){
  const word=words[0];if(![word.Left,word.Top,word.Width,word.Height].every(Number.isFinite)||word.Width<=0||word.Height<=0)return null;
  return {...ocr,text:value,lines:[{Words:[words[0]],MinTop:words[0].Top,MaxHeight:words[0].Height}]};
 }
+/** Two differently prepared crops of one identified circle must read the same
+ * complete numeral. A font-template candidate is never a substitute pass. */
+export function numericStrengthConsensus(target,readings,{frameIndex=0}={}){
+ if(!['myStrength','rivalStrength'].includes(target?.field)||typeof target.club!=='string'||!known(target.club)||!target.box||!Array.isArray(readings)||!Number.isInteger(frameIndex)||frameIndex<0)return null;
+ const box=target.box;if(!['left','top','right','bottom'].every(key=>Number.isFinite(box[key]))||box.right<=box.left||box.bottom<=box.top)return null;
+ const passes=readings.map(reading=>{
+  const literal=numericRecoveryOverlay(reading?.ocr||{});if(!literal)return null;
+  const word=literal.lines[0].Words[0],confidence=Number(word.Confidence??literal.confidence)||0;
+  if(confidence<50||!['native-gray','inverted-contrast'].includes(reading.variant)||![7,13].includes(reading.pageSegMode))return null;
+  // Coordinates are mapped back to the original screen. A number outside
+  // the verified circle cannot supply its team's strength.
+  if(word.Left<box.left-2||word.Top<box.top-2||word.Left+word.Width>box.right+2||word.Top+word.Height>box.bottom+2)return null;
+  return {value:+literal.text,variant:reading.variant,confidence,pageSegMode:reading.pageSegMode,wordBox:{left:word.Left,top:word.Top,right:word.Left+word.Width,bottom:word.Top+word.Height}};
+ });
+ if(passes.length!==2||passes.some(pass=>!pass)||passes[0].variant===passes[1].variant||passes[0].value!==passes[1].value)return null;
+ return {frameIndex,field:target.field,club:target.club,value:passes[0].value,box:{...box},passes,verified:true,kind:'strength-crop-consensus'};
+}
 /** Pure literal extraction, also usable with native TSV verification fixtures. */
 export function extractionFromLocalOcr(ocr,type,{context={},frameIndex=0}={}){
- const width=Number(ocr.width),height=Number(ocr.height),response={matchEvidence:[],squadEvidence:[],calendarEvidence:[],teamEvidence:[]};
+ const width=Number(ocr.width),height=Number(ocr.height),response={matchEvidence:[],squadEvidence:[],calendarEvidence:[],teamEvidence:[],strengthEvidence:[]};
  if(!width||!height)return {data:blankExtraction(),response};
  let data;
  if(type==='match'){
@@ -104,21 +122,25 @@ export async function readLocalScreen(canvas,type,{signal,context={},onUpdate,la
   const numericContext=type==='squad'&&parsed.data.meta?.teamVerified===true?{...context,myTeam:parsed.data.meta.team}:context;
   const targets=localNumericRegions(canvas,parsed.response.matchEvidence[0],numericContext);
   for(const target of targets){
-   const remaining=budgetMs-(Date.now()-started);if(signal?.aborted||remaining<400)break;
+   const remaining=budgetMs-(Date.now()-started);if(signal?.aborted||remaining<600)break;
    try{onUpdate?.('Confirmando a força no círculo de '+target.club+' no aparelho.',{phase:'numeric',field:target.field});}catch{}
-   const crop=cropForReading(canvas,target);
-   try{
-    const raw=await localOCR(crop,{signal,onUpdate,languages,budgetMs:Math.min(3000,remaining),pageSegMode:7,characters:'0123456789',mapping:{offsetX:target.x,offsetY:target.y,scale:target.scale,width:canvas.width,height:canvas.height}}),number=numericRecoveryOverlay(raw);
-    if(number){
-     // Remove only the previous token inside this same isolated circle, so
-     // concatenated OCR passes cannot leave conflicting 98/86 word boxes.
-     ocr.lines=ocr.lines.map(line=>({...line,Words:(line.Words||[]).filter(word=>!(word.Left>=target.x&&word.Left+word.Width<=target.x+target.width&&word.Top>=target.y&&word.Top+word.Height<=target.y+target.height))})).filter(line=>line.Words.length);
-     ocr.lines.push(...number.lines);ocr.text+='\n'+number.text;
-    }
-   }catch(error){if(signal?.aborted)break;warnings.push('Conferência local da força: '+error.message);}
-   finally{crop.width=0;crop.height=0;}
+   const readings=[];
+   // Native luminance and inverted contrast have different segmentation
+   // failure modes. The raw-line mode also reads compact stylised digits
+   // that single-line mode occasionally rejects as letters.
+   const compact=target.height<canvas.height*.075;
+   for(const variant of [{name:'native-gray',gamma:1,invert:false,pageSegMode:compact?13:7},{name:'inverted-contrast',gamma:2,invert:true,pageSegMode:13}]){
+    const timeLeft=budgetMs-(Date.now()-started);if(signal?.aborted||timeLeft<300)break;
+    const crop=cropForReading(canvas,{...target,...variant});
+    try{
+     const raw=await localOCR(crop,{signal,onUpdate,languages,budgetMs:Math.min(1500,timeLeft),pageSegMode:variant.pageSegMode,characters:'0123456789',mapping:{offsetX:target.x,offsetY:target.y,scale:target.scale,width:canvas.width,height:canvas.height}});
+     readings.push({ocr:raw,variant:variant.name,pageSegMode:variant.pageSegMode});
+    }catch(error){if(signal?.aborted)break;warnings.push('Conferência local da força: '+error.message);break;}
+    finally{crop.width=0;crop.height=0;}
+   }
+   const consensus=numericStrengthConsensus(target,readings,{frameIndex});
+   if(consensus)parsed.response.strengthEvidence.push(consensus);
   }
-  parsed=extractionFromLocalOcr(ocr,type,{context,frameIndex});
  }
  const frames=[];frames[frameIndex]={canvas};
  const screened=applyScreenEvidence(parsed.data,parsed.response,frames,type);

@@ -24,6 +24,16 @@ function enclosedHoles(points,width,x0,x1,y0,y1){
   if(!edge&&size>=Math.max(2,(x1-x0+1)*(y1-y0+1)*.025))holes++;
  }return holes;
 }
+function hasZeroRails(bits){
+ // 0, 6 and 9 each have one hole. A zero additionally has both vertical
+ // rails: upper-right and lower-left. Do not turn an open/compressed 6 or 9
+ // into 0 merely because the sparse template has a high overlap score.
+ const rail=(x0,x1,y0,y1)=>{
+  let rows=0;for(let y=y0;y<y1;y++)if(bits.slice(y*SIZE_X+x0,y*SIZE_X+x1).some(Boolean))rows++;
+  return rows/(y1-y0);
+ };
+ return rail(8,12,3,8)>=.8&&rail(0,4,12,17)>=.8;
+}
 /** Read one bounded cell. A clipped, joined, faint, or ambiguous glyph stays unknown. */
 export function recognizeDigitNumber(image,box={},mode='dark'){
  if(mode==='white')mode='light';
@@ -54,6 +64,7 @@ export function recognizeDigitNumber(image,box={},mode='dark'){
   const holes=enclosedHoles(points,width,x0,x1,y0,y1);
   const best=new Map();for(const template of templates(mode)){if(holes===2&&template.digit!=='8'||holes===1&&template.digit==='8')continue;const score=glyphScore(bits,w/h,template);if(score>(best.get(template.digit)||0))best.set(template.digit,score);}
   const ranked=[...best].sort((a,b)=>b[1]-a[1]);
+  if(ranked[0]?.[0]==='0'&&!hasZeroRails(bits))return null;
   if(!ranked.length||ranked[0][1]<.76||ranked[0][1]-(ranked[1]?.[1]||0)<.075)return null;
   glyphs.push({digit:ranked[0][0],score:ranked[0][1],left:x0,right:x1,top:y0,bottom:y1,h});
  }

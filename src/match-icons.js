@@ -114,7 +114,10 @@ export function detectMatchPixels(image,evidence={}){
  }
  const circle=headerCircle(image,parsed),circles=[...(circle?[circle]:[]),...versusCircles(image,parsed)];
  for(const detected of circles){
-  if(!parsed._strengthAreas?.[detected.field])parsed._strengthAreas={...parsed._strengthAreas,[detected.field]:{kind:'strength-badge-area',club:detected.club,box:{left:detected.box.left/sx,right:detected.box.right/sx,top:detected.box.top/sy,bottom:detected.box.bottom/sy}}};
+  // The parser's broad header area also contains the Equipa caption. Use the
+  // actual cyan circle's interior whenever it is visible; otherwise a numeric
+  // whitelist can turn letters in that caption into a false extra digit.
+  parsed._strengthAreas={...parsed._strengthAreas,[detected.field]:{kind:'strength-badge-area',club:detected.club,coordinateSource:'native-circle',box:{left:detected.box.left/sx,right:detected.box.right/sx,top:detected.box.top/sy,bottom:detected.box.bottom/sy}}};
   if(match[detected.field]!=null)continue;
   // An isolated crop can read the actual numeral while the complete-page
   // engine misses Equipa and all sectors. Its word is still literally inside
@@ -139,20 +142,24 @@ export function detectMatchPixels(image,evidence={}){
    const full=parsed._strengthAreas[field].box;
    digits=recognizeDigitNumber(image,{left:full.left*sx,right:full.right*sx,top:full.top*sy,bottom:full.bottom*sy},'light');
   }
-  const agreesWithOcr=digits&&digits.value===match[field];
-  if(digits&&(areaOnly||agreesWithOcr||digits.confidence>=.88)&&digits.value>0&&digits.value<=400){
-   match[field]=digits.value;meta.iconEvidence=[...(meta.iconEvidence||[]),{kind:'strength-numerals',field,club:proof.club,value:digits.value,confidence:digits.confidence,box}];
+  const full=parsed._strengthAreas?.[field]?.box,circleBox=full?{left:full.left*sx,right:full.right*sx,top:full.top*sy,bottom:full.bottom*sy}:box;
+  const observedValue=match[field]??null,agreesWithOcr=digits&&digits.value===observedValue;
+  const reason=!digits?'FONT_OR_CROP_UNRECOGNISED':observedValue!==null&&!agreesWithOcr?'LITERAL_TEMPLATE_DISAGREEMENT':'NUMERIC_CORROBORATION_REQUIRED';
+  // A high template score measures resemblance, not the correctness of a
+  // numeral. Compression can make 6/9 resemble 0 almost perfectly. Every
+  // identified circle gets independent crop OCR; a conflicting template is
+  // diagnostic only and must never replace the club-oriented literal value.
+  meta.localOcrRegions=[...(meta.localOcrRegions||[]),{field,club:proof.club,kind:'strength',box:circleBox,observedValue,nativeValue:digits?.value??null,nativeConfidence:digits?.confidence??null,reason}];
+  if(agreesWithOcr&&digits.value>0&&digits.value<=400){
+   meta.iconEvidence=[...(meta.iconEvidence||[]),{kind:'strength-numerals',field,club:proof.club,value:observedValue,confidence:digits.confidence,box,corroboration:'club-oriented-literal'}];
   }else{
-   // A specialised font matcher being unable to read a glyph does not refute
-   // a literal, club-oriented OCR observation. Ask the bounded crop reader to
-   // corroborate it; only an actually proved conflicting numeral replaces it.
-   meta.localOcrRegions=[...(meta.localOcrRegions||[]),{field,club:proof.club,kind:'strength',box,observedValue:match[field]??null}];
-   meta.digitDiagnostics=[...(meta.digitDiagnostics||[]),{field,reason:digits?'LOW_CONSENSUS':'FONT_OR_CROP_UNRECOGNISED',box}];
-   const full=parsed._strengthAreas?.[field]?.box,check=full?{left:full.left*sx,right:full.right*sx,top:full.top*sy,bottom:full.bottom*sy}:box;
-   if(match[field]!=null&&opaqueBox(image,check)&&fraction(image,check,(r,g,b)=>Math.min(r,g,b)>145&&Math.max(r,g,b)-Math.min(r,g,b)<65)<.003){
-    meta.pendingMatchFacts=[...(meta.pendingMatchFacts||[]),{field,value:match[field],reason:'Nenhum dígito visível na área identificada do círculo de força.',source:'OCR do círculo da equipa'}];
-    delete match[field];meta._headerFields=meta._headerFields.filter(key=>key!==field);meta._ocrFields=meta._ocrFields.filter(key=>key!==field);
-   }
+   meta.digitDiagnostics=[...(meta.digitDiagnostics||[]),{field,reason,observedValue,nativeValue:digits?.value??null,nativeConfidence:digits?.confidence??null,box:circleBox}];
+  }
+  // An actually empty circle can disprove the same OCR guess; a font mismatch
+  // or a different template candidate cannot disprove a visible numeral.
+  if(match[field]!=null&&opaqueBox(image,circleBox)&&fraction(image,circleBox,(r,g,b)=>Math.min(r,g,b)>145&&Math.max(r,g,b)-Math.min(r,g,b)<65)<.003){
+   meta.pendingMatchFacts=[...(meta.pendingMatchFacts||[]),{field,value:match[field],reason:'Nenhum dígito visível na área identificada do círculo de força.',source:'OCR do círculo da equipa'}];
+   delete match[field];meta._headerFields=meta._headerFields.filter(key=>key!==field);meta._ocrFields=meta._ocrFields.filter(key=>key!==field);
   }
  }
  if(parsed._weakHeaderFields?.includes('human')&&parsed._evidence?.human?.kind==='manager-line'){

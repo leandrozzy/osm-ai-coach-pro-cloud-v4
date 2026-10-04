@@ -127,26 +127,60 @@ export function parseMatchOverlay(ocr={},width,height,context={}){
   if(value.weak){headerFields.delete(field);out._headerFields=[...headerFields];out._weakHeaderFields=[...new Set([...(out._weakHeaderFields||[]),field])];}
   return value;
  };
- const setManager=(row,club)=>{
+ // A flag, shirt or stadium graphic can produce perfectly plausible letters
+ // (including a short real-looking username). Text alone does not associate
+ // those letters with a manager: the actual small caption must sit below its
+ // own club, with the same alignment and normal glyph proportions.
+ const managerShape=row=>{
+  const value=caption(row,true),letters=value.words.filter(word=>/[\p{L}]/u.test(word.WordText));
+  if(!letters.length)return false;
+  return letters.every(word=>{
+   const count=String(word.WordText).replace(/[^\p{L}\p{N}_]/gu,'').length;
+   return word.Height>=height*.008&&word.Height<=height*.034&&
+    word.Width/(Math.max(1,count)*word.Height)>=.12&&word.Width/(Math.max(1,count)*word.Height)<=1.35;
+  })&&value.box.right-value.box.left<=width*.36;
+ };
+ const managerAligned=(row,clubRow,layout)=>{
+  if(!clubRow||!managerShape(row)||row.top<=clubRow.bottom||row.top-clubRow.bottom>height*.083)return false;
+  const titleHeights=(clubRow.words||[]).filter(word=>/[\p{L}]/u.test(word.WordText)).map(word=>Number(word.Height));
+  const titleHeight=titleHeights.length?Math.max(...titleHeights):clubRow.bottom-clubRow.top;
+  const managerHeight=Math.max(...caption(row,true).words.filter(word=>/[\p{L}]/u.test(word.WordText)).map(word=>Number(word.Height)));
+  // Descenders make a same-font username taller than a short all-capital
+  // club caption (the native Buxoro report is 29px versus 22px).
+  if(titleHeight&&managerHeight>titleHeight*1.5)return false;
+  return layout==='versus'?Math.abs((row.left+row.right-clubRow.left-clubRow.right)/2)<=width*.07:
+   Math.abs(row.left-clubRow.left)<=width*.05&&row.right<=width*.44;
+ };
+ const setManager=(row,clubRow,layout)=>{
+  if(!managerAligned(row,clubRow,layout))return false;
+  const candidate=caption(row,true);if(!isRivalNickname(candidate.text,context))return false;
+  const club=caption(clubRow).text;
   const value=setCaption('rivalNickname',row,{kind:'manager-line',club},true);
-  if(!isRivalNickname(value.text,context)){delete out.rivalNickname;headerFields.delete('rivalNickname');out._headerFields=[...headerFields];return;}
-  setHeader('human',true,{kind:'manager-line',club,box:value.box,confidence:value.confidence});
+  const proof={kind:'aligned-manager-line',club,box:value.box,clubBox:{left:clubRow.left,right:clubRow.right,top:clubRow.top,bottom:clubRow.bottom},layout,fontHeight:Math.max(...value.words.filter(word=>/[\p{L}]/u.test(word.WordText)).map(word=>Number(word.Height))),confidence:value.confidence,spellingConfident:!value.weak};
+  out._managerEvidence=proof;
+  out._evidence.rivalNickname={...out._evidence.rivalNickname,managerProof:proof};
+  setHeader('human',true,{kind:'manager-line',club,box:value.box,confidence:value.confidence,managerProof:proof});
   if(value.weak){headerFields.delete('human');out._headerFields=[...headerFields];out._weakHeaderFields=[...new Set([...(out._weakHeaderFields||[]),'human'])];}
+  return true;
  };
  const isOwnNickname=value=>identity(value)===username;
  const reportIdentity=parseRivalReportText(ocr.text||'',context);
+ // Scout text without coordinates can recover the club and tactics, but its
+ // preceding OCR line might be an illustration rather than a username.
+ // Reinstate that nickname only through the aligned caption below.
+ if(reportIdentity.rivalNickname&&out.rivalNickname===reportIdentity.rivalNickname)delete out.rivalNickname;
  if(reportIdentity.rivalName){
   const clubRow=rows.find(row=>identity(caption(row).text)===identity(reportIdentity.rivalName)&&row.left>width*.10&&row.right<width*.44&&row.top>height*.18&&row.bottom<height*.32);
   if(clubRow){
    const value=setCaption('rivalName',clubRow,{kind:'report-club-caption'});
-   const manager=rows.filter(row=>row.left>width*.10&&row.right<width*.44&&row.top>clubRow.bottom&&row.top-clubRow.bottom<height*.075&&isRivalNickname(caption(row,true).text,context)).sort((a,b)=>a.top-b.top)[0];
-   if(manager)setManager(manager,value.text);
+   const manager=rows.filter(row=>row.left>width*.10&&row.right<width*.44&&managerAligned(row,clubRow,'report')&&isRivalNickname(caption(row,true).text,context)).sort((a,b)=>a.top-b.top)[0];
+   if(manager)setManager(manager,clubRow,'report');
   }
  }
  const vs=words.find(word=>normalize(word.text)==='vs'&&word.x>width*.44&&word.x<width*.56&&word.y>height*.20&&word.y<height*.39);
  {
   const sameSide=(row,left)=>left?row.left>width*.14&&row.right<width*.44:row.left>width*.66&&row.right<width*.94;
-  const nicknameRows=rows.filter(row=>row.top>height*.34&&row.bottom<height*.47&&row.text.length<=60&&(isRivalNickname(row.text,context)||isOwnNickname(row.text)));
+  const nicknameRows=rows.filter(row=>row.top>height*.34&&row.bottom<height*.47&&row.text.length<=60&&managerShape(row)&&(isRivalNickname(row.text,context)||isOwnNickname(row.text)));
   // Flags beside a manager can be OCR garbage on the same line. The literal
   // username word retains its own box and must independently match ownership.
   const ownWord=words.find(word=>word.y>height*.375&&word.y+word.h<height*.47&&isOwnNickname(word.text));
@@ -182,8 +216,8 @@ export function parseMatchOverlay(ocr={},width,height,context={}){
    const prefix=sidePrefix(left),team=clubs[left?0:1];if(!prefix)continue;
    if(team)setCaption(prefix+'Name',team,{kind:'club-caption'});
    if(prefix==='rival'){
-    const nickname=nicknameRows.filter(row=>sameSide(row,left)&&(!team||row.top>team.bottom)&&isRivalNickname(row.text,context)).sort((a,b)=>a.top-b.top)[0];
-    if(nickname)setManager(nickname,team?.text);
+    const nickname=nicknameRows.filter(row=>sameSide(row,left)&&managerAligned(row,team,'versus')&&isRivalNickname(row.text,context)).sort((a,b)=>a.top-b.top)[0];
+    if(nickname)setManager(nickname,team,'versus');
     if(team&&ownUser)out._nicknameArea={kind:'versus',club:team.text,left:left?width*.16:width*.66,right:left?width*.44:width*.94,top:team.bottom+height*.003,bottom:team.bottom+height*.071};
    }
   }
@@ -237,8 +271,8 @@ export function parseMatchOverlay(ocr={},width,height,context={}){
  setCaption(prefix+'Name',teamRow,{kind:'club-caption'});
  if(prefix==='rival'&&header.teamVerified&&!out._weakHeaderFields?.includes('rivalName'))out._rivalHeader=true;
  if(prefix==='rival'){
-  const nickname=rows.filter(row=>row.left<width*.4&&row.top>teamRow.bottom&&row.top-teamRow.bottom<height*.065&&isRivalNickname(row.text,context)).sort((a,b)=>a.top-b.top)[0];
-  if(nickname)setManager(nickname,teamRow.text);
+  const nickname=rows.filter(row=>row.left<width*.4&&row.top-teamRow.bottom<height*.065&&managerAligned(row,teamRow,'squad-header')&&isRivalNickname(row.text,context)).sort((a,b)=>a.top-b.top)[0];
+  if(nickname)setManager(nickname,teamRow,'squad-header');
   if(header.teamVerified&&['GK','DEF','MID','ATT'].filter(field=>header[field]!=null).length>=3)out._nicknameArea={kind:'squad-header',club:teamRow.text,left:teamRow.left,right:width*.42,top:teamRow.bottom+height*.008,bottom:teamRow.bottom+height*.065};
  }
  // The money at the very top is cash. Only the squad-value header is accepted.
