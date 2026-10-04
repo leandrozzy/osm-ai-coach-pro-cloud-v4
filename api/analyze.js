@@ -93,8 +93,19 @@ export default async function handler(req,res){
    const regions=group.map(({result,image})=>mapOcrRegion(result,image.region==='full'?{...image,crop:{left:0,top:0,width,height,sourceWidth:width,sourceHeight:height}}:image)).filter(region=>region&&region.width===width&&region.height===height);
    return {text:group.map(item=>item.result.text).join('\n'),lines:regions.flatMap(region=>region.lines),width,height};
   });
-  read=fuseExtraction(read,normalizeExtraction(mergeMatchTexts(combined.map(ocr=>ocr.text),context),'match','OCR.space explícito',{sourceKind:'ocr-explicit',fields:['rivalFormation','rivalPlan','rivalMarking','rivalOffside','rivalTackling','stadium','trainingCamp','myTrainingCamp']}));
-  for(const ocr of combined){const controls=parseReportControls(ocr,ocr.width,ocr.height,context),fields=Object.keys(controls);if(fields.length)read=fuseExtraction(read,normalizeExtraction({match:controls},'match','Controles associados ao relatório',{sourceKind:'ocr-explicit',fields}));}
+  const reportFields=['rivalFormation','rivalPlan','rivalMarking','rivalOffside','rivalTackling','stadium','trainingCamp','myTrainingCamp'];
+  // Joining text recovers the literal report sentences. A preceding OCR line
+  // may be a drawing: do not reintroduce its letters as a nickname after the
+  // header parser has rejected that line's geometry.
+  const narrative=mergeMatchTexts(combined.map(ocr=>ocr.text),context);
+  read=fuseExtraction(read,normalizeExtraction({match:Object.fromEntries(reportFields.filter(field=>known(narrative[field])).map(field=>[field,narrative[field]]))},'match','OCR.space explícito',{sourceKind:'ocr-explicit',fields:reportFields}));
+  for(const ocr of combined){
+   // Report crops retain their original coordinates, so actual small club
+   // and manager captions can still be recovered without a visual model.
+   const captions=parseMatchOverlay(ocr,ocr.width,ocr.height,context),captionFields=(captions._headerFields||[]).filter(field=>known(captions[field]));
+   if(captionFields.length)read=fuseExtraction(read,normalizeExtraction({match:Object.fromEntries(captionFields.map(field=>[field,captions[field]]))},'match','OCR.space cabeçalhos dos recortes',{sourceKind:'ocr-layout',fields:captionFields}));
+   const controls=parseReportControls(ocr,ocr.width,ocr.height,context),fields=Object.keys(controls);if(fields.length)read=fuseExtraction(read,normalizeExtraction({match:controls},'match','Controles associados ao relatório',{sourceKind:'ocr-explicit',fields}));
+  }
  }
  return read;
  };
