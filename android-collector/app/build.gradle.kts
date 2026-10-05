@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 android {
@@ -12,12 +13,15 @@ android {
         minSdk = 30
         targetSdk = 35
         val runNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
-        versionCode = 1000 + runNumber
-        versionName = "1.0.$runNumber"
-        buildConfigField("String", "COACH_URL", "\"https://osm-ai-coach-pro-cloud-v4-git-android-collector-v1-lro-design.vercel.app\"")
+        versionCode = 2000 + runNumber
+        versionName = "2.0.$runNumber"
+        buildConfigField("String", "BACKEND_URL", "\"https://osm-ai-coach-pro-cloud-v4-git-android-collector-v1-lro-design.vercel.app\"")
     }
 
-    buildFeatures { buildConfig = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
 
     signingConfigs {
         create("release") {
@@ -44,4 +48,17 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+}
+
+dependencies {
+    implementation(platform("androidx.compose:compose-bom:2025.01.01"))
+    implementation("androidx.activity:activity-compose:1.10.0")
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
+    implementation("androidx.core:core-ktx:1.15.0")
+    debugImplementation("androidx.compose.ui:ui-tooling")
 }

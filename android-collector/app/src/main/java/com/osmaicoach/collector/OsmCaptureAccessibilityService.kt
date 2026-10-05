@@ -19,47 +19,106 @@ class OsmCaptureAccessibilityService : AccessibilityService() {
     private var pendingCapture=false
     private var finishRunnable:Runnable?=null
 
-    override fun onServiceConnected(){ repository=SessionRepository(applicationContext); CollectorState.lastError=null; CollectorState.setServiceReady(true) }
+    override fun onServiceConnected(){
+        repository=SessionRepository(applicationContext)
+        CollectorState.lastError=null
+        CollectorState.setServiceReady(true)
+    }
 
     override fun onAccessibilityEvent(event:AccessibilityEvent?){
-        val pkg=event?.packageName?.toString() ?: return; val nowOsm=pkg==OSM_PACKAGE; CollectorState.currentForegroundPackage=pkg
-        if(nowOsm){ finishRunnable?.let(handler::removeCallbacks); finishRunnable=null; osmWasForeground=true; repository.startIfNeeded(); CollectorState.setRecording(true); scheduleCapture(); return }
-        if(osmWasForeground) scheduleFinish()
+        val pkg=event?.packageName?.toString()?:return
+        val isOsm=pkg==OSM_PACKAGE
+        CollectorState.currentForegroundPackage=pkg
+
+        if(isOsm){
+            finishRunnable?.let(handler::removeCallbacks);finishRunnable=null
+            osmWasForeground=true
+            repository.startIfNeeded()
+            CollectorState.setRecording(true)
+            scheduleCapture()
+        }else if(osmWasForeground){
+            scheduleFinish()
+        }
     }
 
     private fun scheduleFinish(){
         finishRunnable?.let(handler::removeCallbacks)
-        val task=Runnable { if(CollectorState.currentForegroundPackage!=OSM_PACKAGE && osmWasForeground){ repository.finish(); osmWasForeground=false; pendingCapture=false; CollectorState.setRecording(false); CollectorState.signalSessionReady() } }
-        finishRunnable=task; handler.postDelayed(task,1200L)
+        val task=Runnable{
+            if(CollectorState.currentForegroundPackage!=OSM_PACKAGE&&osmWasForeground){
+                repository.finish()
+                osmWasForeground=false
+                pendingCapture=false
+                CollectorState.setRecording(false)
+                CollectorState.signalSessionReady()
+            }
+        }
+        finishRunnable=task
+        handler.postDelayed(task,1200L)
     }
 
-    private fun scheduleCapture(extraDelay:Long=0L){
+    private fun scheduleCapture(){
         if(pendingCapture)return
-        val elapsed=System.currentTimeMillis()-lastCaptureAt; val delay=maxOf(1300L-elapsed,200L,extraDelay)
-        pendingCapture=true; handler.postDelayed({pendingCapture=false;captureNow()},delay)
+        val delay=maxOf(1450L-(System.currentTimeMillis()-lastCaptureAt),180L)
+        pendingCapture=true
+        handler.postDelayed({pendingCapture=false;captureNow()},delay)
     }
 
     private fun visibleText():String{
-        val root=rootInActiveWindow ?: return ""; val values=LinkedHashSet<String>()
-        fun walk(node:AccessibilityNodeInfo?,depth:Int){ if(node==null||depth>14||values.size>=180)return; node.text?.toString()?.trim()?.takeIf{it.isNotEmpty()}?.let(values::add); node.contentDescription?.toString()?.trim()?.takeIf{it.isNotEmpty()}?.let(values::add); for(i in 0 until node.childCount) walk(node.getChild(i),depth+1) }
-        runCatching{walk(root,0)}; return values.joinToString(" | ").take(6000)
+        val root=rootInActiveWindow?:return ""
+        val out=LinkedHashSet<String>()
+        fun walk(n:AccessibilityNodeInfo?,depth:Int){
+            if(n==null||depth>16||out.size>=220)return
+            n.text?.toString()?.trim()?.takeIf{it.isNotBlank()}?.let(out::add)
+            n.contentDescription?.toString()?.trim()?.takeIf{it.isNotBlank()}?.let(out::add)
+            for(i in 0 until n.childCount)walk(n.getChild(i),depth+1)
+        }
+        runCatching{walk(root,0)}
+        return out.joinToString(" | ").take(7000)
     }
 
     private fun captureNow(){
         if(CollectorState.currentForegroundPackage!=OSM_PACKAGE)return
-        val textHint=visibleText()
+        val hint=visibleText()
         takeScreenshot(Display.DEFAULT_DISPLAY,executor,object:TakeScreenshotCallback{
-            override fun onSuccess(screenshot:ScreenshotResult){
-                val buffer=screenshot.hardwareBuffer; val hw=Bitmap.wrapHardwareBuffer(buffer,screenshot.colorSpace); buffer.close()
-                if(hw==null){CollectorState.lastError="Falha de captura: bitmap indisponível";CollectorState.signalFrameCaptured();return}
-                val bitmap=hw.copy(Bitmap.Config.ARGB_8888,false); hw.recycle(); val fp=BitmapFingerprint.aHash(bitmap); val prev=lastFingerprint
-                if(prev==null||BitmapFingerprint.distance(prev,fp)>3){repository.saveFrame(bitmap,fp,textHint);lastFingerprint=fp}
-                lastCaptureAt=System.currentTimeMillis();CollectorState.lastError=null;CollectorState.signalFrameCaptured();bitmap.recycle()
+            override fun onSuccess(result:ScreenshotResult){
+                val buffer=result.hardwareBuffer
+                val hardware=Bitmap.wrapHardwareBuffer(buffer,result.colorSpace)
+                buffer.close()
+                if(hardware==null){
+                    CollectorState.lastError="Falha de captura: bitmap"
+                    return
+                }
+                val bitmap=hardware.copy(Bitmap.Config.ARGB_8888,false)
+                hardware.recycle()
+                val fp=BitmapFingerprint.aHash(bitmap)
+                val old=lastFingerprint
+                if(old==null||BitmapFingerprint.distance(old,fp)>2){
+                    repository.saveFrame(bitmap,fp,hint)
+                    lastFingerprint=fp
+                    CollectorState.signalFrameCaptured()
+                }
+                lastCaptureAt=System.currentTimeMillis()
+                CollectorState.lastError=null
+                bitmap.recycle()
             }
-            override fun onFailure(errorCode:Int){ if(errorCode==ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT){lastCaptureAt=System.currentTimeMillis();scheduleCapture(1450L);return};CollectorState.lastError="Falha de captura: $errorCode";CollectorState.signalFrameCaptured() }
+            override fun onFailure(errorCode:Int){
+                if(errorCode==ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT){
+                    lastCaptureAt=System.currentTimeMillis()
+                    scheduleCapture()
+                }else CollectorState.lastError="Falha de captura: $errorCode"
+            }
         })
     }
 
-    override fun onInterrupt(){finishRunnable?.let(handler::removeCallbacks);repository.finish();osmWasForeground=false;pendingCapture=false;CollectorState.setRecording(false);CollectorState.setServiceReady(false)}
-    override fun onDestroy(){finishRunnable?.let(handler::removeCallbacks);repository.finish();osmWasForeground=false;pendingCapture=false;CollectorState.setRecording(false);CollectorState.setServiceReady(false);super.onDestroy()}
+    override fun onInterrupt(){finish()}
+    override fun onDestroy(){finish();super.onDestroy()}
+
+    private fun finish(){
+        finishRunnable?.let(handler::removeCallbacks)
+        if(::repository.isInitialized)repository.finish()
+        osmWasForeground=false
+        pendingCapture=false
+        CollectorState.setRecording(false)
+        CollectorState.setServiceReady(false)
+    }
 }

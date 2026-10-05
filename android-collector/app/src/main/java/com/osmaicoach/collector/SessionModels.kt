@@ -8,7 +8,9 @@ data class CaptureFrame(
     val width: Int,
     val height: Int,
     val fingerprint: Long,
-    val textHint: String = ""
+    val textHint: String = "",
+    val screenType: String = "other",
+    val screenTitle: String = ""
 )
 
 data class CaptureSession(

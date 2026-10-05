@@ -1,182 +1,329 @@
 package com.osmaicoach.collector
 
-import android.app.Activity
 import android.content.ComponentName
 import android.content.Intent
-import android.graphics.Color
 import android.os.Bundle
 import android.provider.Settings
-import android.webkit.WebChromeClient
-import android.webkit.WebView
-import android.webkit.WebViewClient
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.TextView
-import org.json.JSONObject
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import java.text.SimpleDateFormat
+import java.util.*
 
-class MainActivity : Activity() {
-    private lateinit var repository: SessionRepository
-    private lateinit var webView: WebView
-    private lateinit var status: TextView
-    private lateinit var sessionStatus: TextView
-    private lateinit var enableButton: Button
-    private lateinit var openOsmButton: Button
+class MainActivity:ComponentActivity(){
+    private lateinit var repo:SessionRepository
 
-    private val stateListener: () -> Unit = {
-        runOnUiThread {
-            refreshState()
-            refreshSessionSummary()
-        }
-    }
-
-    override fun onCreate(savedInstanceState: Bundle?) {
+    override fun onCreate(savedInstanceState:Bundle?){
         super.onCreate(savedInstanceState)
-        repository = SessionRepository(this)
-        buildUi()
-        CollectorState.addListener(stateListener)
-        refreshState()
-        refreshSessionSummary()
+        repo=SessionRepository(this)
+        setContent{CoachTheme{NativeCoachApp()}}
     }
 
-    override fun onResume() {
-        super.onResume()
-        refreshState()
-        refreshSessionSummary()
-        window.decorView.postDelayed({
-            refreshSessionSummary()
-            notifyWebCollectorChanged()
-        }, 1400)
-    }
-
-    override fun onDestroy() {
-        CollectorState.removeListener(stateListener)
-        if (::webView.isInitialized) {
-            webView.removeJavascriptInterface("OsmCollector")
-            webView.destroy()
+    @Composable
+    private fun NativeCoachApp(){
+        var tab by remember{mutableStateOf(0)}
+        var refresh by remember{mutableIntStateOf(0)}
+        DisposableEffect(Unit){
+            val l:()->Unit={runOnUiThread{refresh++}}
+            CollectorState.addListener(l)
+            onDispose{CollectorState.removeListener(l)}
         }
-        super.onDestroy()
-    }
+        LaunchedEffect(Unit){while(true){kotlinx.coroutines.delay(1500);refresh++}}
 
-    private fun buildUi() {
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.rgb(16, 27, 36))
-        }
+        val serviceReady=isAccessibilityServiceEnabled()
+        val recording=CollectorState.isRecording()
+        val latest=repo.latestSession()
+        val sessions=repo.listSessions()
 
-        val setupPanel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(32, 24, 32, 18)
-            setBackgroundColor(Color.rgb(16, 27, 36))
-        }
-
-        status = TextView(this).apply {
-            setTextColor(Color.WHITE)
-            textSize = 15f
-        }
-
-        sessionStatus = TextView(this).apply {
-            setTextColor(Color.rgb(180, 220, 190))
-            textSize = 14f
-            setPadding(0, 10, 0, 10)
-        }
-
-        enableButton = Button(this).apply {
-            text = "1. Ativar leitura automática"
-            setOnClickListener {
-                if (!isAccessibilityServiceEnabled()) {
-                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                } else {
-                    refreshState()
+        Scaffold(
+            containerColor=Color(0xFFF6F7F2),
+            topBar={
+                Surface(color=Color(0xFF101E27),shadowElevation=4.dp){
+                    Column(Modifier.fillMaxWidth().padding(18.dp)){
+                        Row(verticalAlignment=Alignment.CenterVertically){
+                            Surface(shape=RoundedCornerShape(12.dp),color=Color(0xFFB8E34D)){
+                                Icon(Icons.Default.SportsSoccer,null,Modifier.padding(10.dp),tint=Color(0xFF101E27))
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Column{
+                                Text("OSM AI Coach Pro",color=Color.White,fontWeight=FontWeight.Bold,fontSize=20.sp)
+                                Text("Coach nativo • leitura contínua",color=Color(0xFFAAC0CC),fontSize=12.sp)
+                            }
+                        }
+                        Spacer(Modifier.height(14.dp))
+                        Row(verticalAlignment=Alignment.CenterVertically){
+                            Icon(
+                                if(serviceReady)Icons.Default.CheckCircle else Icons.Default.Warning,
+                                null,tint=if(serviceReady)Color(0xFFB8E34D) else Color(0xFFFFC857)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                when{
+                                    !serviceReady->"Leitura automática desativada"
+                                    recording->"Lendo o OSM agora"
+                                    else->"Leitura automática pronta"
+                                },
+                                color=Color.White,fontWeight=FontWeight.SemiBold
+                            )
+                        }
+                        if(!serviceReady){
+                            Spacer(Modifier.height(10.dp))
+                            Button(onClick={startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))}){
+                                Text("Ativar uma vez")
+                            }
+                        }
+                    }
+                }
+            },
+            bottomBar={
+                NavigationBar(containerColor=Color(0xFF101E27)){
+                    val labels=listOf("Hoje","Sessões","Slots","Diretor","Ajustes")
+                    val icons=listOf(Icons.Default.Home,Icons.Default.Route,Icons.Default.Dashboard,Icons.Default.TrendingUp,Icons.Default.Settings)
+                    labels.forEachIndexed{i,label->
+                        NavigationBarItem(
+                            selected=tab==i,onClick={tab=i},
+                            icon={Icon(icons[i],null)},
+                            label={Text(label)},
+                            colors=NavigationBarItemDefaults.colors(
+                                selectedIconColor=Color(0xFFB8E34D),
+                                selectedTextColor=Color(0xFFB8E34D),
+                                unselectedIconColor=Color(0xFF9FB0B8),
+                                unselectedTextColor=Color(0xFF9FB0B8),
+                                indicatorColor=Color(0xFF21323C)
+                            )
+                        )
+                    }
+                }
+            }
+        ){pad->
+            Box(Modifier.padding(pad).fillMaxSize()){
+                when(tab){
+                    0->TodayScreen(serviceReady,recording,latest){openOsm()}
+                    1->SessionsScreen(sessions)
+                    2->SlotsScreen(latest)
+                    3->DirectorScreen(latest)
+                    else->SettingsScreen(serviceReady)
                 }
             }
         }
-
-        openOsmButton = Button(this).apply {
-            text = "2. Abrir OSM e começar"
-            setOnClickListener { openOsmFromBridge() }
-        }
-
-        setupPanel.addView(status)
-        setupPanel.addView(sessionStatus)
-        setupPanel.addView(enableButton)
-        setupPanel.addView(openOsmButton)
-
-        webView = WebView(this).apply {
-            setBackgroundColor(Color.WHITE)
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            webViewClient = WebViewClient()
-            webChromeClient = WebChromeClient()
-            addJavascriptInterface(CoachBridge(this@MainActivity, repository), "OsmCollector")
-        }
-
-        webView.loadUrl(BuildConfig.COACH_URL)
-
-        root.addView(setupPanel, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-        root.addView(webView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-        setContentView(root)
     }
 
-    fun openOsmFromBridge() {
-        val enabled = isAccessibilityServiceEnabled()
-        CollectorState.setServiceReady(enabled)
-        if (!enabled) {
-            status.text = "Ative primeiro o serviço 'OSM AI Coach — leitura automática'."
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-            return
-        }
-        sessionStatus.text = "Sessão OSM iniciando… navegue normalmente pelos seus slots."
-        OsmLauncher.open(this)
-    }
-
-    private fun refreshState() {
-        val enabled = isAccessibilityServiceEnabled()
-        CollectorState.setServiceReady(enabled)
-        status.text = when {
-            !enabled -> "Leitura automática: DESATIVADA"
-            CollectorState.isRecording() -> "Leitura automática: GRAVANDO OSM"
-            else -> "Leitura automática: PRONTA"
-        } + (CollectorState.lastError?.let { "\n$it" } ?: "")
-        enableButton.text = if (enabled) "1. Leitura automática ATIVADA" else "1. Ativar leitura automática"
-        enableButton.isEnabled = !enabled
-        openOsmButton.isEnabled = enabled
-    }
-
-    private fun refreshSessionSummary() {
-        val raw = runCatching { repository.latestSessionJson() }.getOrDefault("null")
-        if (raw == "null") {
-            sessionStatus.text = if (CollectorState.isRecording()) "Capturando telas do OSM…" else "Nenhuma sessão concluída ainda."
-            return
-        }
-        runCatching {
-            val json = JSONObject(raw)
-            val frames = json.optJSONArray("frames")?.length() ?: 0
-            val ready = json.optString("state") == "ready"
-            sessionStatus.text = if (ready) {
-                "✓ Sessão concluída: $frames tela(s) capturada(s). Coach conectado abaixo."
-            } else {
-                "Sessão em andamento: $frames tela(s) capturada(s)."
+    @Composable
+    private fun TodayScreen(serviceReady:Boolean,recording:Boolean,latest:CaptureSession?,openOsm:()->Unit){
+        LazyColumn(contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(16.dp)){
+            item{
+                Text("Seu dia, organizado.",fontSize=30.sp,fontWeight=FontWeight.Bold,color=Color(0xFF17242B))
+                Text("O app acompanha tudo o que você visita no OSM e preserva cada tela útil.",color=Color(0xFF68777E))
             }
-        }.onFailure {
-            sessionStatus.text = "Sessão encontrada, mas não foi possível ler o resumo."
+            item{
+                Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(20.dp)){
+                    Column(Modifier.padding(18.dp)){
+                        Text("Leitura automática",fontWeight=FontWeight.Bold,fontSize=18.sp)
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            if(recording)"Gravando sua navegação no OSM"
+                            else if(serviceReady)"Pronta. Você só precisa abrir o OSM."
+                            else "Ative a acessibilidade uma única vez."
+                        )
+                        Spacer(Modifier.height(14.dp))
+                        Button(onClick=openOsm,enabled=serviceReady&&!recording,modifier=Modifier.fillMaxWidth()){
+                            Icon(Icons.Default.PlayArrow,null);Spacer(Modifier.width(8.dp));Text("Abrir OSM")
+                        }
+                    }
+                }
+            }
+            item{SessionSummaryCard(latest)}
+            item{
+                Row(horizontalArrangement=Arrangement.spacedBy(12.dp)){
+                    Metric("Telas",latest?.frames?.size?.toString()?:"0",Modifier.weight(1f))
+                    Metric("Tipos",latest?.frames?.map{it.screenType}?.distinct()?.size?.toString()?:"0",Modifier.weight(1f))
+                }
+            }
         }
     }
 
-    private fun isAccessibilityServiceEnabled(): Boolean {
-        val expected = ComponentName(this, OsmCaptureAccessibilityService::class.java).flattenToString()
-        val accessibilityEnabled = runCatching {
-            Settings.Secure.getInt(contentResolver, Settings.Secure.ACCESSIBILITY_ENABLED, 0) == 1
-        }.getOrDefault(false)
-        if (!accessibilityEnabled) return false
-        val enabledServices = Settings.Secure.getString(
-            contentResolver,
-            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-        ) ?: return false
-        return enabledServices.split(':').any { it.equals(expected, ignoreCase = true) }
+    @Composable
+    private fun SessionSummaryCard(session:CaptureSession?){
+        Card(colors=CardDefaults.cardColors(containerColor=Color(0xFFEFF5E5)),shape=RoundedCornerShape(20.dp)){
+            Column(Modifier.padding(18.dp)){
+                Text("Última sessão",fontWeight=FontWeight.Bold,fontSize=18.sp)
+                if(session==null){
+                    Text("Nenhuma sessão capturada ainda.")
+                }else{
+                    Text("${session.frames.size} telas preservadas")
+                    Spacer(Modifier.height(8.dp))
+                    val groups=session.frames.groupingBy{it.screenType}.eachCount()
+                    Text(groups.entries.sortedByDescending{it.value}.joinToString(" • "){"${labelType(it.key)} ${it.value}"},
+                        fontSize=13.sp,color=Color(0xFF55645B))
+                }
+            }
+        }
     }
 
-    private fun notifyWebCollectorChanged() {
-        if (!::webView.isInitialized) return
-        webView.evaluateJavascript("window.dispatchEvent(new CustomEvent('osm-collector-change'))", null)
+    @Composable
+    private fun SessionsScreen(sessions:List<CaptureSession>){
+        LazyColumn(contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
+            item{
+                Text("Jornada da sessão",fontSize=28.sp,fontWeight=FontWeight.Bold)
+                Text("Tudo o que você navegou no OSM fica registrado aqui.",color=Color.Gray)
+            }
+            sessions.forEach{session->
+                item{
+                    Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(18.dp)){
+                        Column(Modifier.padding(16.dp)){
+                            Text(formatTime(session.startedAt),fontWeight=FontWeight.Bold)
+                            Text("${session.frames.size} telas • ${session.state}",fontSize=13.sp,color=Color.Gray)
+                            Spacer(Modifier.height(10.dp))
+                            session.frames.takeLast(14).forEach{frame->
+                                Row(Modifier.fillMaxWidth().padding(vertical=5.dp),verticalAlignment=Alignment.CenterVertically){
+                                    Surface(shape=RoundedCornerShape(8.dp),color=typeColor(frame.screenType)){
+                                        Text(labelType(frame.screenType),Modifier.padding(horizontal=8.dp,vertical=4.dp),fontSize=11.sp)
+                                    }
+                                    Spacer(Modifier.width(10.dp))
+                                    Text(frame.screenTitle,Modifier.weight(1f),maxLines=1)
+                                    Text(SimpleDateFormat("HH:mm:ss",Locale.getDefault()).format(Date(frame.capturedAt)),fontSize=11.sp,color=Color.Gray)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
+
+    @Composable
+    private fun SlotsScreen(latest:CaptureSession?){
+        val types=latest?.frames?.groupingBy{it.screenType}?.eachCount().orEmpty()
+        LazyColumn(contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){
+            item{Text("Slots",fontSize=28.sp,fontWeight=FontWeight.Bold)}
+            items((1..4).toList()){slot->
+                Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(18.dp)){
+                    Column(Modifier.padding(16.dp)){
+                        Row(verticalAlignment=Alignment.CenterVertically){
+                            Surface(shape=RoundedCornerShape(10.dp),color=Color(0xFF101E27)){
+                                Text("S$slot",Modifier.padding(10.dp),color=Color(0xFFB8E34D),fontWeight=FontWeight.Bold)
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Column{
+                                Text("Slot $slot",fontWeight=FontWeight.Bold,fontSize=18.sp)
+                                Text("Dados preenchidos conforme a navegação",fontSize=12.sp,color=Color.Gray)
+                            }
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Text("Última sessão: ${types.values.sum()} telas disponíveis para processamento.",fontSize=13.sp)
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun DirectorScreen(latest:CaptureSession?){
+        val markets=latest?.frames?.count{it.screenType=="market"}?:0
+        val trainings=latest?.frames?.count{it.screenType=="training"}?:0
+        LazyColumn(contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){
+            item{
+                Text("Diretor",fontSize=28.sp,fontWeight=FontWeight.Bold)
+                Text("Mercado, treino e evolução a partir das telas realmente visitadas.",color=Color.Gray)
+            }
+            item{
+                Row(horizontalArrangement=Arrangement.spacedBy(12.dp)){
+                    Metric("Mercado",markets.toString(),Modifier.weight(1f))
+                    Metric("Treinos",trainings.toString(),Modifier.weight(1f))
+                }
+            }
+            item{
+                Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(18.dp)){
+                    Column(Modifier.padding(18.dp)){
+                        Text("Nada é descartado",fontWeight=FontWeight.Bold)
+                        Text("Se você abrir transferências, estádio, treino, classificação, resultado ou qualquer outra tela, ela fica preservada e categorizada na Jornada.")
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun SettingsScreen(serviceReady:Boolean){
+        LazyColumn(contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){
+            item{Text("Configurações",fontSize=28.sp,fontWeight=FontWeight.Bold)}
+            item{
+                Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(18.dp)){
+                    Column(Modifier.padding(18.dp)){
+                        Text("Leitura automática",fontWeight=FontWeight.Bold)
+                        Text(if(serviceReady)"Ativa. Não precisa autorizar de novo ao abrir o app." else "Desativada no Android.")
+                        if(!serviceReady){
+                            Spacer(Modifier.height(10.dp))
+                            Button(onClick={startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))}){Text("Abrir Acessibilidade")}
+                        }
+                    }
+                }
+            }
+            item{
+                Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(18.dp)){
+                    Column(Modifier.padding(18.dp)){
+                        Text("Arquitetura",fontWeight=FontWeight.Bold)
+                        Text("Interface e armazenamento nativos. A internet é usada apenas quando o Coach precisa consultar IA/backend.")
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable private fun Metric(label:String,value:String,modifier:Modifier=Modifier){
+        Card(modifier,colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(18.dp)){
+            Column(Modifier.padding(16.dp)){Text(value,fontSize=28.sp,fontWeight=FontWeight.Bold);Text(label,color=Color.Gray)}
+        }
+    }
+
+    private fun openOsm(){
+        val launch=packageManager.getLaunchIntentForPackage(OSM_PACKAGE)
+        if(launch!=null)startActivity(launch)
+    }
+
+    private fun isAccessibilityServiceEnabled():Boolean{
+        val expected=ComponentName(this,OsmCaptureAccessibilityService::class.java).flattenToString()
+        val enabled=runCatching{Settings.Secure.getInt(contentResolver,Settings.Secure.ACCESSIBILITY_ENABLED,0)==1}.getOrDefault(false)
+        if(!enabled)return false
+        val services=Settings.Secure.getString(contentResolver,Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)?:return false
+        return services.split(':').any{it.equals(expected,true)}
+    }
+
+    private fun formatTime(ms:Long)=SimpleDateFormat("dd/MM/yyyy HH:mm",Locale.getDefault()).format(Date(ms))
+    private fun labelType(type:String)=when(type){
+        "calendar"->"Calendário";"squad"->"Elenco";"match"->"Análise";"market"->"Mercado"
+        "training"->"Treino";"club"->"Clube";"ranking"->"Tabela";"result"->"Resultado"
+        "tactics"->"Tática";else->"Outra"
+    }
+    private fun typeColor(type:String)=when(type){
+        "market"->Color(0xFFFFE7C2);"training"->Color(0xFFE1F3FF);"calendar"->Color(0xFFE8F4DD)
+        "squad"->Color(0xFFEDE7FF);"match"->Color(0xFFFFE1E1);else->Color(0xFFECEFEF)
+    }
+}
+
+@Composable
+fun CoachTheme(content:@Composable()->Unit){
+    MaterialTheme(
+        colorScheme=lightColorScheme(
+            primary=Color(0xFF182832),
+            secondary=Color(0xFF7AA526),
+            background=Color(0xFFF6F7F2),
+            surface=Color.White
+        ),
+        content=content
+    )
 }
