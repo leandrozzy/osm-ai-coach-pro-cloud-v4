@@ -316,7 +316,7 @@ class MainActivity:ComponentActivity(){
 }
 
 @Composable
-fun CoachTheme(content:@Composable()->Unit){
+fun CoachTheme(content: @Composable () -> Unit){
     MaterialTheme(
         colorScheme=lightColorScheme(
             primary=Color(0xFF182832),
