@@ -44,11 +44,48 @@ function nativeTeam(type,r){return readingTeam(type,nativeParsed(type,r),r.meta|
 function nativeTargetSlot(preferred,r,type){const team=nativeTeam(type,r);if(known(team)){const hit=getState().slots.find(s=>known(slotTeam(s))&&nativeSameClub(slotTeam(s),team));if(hit)return hit.id;const p=getState().slots[preferred-1];if(p&&!known(slotTeam(p)))return preferred;return getState().slots.find(s=>!known(slotTeam(s)))?.id||preferred;}return preferred;}
 function nativeType(frame){const t=nativeNormalize(frame?.textHint||'');if(!t)return'unknown';const groups={calendar:['calendario','calendar','jornada','rodada','proximo jogo','proximos jogos','ultimo dia','resultado'],squad:['plantel','elenco','squad','jogadores','players','guarda redes','goleiro','defesa','meio campo','atacante','avancado'],match:['analise','analysis','arbitro','referee','formacao','formation','marcacao','marking','impedimento','offside','treino secreto','secret training','campo de treinamento','training camp','estadio','stadium']};const scores=Object.fromEntries(Object.entries(groups).map(([k,ws])=>[k,ws.reduce((n,w)=>n+(t.includes(w)?1:0),0)]));const best=Object.entries(scores).sort((a,b)=>b[1]-a[1])[0];return best[1]?best[0]:'unknown';}
 function nativeGroups(frames){const out=[];let pending=[];for(const f of frames){const type=nativeType(f);if(type==='unknown'){if(out.length)out.at(-1).indices.push(f.index);else pending.push(f.index);continue}const last=out.at(-1);if(last&&last.type===type)last.indices.push(f.index);else{out.push({type,indices:[...pending,f.index]});pending=[]}}if(pending.length&&out.length)out.at(-1).indices.push(...pending);return out.filter(g=>g.indices.length);}
-function nativeFallback(frames){const count=frames.length,slots=Math.min(4,Math.max(1,Math.ceil(count/10))),out=[];let start=0;for(let s=0;s<slots;s++){const end=Math.round((s+1)*count/slots),idx=Array.from({length:end-start},(_,i)=>start+i);for(const type of ['match','squad','calendar'])out.push({type,indices:[...idx]});start=end}return out;}
+function nativeFallback(frames){
+ if(!Array.isArray(frames)||!frames.length)return[];
+ const all=frames.map((f,i)=>({...f,index:Number.isInteger(f.index)?f.index:i}));
+ if(all.length<8)return ['match','squad','calendar'].map(type=>({type,indices:all.map(f=>f.index)}));
+
+ const gaps=[];
+ for(let i=1;i<all.length;i++){
+  const before=Number(all[i-1]?.capturedAt||0),after=Number(all[i]?.capturedAt||0);
+  gaps.push({at:i,gap:Math.max(0,after-before)});
+ }
+ const cuts=gaps
+  .filter(row=>row.gap>=2200)
+  .sort((a,b)=>b.gap-a.gap)
+  .slice(0,3)
+  .map(row=>row.at)
+  .sort((a,b)=>a-b);
+
+ const bounds=[0,...cuts,all.length],segments=[];
+ for(let i=0;i<bounds.length-1;i++){
+  const part=all.slice(bounds[i],bounds[i+1]);
+  if(part.length)segments.push(part.map(f=>f.index));
+ }
+
+ if(segments.length<2&&all.length>=20){
+  segments.length=0;
+  const slots=Math.min(4,Math.max(1,Math.ceil(all.length/10)));
+  let from=0;
+  for(let i=0;i<slots;i++){
+   const to=Math.round((i+1)*all.length/slots);
+   segments.push(all.slice(from,to).map(f=>f.index));
+   from=to;
+  }
+ }
+
+ return segments.slice(0,4).flatMap(indices=>
+  ['match','squad','calendar'].map(type=>({type,indices:[...indices]}))
+ );
+}
 function nativeSample(indices,max=16){if(indices.length<=max)return indices;return Array.from({length:max},(_,i)=>indices[Math.min(indices.length-1,Math.round(i*(indices.length-1)/(max-1)))]);}
 async function nativeFiles(session,indices){const b=nativeBridge(),files=[];if(!b)return files;for(const i of nativeSample(indices)){const x=b.latestFrameBase64(i);if(x)files.push(nativeFile(x,'osm-'+session.id+'-'+i+'.jpg'));await new Promise(r=>setTimeout(r,0))}return files;}
-async function nativeApply(files,type,preferred){const state=getState(),slot=state.slots[preferred-1],result=await analyzeMedia(files,type,{signal:new AbortController().signal,vision:hasSessionKey(),localRecovery:true,fallback:true,username:state.settings.username,myTeam:slotTeam(slot),rivalName:slot.match.rivalName,competitionType:slot.competitionType,model:state.settings.model,visionModel:state.settings.visionModel,profile:'fast'},m=>{nativeCollectorNotice='Sessão automática · S'+preferred+' · '+type+': '+m;const e=root?.querySelector?.('[data-native-status]');if(e)e.textContent=nativeCollectorNotice});const targetId=nativeTargetSlot(preferred,result,type),target=getState().slots[targetId-1],parsed=nativeParsed(type,result),next=applyReading(target,type,parsed,{meta:result.meta||{},teams:result.readingTeams||[],conflicts:result.conflicts||[],username:getState().settings.username,mode:'Sessão automática Android',readingAt:new Date().toISOString()});updateSlot(s=>Object.assign(s,next),targetId);return targetId;}
-async function processNativeCollector(){const bridge=nativeBridge();if(!bridge||nativeCollectorBusy||busy)return;let session;try{session=JSON.parse(bridge.latestSession()||'null')}catch{return}if(!session||session.state!=='ready'||!session.id||!Array.isArray(session.frames)||!session.frames.length)return;if(localStorage.getItem(NATIVE_SESSION_DONE)===session.id)return;nativeCollectorBusy=true;busy=true;let success=0,currentSlot=1;const report=[];try{nativeCollectorNotice='Organizando '+session.frames.length+' telas capturadas…';if(root)render();let groups=nativeGroups(session.frames);if(!groups.length){nativeCollectorNotice='Texto da interface indisponível; usando recuperação visual…';if(root)render();groups=nativeFallback(session.frames)}for(let i=0;i<groups.length;i++){const g=groups[i],files=await nativeFiles(session,g.indices);if(!files.length)continue;try{nativeCollectorNotice='Grupo '+(i+1)+'/'+groups.length+' · '+g.type+' · analisando…';if(root)render();currentSlot=await nativeApply(files,g.type,currentSlot);success++;report.push('S'+currentSlot+' '+g.type+' ✓')}catch(error){report.push(g.type+': '+error.message)}}for(const slot of getState().slots){if(!known(slotTeam(slot)))continue;updateSlot(s=>{try{s.director.plan=buildMarketPlan(s.squad,s.director.cash,s.match.myStrength)}catch{}},slot.id)}if(success){localStorage.setItem(NATIVE_SESSION_DONE,session.id);nativeCollectorNotice='Sessão OSM atualizada: '+report.join(' · ')}else nativeCollectorNotice='Nenhum dado pôde ser aplicado. A sessão foi preservada para nova tentativa.'}catch(error){nativeCollectorNotice='Falha ao processar sessão automática: '+error.message}finally{nativeCollectorBusy=false;busy=false;if(root){render();toast(nativeCollectorNotice)}}}
+async function nativeApply(files,type,preferred){const state=getState(),slot=state.slots[preferred-1],result=await analyzeMedia(files,type,{signal:new AbortController().signal,vision:true,localRecovery:true,fallback:true,username:state.settings.username,myTeam:slotTeam(slot),rivalName:slot.match.rivalName,competitionType:slot.competitionType,model:state.settings.model,visionModel:state.settings.visionModel,profile:'complete'},m=>{nativeCollectorNotice='Sessão automática · S'+preferred+' · '+type+': '+m;const e=root?.querySelector?.('[data-native-status]');if(e)e.textContent=nativeCollectorNotice});const targetId=nativeTargetSlot(preferred,result,type),target=getState().slots[targetId-1],parsed=nativeParsed(type,result),next=applyReading(target,type,parsed,{meta:result.meta||{},teams:result.readingTeams||[],conflicts:result.conflicts||[],username:getState().settings.username,mode:'Sessão automática Android',readingAt:new Date().toISOString()});updateSlot(s=>Object.assign(s,next),targetId);return targetId;}
+async function processNativeCollector(){const bridge=nativeBridge();if(!bridge||nativeCollectorBusy||busy)return;let session;try{session=JSON.parse(bridge.latestSession()||'null')}catch{return}if(!session||session.state!=='ready'||!session.id||!Array.isArray(session.frames)||!session.frames.length)return;if(localStorage.getItem(NATIVE_SESSION_DONE)===session.id)return;nativeCollectorBusy=true;busy=true;let success=0,currentSlot=1;const report=[];try{nativeCollectorNotice='Organizando '+session.frames.length+' telas capturadas…';if(root)render();let groups=nativeGroups(session.frames);if(!groups.length){nativeCollectorNotice='Texto da interface indisponível; usando recuperação visual…';if(root)render();groups=nativeFallback(session.frames)}for(let i=0;i<groups.length;i++){const g=groups[i],files=await nativeFiles(session,g.indices);if(!files.length)continue;try{nativeCollectorNotice='Grupo '+(i+1)+'/'+groups.length+' · '+g.type+' · analisando…';if(root)render();currentSlot=await nativeApply(files,g.type,currentSlot);success++;report.push('S'+currentSlot+' '+g.type+' ✓')}catch(error){report.push(g.type+': '+error.message)}}for(const slot of getState().slots){if(!known(slotTeam(slot)))continue;updateSlot(s=>{try{s.director.plan=buildMarketPlan(s.squad,s.director.cash,s.match.myStrength)}catch{}},slot.id)}if(success){localStorage.setItem(NATIVE_SESSION_DONE,session.id);nativeCollectorNotice='Sessão OSM atualizada: '+report.join(' · ')}else nativeCollectorNotice='Nenhum dado pôde ser aplicado. '+(report.length?'Detalhes: '+report.slice(-5).join(' · '):'A sessão foi preservada para nova tentativa.')}catch(error){nativeCollectorNotice='Falha ao processar sessão automática: '+error.message}finally{nativeCollectorBusy=false;busy=false;if(root){render();toast(nativeCollectorNotice)}}}
 
 function readCurrentReview(container=root.querySelector('#reviewForm')){return readReview(review,container,{display:displayedReview||review});}
 function restoreReading(slot,type){return liveReadings.get(slot+':'+type)||getReadingDraft(slot,type);}
