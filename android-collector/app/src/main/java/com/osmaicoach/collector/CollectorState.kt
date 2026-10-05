@@ -11,8 +11,16 @@ object CollectorState {
 
     fun isServiceReady() = serviceReady
     fun isRecording() = recording
-    fun setServiceReady(value: Boolean) { serviceReady = value; notifyChanged() }
-    fun setRecording(value: Boolean) { recording = value; notifyChanged() }
+    fun setServiceReady(value: Boolean) {
+        if (serviceReady == value) return
+        serviceReady = value
+        notifyChanged()
+    }
+    fun setRecording(value: Boolean) {
+        if (recording == value) return
+        recording = value
+        notifyChanged()
+    }
     fun signalFrameCaptured() = notifyChanged()
     fun signalSessionReady() = notifyChanged()
     fun addListener(listener: () -> Unit) { listeners += listener }

@@ -11,11 +11,9 @@ android {
         applicationId = "com.osmaicoach.collector"
         minSdk = 30
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
-
-        // Troque apenas esta URL quando soubermos o domínio de produção definitivo.
-        buildConfigField("String", "COACH_URL", "\"https://example.invalid\"")
+        versionCode = 2
+        versionName = "0.2.0"
+        buildConfigField("String", "COACH_URL", "\"https://osm-ai-coach-pro-cloud-v4-git-android-collector-v1-lro-design.vercel.app\"")
     }
 
     buildFeatures { buildConfig = true }

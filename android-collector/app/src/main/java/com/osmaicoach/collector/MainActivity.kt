@@ -12,16 +12,22 @@ import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import org.json.JSONObject
 
 class MainActivity : Activity() {
     private lateinit var repository: SessionRepository
     private lateinit var webView: WebView
-    private lateinit var setupPanel: LinearLayout
     private lateinit var status: TextView
+    private lateinit var sessionStatus: TextView
     private lateinit var enableButton: Button
     private lateinit var openOsmButton: Button
 
-    private val stateListener: () -> Unit = { runOnUiThread { refreshState() } }
+    private val stateListener: () -> Unit = {
+        runOnUiThread {
+            refreshState()
+            refreshSessionSummary()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -29,12 +35,17 @@ class MainActivity : Activity() {
         buildUi()
         CollectorState.addListener(stateListener)
         refreshState()
+        refreshSessionSummary()
     }
 
     override fun onResume() {
         super.onResume()
         refreshState()
-        notifyWebCollectorChanged()
+        refreshSessionSummary()
+        window.decorView.postDelayed({
+            refreshSessionSummary()
+            notifyWebCollectorChanged()
+        }, 1400)
     }
 
     override fun onDestroy() {
@@ -52,15 +63,21 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.rgb(16, 27, 36))
         }
 
-        setupPanel = LinearLayout(this).apply {
+        val setupPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(32, 30, 32, 24)
+            setPadding(32, 24, 32, 18)
             setBackgroundColor(Color.rgb(16, 27, 36))
         }
 
         status = TextView(this).apply {
             setTextColor(Color.WHITE)
             textSize = 15f
+        }
+
+        sessionStatus = TextView(this).apply {
+            setTextColor(Color.rgb(180, 220, 190))
+            textSize = 14f
+            setPadding(0, 10, 0, 10)
         }
 
         enableButton = Button(this).apply {
@@ -80,6 +97,7 @@ class MainActivity : Activity() {
         }
 
         setupPanel.addView(status)
+        setupPanel.addView(sessionStatus)
         setupPanel.addView(enableButton)
         setupPanel.addView(openOsmButton)
 
@@ -92,101 +110,73 @@ class MainActivity : Activity() {
             addJavascriptInterface(CoachBridge(this@MainActivity, repository), "OsmCollector")
         }
 
-        if (BuildConfig.COACH_URL != "https://example.invalid") {
-            webView.loadUrl(BuildConfig.COACH_URL)
-        } else {
-            webView.loadDataWithBaseURL(null, placeholderHtml(), "text/html", "UTF-8", null)
-        }
+        webView.loadUrl(BuildConfig.COACH_URL)
 
-        root.addView(
-            setupPanel,
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-        )
-        root.addView(
-            webView,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                0,
-                1f
-            )
-        )
+        root.addView(setupPanel, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        root.addView(webView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         setContentView(root)
     }
 
     fun openOsmFromBridge() {
         val enabled = isAccessibilityServiceEnabled()
         CollectorState.setServiceReady(enabled)
-
         if (!enabled) {
             status.text = "Ative primeiro o serviço 'OSM AI Coach — leitura automática'."
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             return
         }
-
+        sessionStatus.text = "Sessão OSM iniciando… navegue normalmente pelos seus slots."
         OsmLauncher.open(this)
     }
 
     private fun refreshState() {
         val enabled = isAccessibilityServiceEnabled()
         CollectorState.setServiceReady(enabled)
-
-        val text = when {
+        status.text = when {
             !enabled -> "Leitura automática: DESATIVADA"
             CollectorState.isRecording() -> "Leitura automática: GRAVANDO OSM"
             else -> "Leitura automática: PRONTA"
-        }
-
-        enableButton.text = if (enabled) {
-            "1. Leitura automática ATIVADA"
-        } else {
-            "1. Ativar leitura automática"
-        }
+        } + (CollectorState.lastError?.let { "\n$it" } ?: "")
+        enableButton.text = if (enabled) "1. Leitura automática ATIVADA" else "1. Ativar leitura automática"
         enableButton.isEnabled = !enabled
         openOsmButton.isEnabled = enabled
+    }
 
-        status.text = text + (CollectorState.lastError?.let { "\n$it" } ?: "")
-        notifyWebCollectorChanged()
+    private fun refreshSessionSummary() {
+        val raw = runCatching { repository.latestSessionJson() }.getOrDefault("null")
+        if (raw == "null") {
+            sessionStatus.text = if (CollectorState.isRecording()) "Capturando telas do OSM…" else "Nenhuma sessão concluída ainda."
+            return
+        }
+        runCatching {
+            val json = JSONObject(raw)
+            val frames = json.optJSONArray("frames")?.length() ?: 0
+            val ready = json.optString("state") == "ready"
+            sessionStatus.text = if (ready) {
+                "✓ Sessão concluída: $frames tela(s) capturada(s). Coach conectado abaixo."
+            } else {
+                "Sessão em andamento: $frames tela(s) capturada(s)."
+            }
+        }.onFailure {
+            sessionStatus.text = "Sessão encontrada, mas não foi possível ler o resumo."
+        }
     }
 
     private fun isAccessibilityServiceEnabled(): Boolean {
-        val expected = ComponentName(this, OsmCaptureAccessibilityService::class.java)
-            .flattenToString()
-
+        val expected = ComponentName(this, OsmCaptureAccessibilityService::class.java).flattenToString()
         val accessibilityEnabled = runCatching {
-            Settings.Secure.getInt(
-                contentResolver,
-                Settings.Secure.ACCESSIBILITY_ENABLED,
-                0
-            ) == 1
+            Settings.Secure.getInt(contentResolver, Settings.Secure.ACCESSIBILITY_ENABLED, 0) == 1
         }.getOrDefault(false)
-
         if (!accessibilityEnabled) return false
-
         val enabledServices = Settings.Secure.getString(
             contentResolver,
             Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
         ) ?: return false
-
-        return enabledServices
-            .split(':')
-            .any { it.equals(expected, ignoreCase = true) }
+        return enabledServices.split(':').any { it.equals(expected, ignoreCase = true) }
     }
 
     private fun notifyWebCollectorChanged() {
         if (!::webView.isInitialized) return
-        webView.evaluateJavascript(
-            "window.dispatchEvent(new CustomEvent('osm-collector-change'))",
-            null
-        )
+        webView.evaluateJavascript("window.dispatchEvent(new CustomEvent('osm-collector-change'))", null)
     }
-
-    private fun placeholderHtml() = """
-        <!doctype html><html><meta name='viewport' content='width=device-width,initial-scale=1'>
-        <body style='font-family:sans-serif;padding:24px'>
-          <h2>OSM AI Coach Collector</h2>
-          <p>O coletor Android está instalado. Falta apenas definir a URL de produção do Coach em <code>app/build.gradle.kts</code>.</p>
-          <p>Ative a leitura uma vez e depois use <b>Abrir OSM e começar</b>.</p>
-        </body></html>
-    """.trimIndent()
 }
