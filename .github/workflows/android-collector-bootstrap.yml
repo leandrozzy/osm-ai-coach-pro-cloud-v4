@@ -24,7 +24,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add android-collector .github/workflows/android-debug-apk.yml
+          git add android-collector
           git diff --cached --quiet || git commit -m "Add Android OSM Collector v1"
           git push
 
