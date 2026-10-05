@@ -5,5 +5,4 @@
     android:notificationTimeout="150"
     android:canRetrieveWindowContent="false"
     android:canTakeScreenshot="true"
-    android:description="@string/accessibility_service_description"
-    android:packageNames="com.gamebasics.osm" />
+    android:description="@string/accessibility_service_description" />
