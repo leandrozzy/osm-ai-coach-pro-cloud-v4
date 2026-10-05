@@ -6,38 +6,27 @@ on:
     branches:
       - android-collector-v1
     paths:
-      - 'full_integration_patch.py'
       - 'android-collector/**'
       - 'src/**'
       - '.github/workflows/android-full-integration.yml'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   integrate-and-build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Apply full integration patch
-        run: python full_integration_patch.py
-
-      - name: Commit generated integration
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src android-collector
-          git diff --cached --quiet || git commit -m "Fully integrate Android collector with Coach"
-          git push
 
       - name: Node
         uses: actions/setup-node@v4
         with:
           node-version: '22'
 
-      - name: Verify web app
+      - name: Build web app
         run: |
           npm install
           npm run build
@@ -65,11 +54,17 @@ jobs:
           ANDROID_SIGNING_PASSWORD: ${{ secrets.ANDROID_SIGNING_PASSWORD }}
           ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/osm-release.p12
         working-directory: android-collector
-        run: gradle :app:assembleRelease
+        run: |
+          gradle :app:assembleRelease
+
+      - name: Verify APK
+        run: |
+          test -f android-collector/app/build/outputs/apk/release/app-release.apk
+          ls -lh android-collector/app/build/outputs/apk/release/app-release.apk
 
       - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
           name: osm-ai-coach-pro-signed-release
           path: android-collector/app/build/outputs/apk/release/app-release.apk
-          
+          if-no-files-found: error
