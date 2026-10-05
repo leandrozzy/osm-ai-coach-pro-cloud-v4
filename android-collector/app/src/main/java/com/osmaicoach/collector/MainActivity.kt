@@ -86,7 +86,14 @@ class MainActivity : Activity() {
         }
 
         root.addView(setupPanel, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-        root.addView(webView, LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+        root.addView(
+    webView,
+    LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams.MATCH_PARENT,
+        0,
+        1f
+    )
+)
         setContentView(root)
     }
 
