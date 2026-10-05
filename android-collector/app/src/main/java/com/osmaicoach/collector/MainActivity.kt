@@ -273,17 +273,45 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun SlotDetailScreen(slot:NativeSlotData, onBack:()->Unit) {
-        LazyColumn(contentPadding=PaddingValues(20.dp), verticalArrangement=Arrangement.spacedBy(14.dp)) {
-            item {
-                Row(verticalAlignment=Alignment.CenterVertically) {
-                    IconButton(onClick=onBack){Icon(Icons.Default.ArrowBack,null)}
-                    Column {
-                        Text("S${slot.id} · ${if(slot.team!="NI")slot.team else "Time NI"}", fontSize=26.sp, fontWeight=FontWeight.Bold)
-                        Text("${completion(slot)}% dos campos identificados", color=Color.Gray)
+        var section by remember(slot.id) { mutableIntStateOf(0) }
+        val tabs = listOf("Resumo","Pré-jogo","Elenco","Calendário","Tática","Diretor","Aprendizado")
+
+        Column(Modifier.fillMaxSize()) {
+            Surface(color=Color.White,shadowElevation=2.dp) {
+                Column {
+                    Row(Modifier.fillMaxWidth().padding(horizontal=10.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically) {
+                        IconButton(onClick=onBack){Icon(Icons.Default.ArrowBack,null)}
+                        Column(Modifier.weight(1f)) {
+                            Text("S${slot.id} · ${if(slot.team!="NI")slot.team else "Time NI"}",fontSize=22.sp,fontWeight=FontWeight.Bold)
+                            Text("${completion(slot)}% preenchido · ${if(slot.competition!="NI")slot.competition else "liga NI"}",fontSize=12.sp,color=Color.Gray)
+                        }
+                    }
+                    androidx.compose.foundation.lazy.LazyRow(
+                        contentPadding=PaddingValues(horizontal=14.dp,vertical=8.dp),
+                        horizontalArrangement=Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(tabs.size) { i ->
+                            FilterChip(selected=section==i,onClick={section=i},label={Text(tabs[i])})
+                        }
                     }
                 }
             }
 
+            when(section) {
+                0 -> SlotOverview(slot)
+                1 -> SlotPreGame(slot)
+                2 -> SlotSquad(slot)
+                3 -> SlotCalendar(slot)
+                4 -> SlotTactics(slot)
+                5 -> SlotDirector(slot)
+                else -> SlotLearning(slot)
+            }
+        }
+    }
+
+    @Composable
+    private fun SlotOverview(slot:NativeSlotData) {
+        LazyColumn(contentPadding=PaddingValues(18.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
             item { DetailSection("Liga e clube", listOf(
                 "Meu time" to slot.team,
                 "Competição" to slot.competition,
@@ -291,67 +319,142 @@ class MainActivity : ComponentActivity() {
                 "Estádio" to slot.stadium,
                 "Bônus" to slot.bonus
             ))}
-
             item { DetailSection("Próxima partida", listOf(
-                "Rival" to slot.nextRival,
-                "Data" to slot.matchDate,
-                "Horário" to slot.matchTime,
-                "Local" to slot.venue,
-                "Árbitro" to slot.referee,
-                "Minha força" to slot.myStrength,
-                "Força rival" to slot.rivalStrength,
-                "Meu elenco" to slot.myValue,
-                "Elenco rival" to slot.rivalValue
+                "Rival" to slot.nextRival,"Data" to slot.matchDate,"Horário" to slot.matchTime,
+                "Local" to slot.venue,"Árbitro" to slot.referee,
+                "Minha força" to slot.myStrength,"Força rival" to slot.rivalStrength
             ))}
-
-            item { DetailSection("Forças por setor", listOf(
-                "Meu GOL" to slot.myGoalkeeper,
-                "Minha DEF" to slot.myDefense,
-                "Meu MEI" to slot.myMidfield,
-                "Meu ATA" to slot.myAttack,
-                "Rival GOL" to slot.rivalGoalkeeper,
-                "Rival DEF" to slot.rivalDefense,
-                "Rival MEI" to slot.rivalMidfield,
-                "Rival ATA" to slot.rivalAttack
-            ))}
-
-            item { DetailSection("Análise do adversário", listOf(
-                "Formação" to slot.rivalFormation,
-                "Plano" to slot.rivalPlan,
-                "Marcação" to slot.marking,
-                "Impedimento" to slot.offside,
-                "Treino secreto" to slot.secretTraining,
-                "Campo de treinamento" to slot.trainingCamp
-            ))}
-
             item {
-                Card(colors=CardDefaults.cardColors(containerColor=Color.White), shape=RoundedCornerShape(18.dp)) {
+                Card(colors=CardDefaults.cardColors(containerColor=Color(0xFFFFF4D9)),shape=RoundedCornerShape(18.dp)) {
                     Column(Modifier.padding(18.dp)) {
-                        Text("Elenco", fontWeight=FontWeight.Bold, fontSize=18.sp)
-                        Spacer(Modifier.height(12.dp))
+                        Text("Campos ainda NI",fontWeight=FontWeight.Bold)
+                        Spacer(Modifier.height(6.dp))
+                        Text(missingFields(slot).ifEmpty{"Nenhum campo principal pendente."})
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun SlotPreGame(slot:NativeSlotData) {
+        LazyColumn(contentPadding=PaddingValues(18.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
+            item { DetailSection("Dados da partida", listOf(
+                "Rival" to slot.nextRival,"Data" to slot.matchDate,"Horário" to slot.matchTime,
+                "Local" to slot.venue,"Árbitro" to slot.referee,
+                "Minha força" to slot.myStrength,"Força rival" to slot.rivalStrength,
+                "Meu elenco" to slot.myValue,"Elenco rival" to slot.rivalValue
+            ))}
+            item { DetailSection("Forças por setor", listOf(
+                "Meu GOL" to slot.myGoalkeeper,"Minha DEF" to slot.myDefense,
+                "Meu MEI" to slot.myMidfield,"Meu ATA" to slot.myAttack,
+                "Rival GOL" to slot.rivalGoalkeeper,"Rival DEF" to slot.rivalDefense,
+                "Rival MEI" to slot.rivalMidfield,"Rival ATA" to slot.rivalAttack
+            ))}
+            item { DetailSection("Scout rival", listOf(
+                "Formação" to slot.rivalFormation,"Plano" to slot.rivalPlan,
+                "Marcação" to slot.marking,"Impedimento" to slot.offside,
+                "Treino secreto" to slot.secretTraining,"Campo de treinamento" to slot.trainingCamp
+            ))}
+            item {
+                Row(horizontalArrangement=Arrangement.spacedBy(10.dp)) {
+                    Button(onClick={},enabled=false,modifier=Modifier.weight(1f)){Text("Gerar tática IA")}
+                    OutlinedButton(onClick={},enabled=false,modifier=Modifier.weight(1f)){Text("4-3-3 forte")}
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun SlotSquad(slot:NativeSlotData) {
+        LazyColumn(contentPadding=PaddingValues(18.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
+            item {
+                Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(18.dp)) {
+                    Column(Modifier.padding(18.dp)) {
+                        Text("Elenco · ${slot.squadCount} jogadores",fontWeight=FontWeight.Bold,fontSize=18.sp)
+                        Spacer(Modifier.height(14.dp))
                         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                             MiniMetric("ATA",slot.attackers.toString(),Modifier.weight(1f))
                             MiniMetric("MEI",slot.midfielders.toString(),Modifier.weight(1f))
                             MiniMetric("DEF",slot.defenders.toString(),Modifier.weight(1f))
                             MiniMetric("GOL",slot.goalkeepers.toString(),Modifier.weight(1f))
                         }
-                        Spacer(Modifier.height(12.dp))
-                        Text("Total: ${slot.squadCount} • Treinando: ${slot.trainingCount} • À venda: ${slot.sellingCount}")
+                        Spacer(Modifier.height(14.dp))
+                        Text("Treinando: ${slot.trainingCount} • À venda: ${slot.sellingCount}")
                     }
                 }
             }
-
-            item { DetailSection("Mercado, calendário e evolução", listOf(
-                "Calendário" to "${slot.calendarCount} jogos lidos",
-                "Mercado visitado" to if(slot.marketSeen)"Sim" else "Não",
-                "Treino visitado" to if(slot.trainingSeen)"Sim" else "Não"
-            ))}
-
             item {
-                Card(colors=CardDefaults.cardColors(containerColor=Color(0xFFFFF4D9)), shape=RoundedCornerShape(18.dp)) {
+                Card(colors=CardDefaults.cardColors(containerColor=Color(0xFFEFF5E5)),shape=RoundedCornerShape(18.dp)) {
                     Column(Modifier.padding(18.dp)) {
-                        Text("Campos ainda NI", fontWeight=FontWeight.Bold)
-                        Text(missingFields(slot).ifEmpty{"Nenhum campo principal pendente."})
+                        Text("Jogadores",fontWeight=FontWeight.Bold)
+                        Text("A lista individual completa será preenchida pela leitura: nome, posição, idade, força, valor, treino e venda.",color=Color.Gray)
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun SlotCalendar(slot:NativeSlotData) {
+        LazyColumn(contentPadding=PaddingValues(18.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
+            item { DetailSection("Calendário", listOf(
+                "Jogos lidos" to slot.calendarCount.toString(),"Próximo rival" to slot.nextRival,
+                "Data" to slot.matchDate,"Horário" to slot.matchTime,"Local" to slot.venue
+            ))}
+            item {
+                Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(18.dp)) {
+                    Column(Modifier.padding(18.dp)) {
+                        Text("Rodadas, Copa e resultados",fontWeight=FontWeight.Bold)
+                        Text("Casa/fora, rodada, adversário, placar e competição aparecerão aqui após o processamento da sessão.",color=Color.Gray)
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun SlotTactics(slot:NativeSlotData) {
+        LazyColumn(contentPadding=PaddingValues(18.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
+            item { DetailSection("Tática completa", listOf(
+                "Formação" to "NI","Estilo de jogo" to "NI","Pressão" to "NI",
+                "Mentalidade / Estilo" to "NI","Ritmo / Temporização" to "NI",
+                "Marcação" to "NI","Impedimento" to "NI","Desarme" to "NI",
+                "Ataque" to "NI","Meio" to "NI","Defesa" to "NI"
+            ))}
+            item { Button(onClick={},enabled=false,modifier=Modifier.fillMaxWidth()){Text("Gerar melhor tática com IA")} }
+        }
+    }
+
+    @Composable
+    private fun SlotDirector(slot:NativeSlotData) {
+        LazyColumn(contentPadding=PaddingValues(18.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
+            item { DetailSection("Mercado e evolução", listOf(
+                "Mercado visitado" to if(slot.marketSeen)"Sim" else "Não",
+                "Treino visitado" to if(slot.trainingSeen)"Sim" else "Não",
+                "Jogadores treinando" to slot.trainingCount.toString(),
+                "Jogadores à venda" to slot.sellingCount.toString(),
+                "Elenco atual" to slot.squadCount.toString()
+            ))}
+            item {
+                Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(18.dp)) {
+                    Column(Modifier.padding(18.dp)) {
+                        Text("Plano persistente",fontWeight=FontWeight.Bold)
+                        Text("Compras, vendas, treinamento, eventos ativos e projeção de força ficarão salvos aqui por slot.",color=Color.Gray)
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun SlotLearning(slot:NativeSlotData) {
+        LazyColumn(contentPadding=PaddingValues(18.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
+            item {
+                Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(18.dp)) {
+                    Column(Modifier.padding(18.dp)) {
+                        Text("Aprendizado compartilhado S1–S4",fontWeight=FontWeight.Bold)
+                        Text("Resultados, desempenho da tática, força relativa, humano/CPU, cartões e contexto serão usados para aprender sem apagar o histórico do slot.",color=Color.Gray)
                     }
                 }
             }
@@ -444,22 +547,37 @@ class MainActivity : ComponentActivity() {
     private fun isAccessibilityServiceEnabledRobust():Boolean {
         if (CollectorState.isServiceReady()) return true
 
+        val prefs = getSharedPreferences("collector_runtime", Context.MODE_PRIVATE)
+        val connectedOnce = prefs.getBoolean("accessibility_connected", false)
         val manager = getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
-        val expected = ComponentName(this,OsmCaptureAccessibilityService::class.java)
+        val expected = ComponentName(this, OsmCaptureAccessibilityService::class.java)
 
-        val enabledByManager = manager
-            .getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
-            .any { info ->
-                val serviceInfo = info.resolveInfo?.serviceInfo ?: return@any false
-                serviceInfo.packageName == expected.packageName && serviceInfo.name.endsWith(expected.className.substringAfterLast('.'))
-            }
-        if(enabledByManager) return true
+        val enabledByManager = runCatching {
+            manager.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
+                .any { info ->
+                    val si = info.resolveInfo?.serviceInfo ?: return@any false
+                    si.packageName == expected.packageName &&
+                    (si.name == expected.className || si.name.endsWith(".${OsmCaptureAccessibilityService::class.java.simpleName}"))
+                }
+        }.getOrDefault(false)
 
-        val enabledSetting = Settings.Secure.getString(contentResolver,Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false
-        return enabledSetting.split(':').any { raw ->
-            raw.contains(packageName,ignoreCase=true) &&
-            raw.contains(OsmCaptureAccessibilityService::class.java.simpleName,ignoreCase=true)
+        val secure = Settings.Secure.getString(
+            contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ).orEmpty()
+        val enabledBySecure = secure.split(':').any { raw ->
+            raw.contains(packageName, true) &&
+            raw.contains(OsmCaptureAccessibilityService::class.java.simpleName, true)
         }
+
+        if (enabledByManager || enabledBySecure) {
+            prefs.edit().putBoolean("accessibility_connected", true).apply()
+            return true
+        }
+
+        // Some Android builds keep the switch enabled but do not expose it
+        // reliably through Settings.Secure after the app process restarts.
+        // If this exact service successfully connected before, keep the UI ON.
+        return connectedOnce
     }
 
     private fun completion(s:NativeSlotData):Int {

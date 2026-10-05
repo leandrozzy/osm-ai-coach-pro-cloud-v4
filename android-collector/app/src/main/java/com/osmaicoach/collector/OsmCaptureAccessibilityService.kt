@@ -21,6 +21,8 @@ class OsmCaptureAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected(){
         repository=SessionRepository(applicationContext)
+        getSharedPreferences("collector_runtime", MODE_PRIVATE)
+            .edit().putBoolean("accessibility_connected", true).apply()
         CollectorState.lastError=null
         CollectorState.setServiceReady(true)
     }
