@@ -1,11 +1,10 @@
 name: Bootstrap Android Collector
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - android-collector-v1
-    paths:
-      - '.github/workflows/android-collector-bootstrap.yml'
 
 permissions:
   contents: write
