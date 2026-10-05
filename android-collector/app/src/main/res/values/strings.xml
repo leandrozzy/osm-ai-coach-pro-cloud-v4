@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">OSM AI Coach Collector</string>
+    <string name="accessibility_service_description">Lê somente as telas exibidas pelo OSM para atualizar o OSM AI Coach. Não toca nem joga por você.</string>
+</resources>
