@@ -1,12 +1,15 @@
 package com.osmaicoach.collector
 
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
+import android.view.accessibility.AccessibilityManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -24,178 +27,197 @@ import androidx.compose.ui.unit.sp
 import java.text.SimpleDateFormat
 import java.util.*
 
-class MainActivity:ComponentActivity(){
-    private lateinit var repo:SessionRepository
+class MainActivity : ComponentActivity() {
+    private lateinit var repo: SessionRepository
+    private lateinit var slotStore: NativeSlotStore
 
-    override fun onCreate(savedInstanceState:Bundle?){
+    override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        repo=SessionRepository(this)
-        setContent{CoachTheme{NativeCoachApp()}}
+        repo = SessionRepository(this)
+        slotStore = NativeSlotStore(this)
+        setContent { CoachTheme { NativeCoachApp() } }
     }
 
     @Composable
-    private fun NativeCoachApp(){
-        var tab by remember{mutableStateOf(0)}
-        var refresh by remember{mutableIntStateOf(0)}
-        DisposableEffect(Unit){
-            val l:()->Unit={runOnUiThread{refresh++}}
-            CollectorState.addListener(l)
-            onDispose{CollectorState.removeListener(l)}
-        }
-        LaunchedEffect(Unit){while(true){kotlinx.coroutines.delay(1500);refresh++}}
+    private fun NativeCoachApp() {
+        var tab by remember { mutableStateOf(0) }
+        var selectedSlot by remember { mutableStateOf<Int?>(null) }
+        var refresh by remember { mutableIntStateOf(0) }
 
-        val serviceReady=isAccessibilityServiceEnabled()
-        val recording=CollectorState.isRecording()
-        val latest=repo.latestSession()
-        val sessions=repo.listSessions()
+        DisposableEffect(Unit) {
+            val listener: () -> Unit = { runOnUiThread { refresh++ } }
+            CollectorState.addListener(listener)
+            onDispose { CollectorState.removeListener(listener) }
+        }
+
+        LaunchedEffect(Unit) {
+            while (true) {
+                kotlinx.coroutines.delay(1200)
+                refresh++
+            }
+        }
+
+        val serviceReady = isAccessibilityServiceEnabledRobust()
+        val recording = CollectorState.isRecording()
+        val latest = repo.latestSession()
+        val sessions = repo.listSessions()
+        val slots = slotStore.loadAll()
 
         Scaffold(
-            containerColor=Color(0xFFF6F7F2),
-            topBar={
-                Surface(color=Color(0xFF101E27),shadowElevation=4.dp){
-                    Column(Modifier.fillMaxWidth().padding(18.dp)){
-                        Row(verticalAlignment=Alignment.CenterVertically){
-                            Surface(shape=RoundedCornerShape(12.dp),color=Color(0xFFB8E34D)){
-                                Icon(Icons.Default.SportsSoccer,null,Modifier.padding(10.dp),tint=Color(0xFF101E27))
+            containerColor = Color(0xFFF5F7F2),
+            topBar = {
+                Surface(color = Color(0xFF0F1E27), shadowElevation = 5.dp) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Surface(shape = RoundedCornerShape(13.dp), color = Color(0xFFB8E34D)) {
+                                Icon(Icons.Default.SportsSoccer, null, Modifier.padding(10.dp), tint = Color(0xFF0F1E27))
                             }
                             Spacer(Modifier.width(12.dp))
-                            Column{
-                                Text("OSM AI Coach Pro",color=Color.White,fontWeight=FontWeight.Bold,fontSize=20.sp)
-                                Text("Coach nativo • leitura contínua",color=Color(0xFFAAC0CC),fontSize=12.sp)
+                            Column(Modifier.weight(1f)) {
+                                Text("OSM AI Coach Pro", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                                Text("Native Pro", color = Color(0xFFA8BDC7), fontSize = 12.sp)
+                            }
+                            Surface(shape = RoundedCornerShape(999.dp), color = if (serviceReady) Color(0xFF20372A) else Color(0xFF3A2D20)) {
+                                Text(
+                                    if (serviceReady) "LEITURA ON" else "LEITURA OFF",
+                                    Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    color = if (serviceReady) Color(0xFFB8E34D) else Color(0xFFFFC857),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
                         }
-                        Spacer(Modifier.height(14.dp))
-                        Row(verticalAlignment=Alignment.CenterVertically){
-                            Icon(
-                                if(serviceReady)Icons.Default.CheckCircle else Icons.Default.Warning,
-                                null,tint=if(serviceReady)Color(0xFFB8E34D) else Color(0xFFFFC857)
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                when{
-                                    !serviceReady->"Leitura automática desativada"
-                                    recording->"Lendo o OSM agora"
-                                    else->"Leitura automática pronta"
-                                },
-                                color=Color.White,fontWeight=FontWeight.SemiBold
-                            )
-                        }
-                        if(!serviceReady){
+
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            when {
+                                recording -> "Lendo o OSM agora • você pode navegar normalmente"
+                                serviceReady -> "Leitura automática pronta"
+                                else -> "Ative a leitura automática uma única vez"
+                            },
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold
+                        )
+
+                        if (!serviceReady) {
                             Spacer(Modifier.height(10.dp))
-                            Button(onClick={startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))}){
-                                Text("Ativar uma vez")
+                            Button(onClick = { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) {
+                                Text("Ativar leitura automática")
                             }
                         }
                     }
                 }
             },
-            bottomBar={
-                NavigationBar(containerColor=Color(0xFF101E27)){
-                    val labels=listOf("Hoje","Sessões","Slots","Diretor","Ajustes")
-                    val icons=listOf(Icons.Default.Home,Icons.Default.Route,Icons.Default.Dashboard,Icons.Default.TrendingUp,Icons.Default.Settings)
-                    labels.forEachIndexed{i,label->
+            bottomBar = {
+                NavigationBar(containerColor = Color(0xFF0F1E27)) {
+                    val labels = listOf("Hoje","Sessões","Slots","Diretor","Ajustes")
+                    val icons = listOf(Icons.Default.Home,Icons.Default.Route,Icons.Default.Dashboard,Icons.Default.TrendingUp,Icons.Default.Settings)
+                    labels.forEachIndexed { i, label ->
                         NavigationBarItem(
-                            selected=tab==i,onClick={tab=i},
-                            icon={Icon(icons[i],null)},
-                            label={Text(label)},
-                            colors=NavigationBarItemDefaults.colors(
-                                selectedIconColor=Color(0xFFB8E34D),
-                                selectedTextColor=Color(0xFFB8E34D),
-                                unselectedIconColor=Color(0xFF9FB0B8),
-                                unselectedTextColor=Color(0xFF9FB0B8),
-                                indicatorColor=Color(0xFF21323C)
+                            selected = tab == i && selectedSlot == null,
+                            onClick = { selectedSlot = null; tab = i },
+                            icon = { Icon(icons[i], null) },
+                            label = { Text(label) },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = Color(0xFFB8E34D),
+                                selectedTextColor = Color(0xFFB8E34D),
+                                unselectedIconColor = Color(0xFF9FB0B8),
+                                unselectedTextColor = Color(0xFF9FB0B8),
+                                indicatorColor = Color(0xFF21323C)
                             )
                         )
                     }
                 }
             }
-        ){pad->
-            Box(Modifier.padding(pad).fillMaxSize()){
-                when(tab){
-                    0->TodayScreen(serviceReady,recording,latest){openOsm()}
-                    1->SessionsScreen(sessions)
-                    2->SlotsScreen(latest)
-                    3->DirectorScreen(latest)
-                    else->SettingsScreen(serviceReady)
+        ) { pad ->
+            Box(Modifier.padding(pad).fillMaxSize()) {
+                if (selectedSlot != null) {
+                    SlotDetailScreen(slots[selectedSlot!! - 1], onBack = { selectedSlot = null })
+                } else {
+                    when (tab) {
+                        0 -> TodayScreen(serviceReady, recording, latest) { openOsm() }
+                        1 -> SessionsScreen(sessions)
+                        2 -> SlotsScreen(slots, latest) { selectedSlot = it }
+                        3 -> DirectorScreen(latest)
+                        else -> SettingsScreen(serviceReady)
+                    }
                 }
             }
         }
     }
 
     @Composable
-    private fun TodayScreen(serviceReady:Boolean,recording:Boolean,latest:CaptureSession?,openOsm:()->Unit){
-        LazyColumn(contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(16.dp)){
-            item{
-                Text("Seu dia, organizado.",fontSize=30.sp,fontWeight=FontWeight.Bold,color=Color(0xFF17242B))
-                Text("O app acompanha tudo o que você visita no OSM e preserva cada tela útil.",color=Color(0xFF68777E))
+    private fun TodayScreen(serviceReady:Boolean, recording:Boolean, latest:CaptureSession?, openOsm:()->Unit) {
+        LazyColumn(contentPadding=PaddingValues(20.dp), verticalArrangement=Arrangement.spacedBy(16.dp)) {
+            item {
+                Text("Seu dia, organizado.", fontSize=30.sp, fontWeight=FontWeight.Bold, color=Color(0xFF17242B))
+                Text("O Coach acompanha tudo que você visita no OSM.", color=Color(0xFF68777E))
             }
-            item{
-                Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(20.dp)){
-                    Column(Modifier.padding(18.dp)){
-                        Text("Leitura automática",fontWeight=FontWeight.Bold,fontSize=18.sp)
-                        Spacer(Modifier.height(8.dp))
+            item {
+                Card(colors=CardDefaults.cardColors(containerColor=Color.White), shape=RoundedCornerShape(20.dp)) {
+                    Column(Modifier.padding(18.dp)) {
+                        Text("Leitura automática", fontWeight=FontWeight.Bold, fontSize=18.sp)
+                        Spacer(Modifier.height(6.dp))
                         Text(
-                            if(recording)"Gravando sua navegação no OSM"
-                            else if(serviceReady)"Pronta. Você só precisa abrir o OSM."
-                            else "Ative a acessibilidade uma única vez."
+                            if(recording) "Capturando sua navegação agora."
+                            else if(serviceReady) "Ativa. Não precisa autorizar de novo."
+                            else "Aguardando autorização do Android."
                         )
                         Spacer(Modifier.height(14.dp))
-                        Button(onClick=openOsm,enabled=serviceReady&&!recording,modifier=Modifier.fillMaxWidth()){
-                            Icon(Icons.Default.PlayArrow,null);Spacer(Modifier.width(8.dp));Text("Abrir OSM")
+                        Button(onClick=openOsm, enabled=serviceReady&&!recording, modifier=Modifier.fillMaxWidth()) {
+                            Icon(Icons.Default.PlayArrow,null); Spacer(Modifier.width(8.dp)); Text("Abrir OSM")
                         }
                     }
                 }
             }
-            item{SessionSummaryCard(latest)}
-            item{
-                Row(horizontalArrangement=Arrangement.spacedBy(12.dp)){
-                    Metric("Telas",latest?.frames?.size?.toString()?:"0",Modifier.weight(1f))
-                    Metric("Tipos",latest?.frames?.map{it.screenType}?.distinct()?.size?.toString()?:"0",Modifier.weight(1f))
+            item { SessionSummaryCard(latest) }
+            item {
+                Row(horizontalArrangement=Arrangement.spacedBy(12.dp)) {
+                    Metric("Telas", latest?.frames?.size?.toString()?:"0", Modifier.weight(1f))
+                    Metric("Tipos", latest?.frames?.map{it.screenType}?.distinct()?.size?.toString()?:"0", Modifier.weight(1f))
                 }
             }
         }
     }
 
     @Composable
-    private fun SessionSummaryCard(session:CaptureSession?){
-        Card(colors=CardDefaults.cardColors(containerColor=Color(0xFFEFF5E5)),shape=RoundedCornerShape(20.dp)){
-            Column(Modifier.padding(18.dp)){
-                Text("Última sessão",fontWeight=FontWeight.Bold,fontSize=18.sp)
-                if(session==null){
-                    Text("Nenhuma sessão capturada ainda.")
-                }else{
+    private fun SessionSummaryCard(session:CaptureSession?) {
+        Card(colors=CardDefaults.cardColors(containerColor=Color(0xFFEFF5E5)), shape=RoundedCornerShape(20.dp)) {
+            Column(Modifier.padding(18.dp)) {
+                Text("Última sessão", fontWeight=FontWeight.Bold, fontSize=18.sp)
+                if(session==null) Text("Nenhuma sessão capturada ainda.")
+                else {
                     Text("${session.frames.size} telas preservadas")
                     Spacer(Modifier.height(8.dp))
                     val groups=session.frames.groupingBy{it.screenType}.eachCount()
-                    Text(groups.entries.sortedByDescending{it.value}.joinToString(" • "){"${labelType(it.key)} ${it.value}"},
-                        fontSize=13.sp,color=Color(0xFF55645B))
+                    Text(groups.entries.sortedByDescending{it.value}.joinToString(" • "){"${labelType(it.key)} ${it.value}"}, fontSize=13.sp, color=Color(0xFF55645B))
                 }
             }
         }
     }
 
     @Composable
-    private fun SessionsScreen(sessions:List<CaptureSession>){
-        LazyColumn(contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
-            item{
-                Text("Jornada da sessão",fontSize=28.sp,fontWeight=FontWeight.Bold)
-                Text("Tudo o que você navegou no OSM fica registrado aqui.",color=Color.Gray)
+    private fun SessionsScreen(sessions:List<CaptureSession>) {
+        LazyColumn(contentPadding=PaddingValues(20.dp), verticalArrangement=Arrangement.spacedBy(12.dp)) {
+            item {
+                Text("Jornada da sessão", fontSize=28.sp, fontWeight=FontWeight.Bold)
+                Text("Tudo que você navegou fica registrado.", color=Color.Gray)
             }
-            sessions.forEach{session->
-                item{
-                    Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(18.dp)){
-                        Column(Modifier.padding(16.dp)){
-                            Text(formatTime(session.startedAt),fontWeight=FontWeight.Bold)
-                            Text("${session.frames.size} telas • ${session.state}",fontSize=13.sp,color=Color.Gray)
+            sessions.forEach { session ->
+                item {
+                    Card(colors=CardDefaults.cardColors(containerColor=Color.White), shape=RoundedCornerShape(18.dp)) {
+                        Column(Modifier.padding(16.dp)) {
+                            Text(formatTime(session.startedAt), fontWeight=FontWeight.Bold)
+                            Text("${session.frames.size} telas • ${session.state}", fontSize=13.sp, color=Color.Gray)
                             Spacer(Modifier.height(10.dp))
-                            session.frames.takeLast(14).forEach{frame->
-                                Row(Modifier.fillMaxWidth().padding(vertical=5.dp),verticalAlignment=Alignment.CenterVertically){
-                                    Surface(shape=RoundedCornerShape(8.dp),color=typeColor(frame.screenType)){
-                                        Text(labelType(frame.screenType),Modifier.padding(horizontal=8.dp,vertical=4.dp),fontSize=11.sp)
+                            session.frames.takeLast(20).forEach { frame ->
+                                Row(Modifier.fillMaxWidth().padding(vertical=5.dp), verticalAlignment=Alignment.CenterVertically) {
+                                    Surface(shape=RoundedCornerShape(8.dp), color=typeColor(frame.screenType)) {
+                                        Text(labelType(frame.screenType), Modifier.padding(horizontal=8.dp, vertical=4.dp), fontSize=11.sp)
                                     }
                                     Spacer(Modifier.width(10.dp))
-                                    Text(frame.screenTitle,Modifier.weight(1f),maxLines=1)
-                                    Text(SimpleDateFormat("HH:mm:ss",Locale.getDefault()).format(Date(frame.capturedAt)),fontSize=11.sp,color=Color.Gray)
+                                    Text(frame.screenTitle, Modifier.weight(1f), maxLines=1)
+                                    Text(SimpleDateFormat("HH:mm:ss",Locale.getDefault()).format(Date(frame.capturedAt)), fontSize=11.sp, color=Color.Gray)
                                 }
                             }
                         }
@@ -206,25 +228,43 @@ class MainActivity:ComponentActivity(){
     }
 
     @Composable
-    private fun SlotsScreen(latest:CaptureSession?){
-        val types=latest?.frames?.groupingBy{it.screenType}?.eachCount().orEmpty()
-        LazyColumn(contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){
-            item{Text("Slots",fontSize=28.sp,fontWeight=FontWeight.Bold)}
-            items((1..4).toList()){slot->
-                Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(18.dp)){
-                    Column(Modifier.padding(16.dp)){
-                        Row(verticalAlignment=Alignment.CenterVertically){
-                            Surface(shape=RoundedCornerShape(10.dp),color=Color(0xFF101E27)){
-                                Text("S$slot",Modifier.padding(10.dp),color=Color(0xFFB8E34D),fontWeight=FontWeight.Bold)
+    private fun SlotsScreen(slots:List<NativeSlotData>, latest:CaptureSession?, onOpen:(Int)->Unit) {
+        LazyColumn(contentPadding=PaddingValues(20.dp), verticalArrangement=Arrangement.spacedBy(14.dp)) {
+            item {
+                Text("Seus 4 slots", fontSize=28.sp, fontWeight=FontWeight.Bold)
+                Text("Toque em um slot para ver todos os dados.", color=Color.Gray)
+            }
+
+            items(slots) { slot ->
+                val pct = completion(slot)
+                Card(
+                    modifier=Modifier.fillMaxWidth().clickable{onOpen(slot.id)},
+                    colors=CardDefaults.cardColors(containerColor=Color.White),
+                    shape=RoundedCornerShape(20.dp)
+                ) {
+                    Column(Modifier.padding(17.dp)) {
+                        Row(verticalAlignment=Alignment.CenterVertically) {
+                            Surface(shape=RoundedCornerShape(11.dp), color=Color(0xFF0F1E27)) {
+                                Text("S${slot.id}", Modifier.padding(11.dp), color=Color(0xFFB8E34D), fontWeight=FontWeight.Bold)
                             }
                             Spacer(Modifier.width(12.dp))
-                            Column{
-                                Text("Slot $slot",fontWeight=FontWeight.Bold,fontSize=18.sp)
-                                Text("Dados preenchidos conforme a navegação",fontSize=12.sp,color=Color.Gray)
+                            Column(Modifier.weight(1f)) {
+                                Text(if(slot.team!="NI") slot.team else "Slot ${slot.id}", fontWeight=FontWeight.Bold, fontSize=18.sp)
+                                Text(if(slot.competition!="NI") slot.competition else "Liga ainda não identificada", fontSize=12.sp, color=Color.Gray)
                             }
+                            Icon(Icons.Default.ChevronRight,null,tint=Color.Gray)
                         }
-                        Spacer(Modifier.height(12.dp))
-                        Text("Última sessão: ${types.values.sum()} telas disponíveis para processamento.",fontSize=13.sp)
+                        Spacer(Modifier.height(14.dp))
+                        LinearProgressIndicator(
+                            progress={pct/100f},
+                            modifier=Modifier.fillMaxWidth().height(7.dp),
+                            color=Color(0xFF7AA526),
+                            trackColor=Color(0xFFE8ECDF)
+                        )
+                        Spacer(Modifier.height(7.dp))
+                        Text("$pct% preenchido", fontSize=12.sp, color=Color.Gray)
+                        Spacer(Modifier.height(10.dp))
+                        Text("Próximo rival: ${slot.nextRival}  •  Elenco: ${slot.squadCount}  •  Calendário: ${slot.calendarCount}", fontSize=13.sp)
                     }
                 }
             }
@@ -232,25 +272,136 @@ class MainActivity:ComponentActivity(){
     }
 
     @Composable
-    private fun DirectorScreen(latest:CaptureSession?){
+    private fun SlotDetailScreen(slot:NativeSlotData, onBack:()->Unit) {
+        LazyColumn(contentPadding=PaddingValues(20.dp), verticalArrangement=Arrangement.spacedBy(14.dp)) {
+            item {
+                Row(verticalAlignment=Alignment.CenterVertically) {
+                    IconButton(onClick=onBack){Icon(Icons.Default.ArrowBack,null)}
+                    Column {
+                        Text("S${slot.id} · ${if(slot.team!="NI")slot.team else "Time NI"}", fontSize=26.sp, fontWeight=FontWeight.Bold)
+                        Text("${completion(slot)}% dos campos identificados", color=Color.Gray)
+                    }
+                }
+            }
+
+            item { DetailSection("Liga e clube", listOf(
+                "Meu time" to slot.team,
+                "Competição" to slot.competition,
+                "Tipo" to slot.competitionType,
+                "Estádio" to slot.stadium,
+                "Bônus" to slot.bonus
+            ))}
+
+            item { DetailSection("Próxima partida", listOf(
+                "Rival" to slot.nextRival,
+                "Data" to slot.matchDate,
+                "Horário" to slot.matchTime,
+                "Local" to slot.venue,
+                "Árbitro" to slot.referee,
+                "Minha força" to slot.myStrength,
+                "Força rival" to slot.rivalStrength,
+                "Meu elenco" to slot.myValue,
+                "Elenco rival" to slot.rivalValue
+            ))}
+
+            item { DetailSection("Forças por setor", listOf(
+                "Meu GOL" to slot.myGoalkeeper,
+                "Minha DEF" to slot.myDefense,
+                "Meu MEI" to slot.myMidfield,
+                "Meu ATA" to slot.myAttack,
+                "Rival GOL" to slot.rivalGoalkeeper,
+                "Rival DEF" to slot.rivalDefense,
+                "Rival MEI" to slot.rivalMidfield,
+                "Rival ATA" to slot.rivalAttack
+            ))}
+
+            item { DetailSection("Análise do adversário", listOf(
+                "Formação" to slot.rivalFormation,
+                "Plano" to slot.rivalPlan,
+                "Marcação" to slot.marking,
+                "Impedimento" to slot.offside,
+                "Treino secreto" to slot.secretTraining,
+                "Campo de treinamento" to slot.trainingCamp
+            ))}
+
+            item {
+                Card(colors=CardDefaults.cardColors(containerColor=Color.White), shape=RoundedCornerShape(18.dp)) {
+                    Column(Modifier.padding(18.dp)) {
+                        Text("Elenco", fontWeight=FontWeight.Bold, fontSize=18.sp)
+                        Spacer(Modifier.height(12.dp))
+                        Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                            MiniMetric("ATA",slot.attackers.toString(),Modifier.weight(1f))
+                            MiniMetric("MEI",slot.midfielders.toString(),Modifier.weight(1f))
+                            MiniMetric("DEF",slot.defenders.toString(),Modifier.weight(1f))
+                            MiniMetric("GOL",slot.goalkeepers.toString(),Modifier.weight(1f))
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Text("Total: ${slot.squadCount} • Treinando: ${slot.trainingCount} • À venda: ${slot.sellingCount}")
+                    }
+                }
+            }
+
+            item { DetailSection("Mercado, calendário e evolução", listOf(
+                "Calendário" to "${slot.calendarCount} jogos lidos",
+                "Mercado visitado" to if(slot.marketSeen)"Sim" else "Não",
+                "Treino visitado" to if(slot.trainingSeen)"Sim" else "Não"
+            ))}
+
+            item {
+                Card(colors=CardDefaults.cardColors(containerColor=Color(0xFFFFF4D9)), shape=RoundedCornerShape(18.dp)) {
+                    Column(Modifier.padding(18.dp)) {
+                        Text("Campos ainda NI", fontWeight=FontWeight.Bold)
+                        Text(missingFields(slot).ifEmpty{"Nenhum campo principal pendente."})
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun DetailSection(title:String, rows:List<Pair<String,String>>) {
+        Card(colors=CardDefaults.cardColors(containerColor=Color.White), shape=RoundedCornerShape(18.dp)) {
+            Column(Modifier.padding(18.dp)) {
+                Text(title, fontWeight=FontWeight.Bold, fontSize=18.sp)
+                Spacer(Modifier.height(10.dp))
+                rows.forEach { (label,value) ->
+                    Row(Modifier.fillMaxWidth().padding(vertical=7.dp)) {
+                        Text(label, Modifier.weight(1f), color=Color.Gray, fontSize=13.sp)
+                        Text(value, fontWeight=FontWeight.SemiBold, fontSize=13.sp)
+                    }
+                    HorizontalDivider(color=Color(0xFFEEF0EA))
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun MiniMetric(label:String,value:String,modifier:Modifier=Modifier) {
+        Surface(modifier,shape=RoundedCornerShape(12.dp),color=Color(0xFFF0F4E9)) {
+            Column(Modifier.padding(10.dp),horizontalAlignment=Alignment.CenterHorizontally) {
+                Text(value,fontWeight=FontWeight.Bold,fontSize=20.sp)
+                Text(label,fontSize=11.sp,color=Color.Gray)
+            }
+        }
+    }
+
+    @Composable
+    private fun DirectorScreen(latest:CaptureSession?) {
         val markets=latest?.frames?.count{it.screenType=="market"}?:0
         val trainings=latest?.frames?.count{it.screenType=="training"}?:0
-        LazyColumn(contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){
-            item{
-                Text("Diretor",fontSize=28.sp,fontWeight=FontWeight.Bold)
-                Text("Mercado, treino e evolução a partir das telas realmente visitadas.",color=Color.Gray)
-            }
-            item{
-                Row(horizontalArrangement=Arrangement.spacedBy(12.dp)){
+        LazyColumn(contentPadding=PaddingValues(20.dp), verticalArrangement=Arrangement.spacedBy(14.dp)) {
+            item { Text("Diretor",fontSize=28.sp,fontWeight=FontWeight.Bold) }
+            item {
+                Row(horizontalArrangement=Arrangement.spacedBy(12.dp)) {
                     Metric("Mercado",markets.toString(),Modifier.weight(1f))
                     Metric("Treinos",trainings.toString(),Modifier.weight(1f))
                 }
             }
-            item{
-                Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(18.dp)){
-                    Column(Modifier.padding(18.dp)){
+            item {
+                Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(18.dp)) {
+                    Column(Modifier.padding(18.dp)) {
                         Text("Nada é descartado",fontWeight=FontWeight.Bold)
-                        Text("Se você abrir transferências, estádio, treino, classificação, resultado ou qualquer outra tela, ela fica preservada e categorizada na Jornada.")
+                        Text("Mercado, treino, estádio, classificação, resultados e outras telas continuam preservadas para análise.")
                     }
                 }
             }
@@ -258,57 +409,87 @@ class MainActivity:ComponentActivity(){
     }
 
     @Composable
-    private fun SettingsScreen(serviceReady:Boolean){
-        LazyColumn(contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){
-            item{Text("Configurações",fontSize=28.sp,fontWeight=FontWeight.Bold)}
-            item{
-                Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(18.dp)){
-                    Column(Modifier.padding(18.dp)){
+    private fun SettingsScreen(serviceReady:Boolean) {
+        LazyColumn(contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
+            item { Text("Configurações",fontSize=28.sp,fontWeight=FontWeight.Bold) }
+            item {
+                Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(18.dp)) {
+                    Column(Modifier.padding(18.dp)) {
                         Text("Leitura automática",fontWeight=FontWeight.Bold)
-                        Text(if(serviceReady)"Ativa. Não precisa autorizar de novo ao abrir o app." else "Desativada no Android.")
-                        if(!serviceReady){
+                        Text(if(serviceReady)"Ativa. O botão não deve mais aparecer ao reabrir." else "Desativada no Android.")
+                        if(!serviceReady) {
                             Spacer(Modifier.height(10.dp))
-                            Button(onClick={startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))}){Text("Abrir Acessibilidade")}
+                            Button(onClick={startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))}) { Text("Ativar") }
                         }
                     }
                 }
             }
-            item{
-                Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(18.dp)){
-                    Column(Modifier.padding(18.dp)){
-                        Text("Arquitetura",fontWeight=FontWeight.Bold)
-                        Text("Interface e armazenamento nativos. A internet é usada apenas quando o Coach precisa consultar IA/backend.")
-                    }
-                }
+        }
+    }
+
+    @Composable
+    private fun Metric(label:String,value:String,modifier:Modifier=Modifier) {
+        Card(modifier,colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(18.dp)) {
+            Column(Modifier.padding(16.dp)) {
+                Text(value,fontSize=28.sp,fontWeight=FontWeight.Bold)
+                Text(label,color=Color.Gray)
             }
         }
     }
 
-    @Composable private fun Metric(label:String,value:String,modifier:Modifier=Modifier){
-        Card(modifier,colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(18.dp)){
-            Column(Modifier.padding(16.dp)){Text(value,fontSize=28.sp,fontWeight=FontWeight.Bold);Text(label,color=Color.Gray)}
+    private fun openOsm() {
+        packageManager.getLaunchIntentForPackage(OSM_PACKAGE)?.let { startActivity(it) }
+    }
+
+    private fun isAccessibilityServiceEnabledRobust():Boolean {
+        if (CollectorState.isServiceReady()) return true
+
+        val manager = getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
+        val expected = ComponentName(this,OsmCaptureAccessibilityService::class.java)
+
+        val enabledByManager = manager
+            .getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
+            .any { info ->
+                val serviceInfo = info.resolveInfo?.serviceInfo ?: return@any false
+                serviceInfo.packageName == expected.packageName && serviceInfo.name.endsWith(expected.className.substringAfterLast('.'))
+            }
+        if(enabledByManager) return true
+
+        val enabledSetting = Settings.Secure.getString(contentResolver,Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false
+        return enabledSetting.split(':').any { raw ->
+            raw.contains(packageName,ignoreCase=true) &&
+            raw.contains(OsmCaptureAccessibilityService::class.java.simpleName,ignoreCase=true)
         }
     }
 
-    private fun openOsm(){
-        val launch=packageManager.getLaunchIntentForPackage(OSM_PACKAGE)
-        if(launch!=null)startActivity(launch)
+    private fun completion(s:NativeSlotData):Int {
+        val values=listOf(
+            s.team,s.competition,s.nextRival,s.matchDate,s.venue,s.referee,s.myStrength,s.rivalStrength,
+            s.myValue,s.rivalValue,s.rivalFormation,s.rivalPlan,s.marking,s.offside,s.secretTraining,s.trainingCamp
+        )
+        val filled=values.count{it!="NI"&&it.isNotBlank()}
+        return ((filled.toDouble()/values.size)*100).toInt()
     }
 
-    private fun isAccessibilityServiceEnabled():Boolean{
-        val expected=ComponentName(this,OsmCaptureAccessibilityService::class.java).flattenToString()
-        val enabled=runCatching{Settings.Secure.getInt(contentResolver,Settings.Secure.ACCESSIBILITY_ENABLED,0)==1}.getOrDefault(false)
-        if(!enabled)return false
-        val services=Settings.Secure.getString(contentResolver,Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)?:return false
-        return services.split(':').any{it.equals(expected,true)}
+    private fun missingFields(s:NativeSlotData):String {
+        val rows=listOf(
+            "Meu time" to s.team,"Liga" to s.competition,"Rival" to s.nextRival,"Data" to s.matchDate,
+            "Local" to s.venue,"Árbitro" to s.referee,"Minha força" to s.myStrength,"Força rival" to s.rivalStrength,
+            "Meu valor" to s.myValue,"Valor rival" to s.rivalValue,"Formação rival" to s.rivalFormation,
+            "Plano rival" to s.rivalPlan,"Marcação" to s.marking,"Impedimento" to s.offside,
+            "Treino secreto" to s.secretTraining,"Campo de treinamento" to s.trainingCamp
+        )
+        return rows.filter{it.second=="NI"||it.second.isBlank()}.joinToString(" • "){it.first}
     }
 
     private fun formatTime(ms:Long)=SimpleDateFormat("dd/MM/yyyy HH:mm",Locale.getDefault()).format(Date(ms))
+
     private fun labelType(type:String)=when(type){
         "calendar"->"Calendário";"squad"->"Elenco";"match"->"Análise";"market"->"Mercado"
         "training"->"Treino";"club"->"Clube";"ranking"->"Tabela";"result"->"Resultado"
         "tactics"->"Tática";else->"Outra"
     }
+
     private fun typeColor(type:String)=when(type){
         "market"->Color(0xFFFFE7C2);"training"->Color(0xFFE1F3FF);"calendar"->Color(0xFFE8F4DD)
         "squad"->Color(0xFFEDE7FF);"match"->Color(0xFFFFE1E1);else->Color(0xFFECEFEF)
@@ -316,7 +497,7 @@ class MainActivity:ComponentActivity(){
 }
 
 @Composable
-fun CoachTheme(content: @Composable () -> Unit){
+fun CoachTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme=lightColorScheme(
             primary=Color(0xFF182832),
