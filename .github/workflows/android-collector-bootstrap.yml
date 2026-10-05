@@ -1,4 +1,4 @@
-name: Build Android Collector
+name: Apply Android Integrated v2
 
 on:
   workflow_dispatch:
@@ -6,24 +6,38 @@ on:
     branches:
       - android-collector-v1
     paths:
-      - 'android-collector/**'
+      - 'android-integrated-v2.zip'
       - '.github/workflows/android-collector-bootstrap.yml'
 
+permissions:
+  contents: write
+
 jobs:
-  build:
+  apply-and-build:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configurar Java
+      - name: Aplicar atualização v2
+        run: unzip -o android-integrated-v2.zip -d .
+
+      - name: Salvar atualização v2
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add android-collector
+          git diff --cached --quiet || git commit -m "Integrate Android collector with Coach preview"
+          git push
+
+      - name: Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Configurar Gradle
+      - name: Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
@@ -35,5 +49,5 @@ jobs:
       - name: Salvar APK
         uses: actions/upload-artifact@v4
         with:
-          name: osm-ai-coach-collector-debug
+          name: osm-ai-coach-collector-integrated-v2
           path: android-collector/app/build/outputs/apk/debug/app-debug.apk
