@@ -1,32 +1,21 @@
-name: Bootstrap Android Collector
+name: Build Android Collector
 
 on:
   workflow_dispatch:
   push:
     branches:
       - android-collector-v1
-
-permissions:
-  contents: write
+    paths:
+      - 'android-collector/**'
+      - '.github/workflows/android-collector-bootstrap.yml'
 
 jobs:
-  bootstrap:
+  build:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Extrair Android Collector
-        run: unzip -o android-collector-overlay.zip -d .
-
-      - name: Salvar arquivos extraidos
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add android-collector
-          git diff --cached --quiet || git commit -m "Add Android OSM Collector v1"
-          git push
 
       - name: Configurar Java
         uses: actions/setup-java@v4
