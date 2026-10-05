@@ -33,8 +33,19 @@ function installed(){return matchMedia('(display-mode: standalone)').matches||na
 let installedKnown=false;
 let displayedReview=null;
 const liveReadings=new Map();
-const NATIVE_SESSION_DONE='osm-ai-coach-pro:native-session-done:v2';
+const NATIVE_SESSION_DONE='osm-ai-coach-pro:native-session-done:v3';
 let nativeCollectorBusy=false,nativeCollectorNotice='';
+let nativeCollectorProgress={active:false,current:0,total:0,percent:0,label:'',success:0,failed:0};
+function nativeSetProgress(current,total,label='',success=nativeCollectorProgress.success,failed=nativeCollectorProgress.failed){
+ const safeTotal=Math.max(1,Number(total)||1),safeCurrent=Math.max(0,Math.min(safeTotal,Number(current)||0));
+ nativeCollectorProgress={active:safeCurrent<safeTotal,current:safeCurrent,total:safeTotal,percent:Math.round(safeCurrent*100/safeTotal),label,success,failed};
+ const bar=root?.querySelector?.('[data-native-progress-bar]');
+ if(bar)bar.style.width=nativeCollectorProgress.percent+'%';
+ const text=root?.querySelector?.('[data-native-progress-text]');
+ if(text)text.textContent=(label||'Processando')+' · '+safeCurrent+'/'+safeTotal+' · '+nativeCollectorProgress.percent+'%';
+ const stats=root?.querySelector?.('[data-native-progress-stats]');
+ if(stats)stats.textContent='Aplicados: '+success+' · Falhas: '+failed;
+}
 function nativeBridge(){return globalThis.OsmCollector&&typeof globalThis.OsmCollector.latestSession==='function'?globalThis.OsmCollector:null;}
 function nativeNormalize(v){return String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();}
 function nativeSameClub(a,b){const x=nativeNormalize(a),y=nativeNormalize(b);return !!x&&!!y&&(x===y||x.includes(y)||y.includes(x));}
@@ -43,12 +54,9 @@ function nativeParsed(type,r){if(type==='match')return {...(r.match||{}),_fieldS
 function nativeTeam(type,r){return readingTeam(type,nativeParsed(type,r),r.meta||{});}
 function nativeTargetSlot(preferred,r,type){const team=nativeTeam(type,r);if(known(team)){const hit=getState().slots.find(s=>known(slotTeam(s))&&nativeSameClub(slotTeam(s),team));if(hit)return hit.id;const p=getState().slots[preferred-1];if(p&&!known(slotTeam(p)))return preferred;return getState().slots.find(s=>!known(slotTeam(s)))?.id||preferred;}return preferred;}
 function nativeType(frame){const t=nativeNormalize(frame?.textHint||'');if(!t)return'unknown';const groups={calendar:['calendario','calendar','jornada','rodada','proximo jogo','proximos jogos','ultimo dia','resultado'],squad:['plantel','elenco','squad','jogadores','players','guarda redes','goleiro','defesa','meio campo','atacante','avancado'],match:['analise','analysis','arbitro','referee','formacao','formation','marcacao','marking','impedimento','offside','treino secreto','secret training','campo de treinamento','training camp','estadio','stadium']};const scores=Object.fromEntries(Object.entries(groups).map(([k,ws])=>[k,ws.reduce((n,w)=>n+(t.includes(w)?1:0),0)]));const best=Object.entries(scores).sort((a,b)=>b[1]-a[1])[0];return best[1]?best[0]:'unknown';}
-function nativeGroups(frames){const out=[];let pending=[];for(const f of frames){const type=nativeType(f);if(type==='unknown'){if(out.length)out.at(-1).indices.push(f.index);else pending.push(f.index);continue}const last=out.at(-1);if(last&&last.type===type)last.indices.push(f.index);else{out.push({type,indices:[...pending,f.index]});pending=[]}}if(pending.length&&out.length)out.at(-1).indices.push(...pending);return out.filter(g=>g.indices.length);}
-function nativeFallback(frames){
+function nativeSessionSegments(frames){
  if(!Array.isArray(frames)||!frames.length)return[];
  const all=frames.map((f,i)=>({...f,index:Number.isInteger(f.index)?f.index:i}));
- if(all.length<8)return ['match','squad','calendar'].map(type=>({type,indices:all.map(f=>f.index)}));
-
  const gaps=[];
  for(let i=1;i<all.length;i++){
   const before=Number(all[i-1]?.capturedAt||0),after=Number(all[i]?.capturedAt||0);
@@ -64,7 +72,7 @@ function nativeFallback(frames){
  const bounds=[0,...cuts,all.length],segments=[];
  for(let i=0;i<bounds.length-1;i++){
   const part=all.slice(bounds[i],bounds[i+1]);
-  if(part.length)segments.push(part.map(f=>f.index));
+  if(part.length)segments.push(part);
  }
 
  if(segments.length<2&&all.length>=20){
@@ -73,20 +81,122 @@ function nativeFallback(frames){
   let from=0;
   for(let i=0;i<slots;i++){
    const to=Math.round((i+1)*all.length/slots);
-   segments.push(all.slice(from,to).map(f=>f.index));
+   segments.push(all.slice(from,to));
    from=to;
   }
  }
+ return segments.slice(0,4);
+}
 
- return segments.slice(0,4).flatMap(indices=>
-  ['match','squad','calendar'].map(type=>({type,indices:[...indices]}))
- );
+function nativeGroups(frames){
+ const segments=nativeSessionSegments(frames),out=[];
+ segments.forEach((segment,segmentIndex)=>{
+  const slotHint=Math.min(4,segmentIndex+1);
+  const classified={match:[],squad:[],calendar:[]},unknown=[];
+  for(const frame of segment){
+   const type=nativeType(frame);
+   if(type==='unknown')unknown.push(frame.index);
+   else classified[type].push(frame.index);
+  }
+
+  const classifiedCount=Object.values(classified).reduce((n,rows)=>n+rows.length,0);
+  if(!classifiedCount){
+   for(const type of ['match','squad','calendar']){
+    out.push({type,indices:segment.map(f=>f.index),slotHint});
+   }
+   return;
+  }
+
+  for(const type of ['match','squad','calendar']){
+   const own=classified[type];
+   const indices=own.length ? [...own] : [...unknown];
+   if(indices.length)out.push({type,indices,slotHint});
+  }
+ });
+ return out;
+}
+function nativeFallback(frames){
+ return nativeSessionSegments(frames).flatMap((segment,index)=>{
+  const slotHint=Math.min(4,index+1),indices=segment.map(f=>f.index);
+  return ['match','squad','calendar'].map(type=>({type,indices:[...indices],slotHint}));
+ });
 }
 function nativeSample(indices,max=16){if(indices.length<=max)return indices;return Array.from({length:max},(_,i)=>indices[Math.min(indices.length-1,Math.round(i*(indices.length-1)/(max-1)))]);}
 async function nativeFiles(session,indices){const b=nativeBridge(),files=[];if(!b)return files;for(const i of nativeSample(indices)){const x=b.latestFrameBase64(i);if(x)files.push(nativeFile(x,'osm-'+session.id+'-'+i+'.jpg'));await new Promise(r=>setTimeout(r,0))}return files;}
 async function nativeApply(files,type,preferred){const state=getState(),slot=state.slots[preferred-1],result=await analyzeMedia(files,type,{signal:new AbortController().signal,vision:true,localRecovery:true,fallback:true,username:state.settings.username,myTeam:slotTeam(slot),rivalName:slot.match.rivalName,competitionType:slot.competitionType,model:state.settings.model,visionModel:state.settings.visionModel,profile:'complete'},m=>{nativeCollectorNotice='Sessão automática · S'+preferred+' · '+type+': '+m;const e=root?.querySelector?.('[data-native-status]');if(e)e.textContent=nativeCollectorNotice});const targetId=nativeTargetSlot(preferred,result,type),target=getState().slots[targetId-1],parsed=nativeParsed(type,result),next=applyReading(target,type,parsed,{meta:result.meta||{},teams:result.readingTeams||[],conflicts:result.conflicts||[],username:getState().settings.username,mode:'Sessão automática Android',readingAt:new Date().toISOString()});updateSlot(s=>Object.assign(s,next),targetId);return targetId;}
-async function processNativeCollector(){const bridge=nativeBridge();if(!bridge||nativeCollectorBusy||busy)return;let session;try{session=JSON.parse(bridge.latestSession()||'null')}catch{return}if(!session||session.state!=='ready'||!session.id||!Array.isArray(session.frames)||!session.frames.length)return;if(localStorage.getItem(NATIVE_SESSION_DONE)===session.id)return;nativeCollectorBusy=true;busy=true;let success=0,currentSlot=1;const report=[];try{nativeCollectorNotice='Organizando '+session.frames.length+' telas capturadas…';if(root)render();let groups=nativeGroups(session.frames);if(!groups.length){nativeCollectorNotice='Texto da interface indisponível; usando recuperação visual…';if(root)render();groups=nativeFallback(session.frames)}for(let i=0;i<groups.length;i++){const g=groups[i],files=await nativeFiles(session,g.indices);if(!files.length)continue;try{nativeCollectorNotice='Grupo '+(i+1)+'/'+groups.length+' · '+g.type+' · analisando…';if(root)render();currentSlot=await nativeApply(files,g.type,currentSlot);success++;report.push('S'+currentSlot+' '+g.type+' ✓')}catch(error){report.push(g.type+': '+error.message)}}for(const slot of getState().slots){if(!known(slotTeam(slot)))continue;updateSlot(s=>{try{s.director.plan=buildMarketPlan(s.squad,s.director.cash,s.match.myStrength)}catch{}},slot.id)}if(success){localStorage.setItem(NATIVE_SESSION_DONE,session.id);nativeCollectorNotice='Sessão OSM atualizada: '+report.join(' · ')}else nativeCollectorNotice='Nenhum dado pôde ser aplicado. '+(report.length?'Detalhes: '+report.slice(-5).join(' · '):'A sessão foi preservada para nova tentativa.')}catch(error){nativeCollectorNotice='Falha ao processar sessão automática: '+error.message}finally{nativeCollectorBusy=false;busy=false;if(root){render();toast(nativeCollectorNotice)}}}
+async function processNativeCollector(){
+ const bridge=nativeBridge();
+ if(!bridge||nativeCollectorBusy||busy)return;
 
+ let session;
+ try{session=JSON.parse(bridge.latestSession()||'null')}catch{return}
+ if(!session||session.state!=='ready'||!session.id||!Array.isArray(session.frames)||!session.frames.length)return;
+ if(localStorage.getItem(NATIVE_SESSION_DONE)===session.id)return;
+
+ nativeCollectorBusy=true;
+ busy=true;
+ let success=0,failed=0;
+ const report=[];
+
+ try{
+  nativeCollectorNotice='Organizando '+session.frames.length+' telas capturadas…';
+  let groups=nativeGroups(session.frames);
+  if(!groups.length)groups=nativeFallback(session.frames);
+
+  nativeSetProgress(0,groups.length,'Organizando sessão',0,0);
+  if(root)render();
+
+  for(let i=0;i<groups.length;i++){
+   const g=groups[i];
+   const preferred=Math.min(4,Math.max(1,Number(g.slotHint)||1));
+   const files=await nativeFiles(session,g.indices);
+
+   nativeCollectorNotice='S'+preferred+' · '+g.type+' · analisando…';
+   nativeSetProgress(i,groups.length,nativeCollectorNotice,success,failed);
+   if(root)render();
+
+   if(!files.length){
+    failed++;
+    report.push('S'+preferred+' '+g.type+': sem telas');
+    nativeSetProgress(i+1,groups.length,'Sem telas para S'+preferred+' '+g.type,success,failed);
+    continue;
+   }
+
+   try{
+    const target=await nativeApply(files,g.type,preferred);
+    success++;
+    report.push('S'+target+' '+g.type+' ✓');
+    nativeSetProgress(i+1,groups.length,'S'+target+' '+g.type+' concluído',success,failed);
+   }catch(error){
+    failed++;
+    report.push('S'+preferred+' '+g.type+': '+error.message);
+    nativeSetProgress(i+1,groups.length,'Falha em S'+preferred+' '+g.type,success,failed);
+   }
+  }
+
+  for(const slot of getState().slots){
+   if(!known(slotTeam(slot))&&!slot.squad?.players?.length&&!slot.calendar?.length)continue;
+   updateSlot(state=>{
+    try{state.director.plan=buildMarketPlan(state.squad,state.director.cash,state.match.myStrength)}catch{}
+   },slot.id);
+  }
+
+  if(success){
+   localStorage.setItem(NATIVE_SESSION_DONE,session.id);
+   nativeCollectorNotice='Sessão OSM concluída: '+success+' leitura(s) aplicada(s), '+failed+' falha(s). '+report.join(' · ');
+  }else{
+   nativeCollectorNotice='Nenhum dado pôde ser aplicado. Detalhes: '+report.slice(-6).join(' · ');
+  }
+ }catch(error){
+  nativeCollectorNotice='Falha ao processar sessão automática: '+error.message;
+  failed++;
+ }finally{
+  nativeCollectorProgress={...nativeCollectorProgress,active:false,percent:100,success,failed};
+  nativeCollectorBusy=false;
+  busy=false;
+  if(root){render();toast(nativeCollectorNotice);}
+ }
+}
 function readCurrentReview(container=root.querySelector('#reviewForm')){return readReview(review,container,{display:displayedReview||review});}
 function restoreReading(slot,type){return liveReadings.get(slot+':'+type)||getReadingDraft(slot,type);}
 function captureReading(){
@@ -120,7 +230,7 @@ function stamp(slot){return '<p class="stamp">Atualizado: '+date(slot.updatedAt)
 function pagehead(title,sub,scope='S'+getSlot().id){return '<div class="football-hero"><img src="/assets/stadium.svg" alt="Ilustração de um campo de futebol iluminado"><span>PREPARE SEU TIME</span></div><div class="pagehead"><div><div class="eyebrow">CENTRO DE COMANDO · '+esc(scope)+'</div><h1>'+title+'</h1><p>'+sub+'</p></div><span class="status-dot">'+(navigator.onLine?'Online':'Offline')+'</span></div>';}
 function today(){
  let drafts=[],notice='';try{drafts=listReadingDrafts();}catch(error){notice='<p class="warning">'+esc(error.message)+'</p>';}
- return pagehead('Seu dia, organizado.','Uma visão geral do que fazer e do que falta nos quatro slots.','VISÃO GERAL')+notice+(nativeBridge()?'<p class=\"muted\" data-native-status>'+esc(nativeCollectorNotice||'Coletor Android conectado. Ao fechar o OSM, a sessão será processada automaticamente.')+'</p>':'')+renderSlotDashboard({...getState(),readingDrafts:drafts,slots:getState().slots.map(slot=>synchronizePreparation(slot))});
+ return pagehead('Seu dia, organizado.','Uma visão geral do que fazer e do que falta nos quatro slots.','VISÃO GERAL')+notice+(nativeBridge()?'<section style="margin:12px 0 20px;padding:14px;border:1px solid #d9dfcf;border-radius:14px;background:#f7f9f2"><div style="display:flex;justify-content:space-between;gap:12px;margin-bottom:8px"><strong>Leitura automática do OSM</strong><span data-native-progress-stats style="font-size:12px">Aplicados: '+nativeCollectorProgress.success+' · Falhas: '+nativeCollectorProgress.failed+'</span></div><div style="height:12px;background:#e5e9df;border-radius:999px;overflow:hidden"><div data-native-progress-bar style="height:100%;width:'+nativeCollectorProgress.percent+'%;background:#6d8d36;transition:width .25s ease"></div></div><div data-native-progress-text style="margin-top:8px;font-size:13px">'+esc(nativeCollectorProgress.label||nativeCollectorNotice||'Pronto para nova sessão')+(nativeCollectorProgress.total?' · '+nativeCollectorProgress.current+'/'+nativeCollectorProgress.total+' · '+nativeCollectorProgress.percent+'%':'')+'</div><p class="muted" data-native-status style="margin:8px 0 0">'+esc(nativeCollectorNotice||'Coletor Android conectado. Ao fechar o OSM, a sessão será processada automaticamente.')+'</p></section>':'')+renderSlotDashboard({...getState(),readingDrafts:drafts,slots:getState().slots.map(slot=>synchronizePreparation(slot))});
 }
 function matchForm(m){
  const control=([key,label,type])=>type==='human'?select(key,label,m.human===true?'true':m.human===false?'false':'',[['true','Humano'],['false','CPU']]):Array.isArray(type)?select(key,label,m[key],type):input(key,label,m[key],type||'text',type==='number'?'min="0" max="100000" step="any"':'');
