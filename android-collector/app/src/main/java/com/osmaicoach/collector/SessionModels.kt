@@ -7,7 +7,8 @@ data class CaptureFrame(
     val sourcePackage: String = OSM_PACKAGE,
     val width: Int,
     val height: Int,
-    val fingerprint: Long
+    val fingerprint: Long,
+    val textHint: String = ""
 )
 
 data class CaptureSession(
