@@ -1,5 +1,5 @@
 import {known} from './domain.js';
-import {normalize} from './utils.js';
+import {normalize,clubKey} from './utils.js';
 import {isRivalNickname} from './parser-match.js';
 
 const identity=value=>normalize(value).replace(/^@/,'').replace(/\s+/g,' ').trim();
@@ -14,13 +14,13 @@ export function sanitizeProviderMatch(initial,context={}){
  const drop=field=>{if((out._matchFieldSources[field]?.rank||0)>=4)return;delete out.match[field];delete out._matchFieldSources[field];};
  drop('myTrainingCamp');
  const pending=(field,reason)=>{const value=out.match[field];if(!known(value)||(out._matchFieldSources[field]?.rank||0)>=4)return;out.meta.pendingMatchFacts.push({field,value,reason,source:out._matchFieldSources[field]?.source||'Leitura da API'});drop(field);};
- const own=known(context.myTeam)?identity(context.myTeam):'',username=identity(context.username||'leandrozzy');
+ const own=clubKey(context.myTeam),username=identity(context.username||'leandrozzy');
  if(known(out.match.rivalNickname)&&!isRivalNickname(out.match.rivalNickname,context)){
   const ownNickname=identity(out.match.rivalNickname)===username;
   drop('rivalNickname');if((out._matchFieldSources.human?.rank||0)<2)drop('human');
   out.warnings.push(ownNickname?'O nickname do seu usuário foi ignorado no campo do rival.':'Nota, número ou rótulo ignorado no nickname do rival.');
  }
- if(own&&known(out.match.myName)&&identity(out.match.myName)!==own){
+ if(own&&known(out.match.myName)&&clubKey(out.match.myName)!==own){
   const club=out.match.myName,clubRank=out._matchFieldSources.myName?.rank||0;
   for(const field of ownFields){
    // A guessed club/username must not erase independently grounded own header
@@ -31,7 +31,7 @@ export function sanitizeProviderMatch(initial,context={}){
   }
   out.warnings.push('A API associou '+club+' ao seu lado. Esses campos aguardam identificação do clube na tela.');
  }
- if(own&&known(out.match.rivalName)&&identity(out.match.rivalName)===own){
+ if(own&&known(out.match.rivalName)&&clubKey(out.match.rivalName)===own){
   for(const field of rivalFields)drop(field);out.meta.rivalReportLocked=false;out.meta.hiddenFields=[];
   out.warnings.push('A API colocou seu clube no lado rival. Os dados desse lado aguardam confirmação nas telas.');
  }

@@ -1,4 +1,4 @@
-import {NI,normalize} from './utils.js';
+import {NI,normalize,sameClub} from './utils.js';
 import {parseSquadMeta} from './ocr-layout.js';
 const lines=text=>String(text).split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
 // Ratings (8.0), money and counts can sit immediately below a club while a
@@ -29,7 +29,7 @@ export function parseRivalReportText(text='',context={}){
  const isReport=/\bpelo que pude ver\b/.test(n)&&/\b(?:deu ordens aos jogadores|consegui descobrir a formacao)\b/.test(n);
  if(!isReport)return {};
  const out={};
- const club=String(text).replace(/\s+/g,' ').match(/pelo que pude ver,\s*(.+?)\s+deu ordens aos jogadores/i);if(club){if(context.myTeam&&normalize(context.myTeam)===normalize(club[1]))return {};out.rivalName=club[1].trim();}
+ const club=String(text).replace(/\s+/g,' ').match(/pelo que pude ver,\s*(.+?)\s+deu ordens aos jogadores/i);if(club){if(context.myTeam&&sameClub(context.myTeam,club[1]))return {};out.rivalName=club[1].trim();}
  if(club){
   const preceding=lines(text).slice(0,lines(text).findIndex(line=>/pelo que pude ver/i.test(line)));
   const nameIndex=preceding.findIndex(line=>normalize(line)===normalize(club[1]));

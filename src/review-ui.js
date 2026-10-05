@@ -6,7 +6,7 @@ function control(path,label,value,type='text',options,evidence,manual=false){
  const unknown=!known(value),attrs=' data-review-path="'+esc(path)+'" data-kind="'+type+'"';
  const current=value===true?'true':value===false?'false':known(value)?String(value):'';
  const html=options?'<select'+attrs+'><option value="">NI</option>'+options.map(item=>{const [v,l]=Array.isArray(item)?item:[item,item];return '<option value="'+esc(v)+'" '+(String(v)===current?'selected':'')+'>'+esc(l)+'</option>';}).join('')+'</select>':'<input'+attrs+' type="'+(type==='number'?'number':'text')+'" value="'+esc(current)+'" placeholder="NI" '+(type==='number'?(path.endsWith('.shirtNumber')?'min="1" max="99"':'min="0"'):'')+'>';
- const status=manual?' · Ajuste manual':unknown?' · NI':evidence?.kind==='manual'?' · Revisado por você':(evidence?.rank||0)>=2?' · Texto/ícone nas telas':' · Conferir na tela';
+ const status=manual?' · Ajuste manual':unknown?' · NI':evidence?.retained?' · Já salvo neste slot':evidence?.kind==='manual'?' · Revisado por você':(evidence?.rank||0)>=2?' · Texto/ícone nas telas':' · Conferir na tela';
  return '<label class="'+(unknown&&!manual?'review-ni':'')+'"><span>'+esc(label)+status+'</span>'+html+'</label>';
 }
 const yn=[['true','Sim'],['false','Não']];
@@ -101,10 +101,18 @@ export function renderReview(review){
  const conflicts=(review.conflicts||[]).map((c,i)=>visible.has(c)&&!c.resolved?conflictItem(c,i,review):'').join(''),resolved=(review.conflicts||[]).map((c,i)=>visible.has(c)&&c.resolved?conflictItem(c,i,review):'').join('');
  return '<form id="reviewForm" onsubmit="return false">'+content+'</form>'+(conflicts?'<details open><summary>Valores divergentes: confira nas telas</summary><ul>'+conflicts+'</ul></details>':'')+(resolved?'<details><summary>Diferenças resolvidas pela leitura comprovada</summary><ul>'+resolved+'</ul></details>':'');
 }
-export function readReview(review,container){
+export function readReview(review,container,{display=review}={}){
  const copy=row=>({...row,_fieldSources:{...row._fieldSources}});
  const out={match:{...review.match,_fieldSources:{...review._matchFieldSources}},players:review.players.map(copy),playerCandidates:(review.playerCandidates||[]).map(copy),calendar:review.calendar.map(copy),calendarFragments:(review.calendarFragments||[]).map(copy),meta:{...review.meta,_fieldSources:{...review.meta?._fieldSources}}};
- for(const el of container.querySelectorAll('[data-review-path]')){const path=el.dataset.reviewPath.split('.');let target=out;for(const segment of path.slice(0,-1))target=target[segment];const raw=el.value.trim(),key=path.at(-1),value=el.dataset.kind==='include'?el.checked===true:el.dataset.kind==='boolean'?raw==='true'?true:raw==='false'?false:null:el.dataset.kind==='number'?raw===''?null:Number(raw):raw||'NI';if(key!=='_include'&&known(value)&&!Object.is(target[key],value))target._fieldSources[key]={kind:'manual',rank:4,source:'Editado na revisão'};target[key]=value;}
+ for(const el of container.querySelectorAll('[data-review-path]')){
+  const path=el.dataset.reviewPath.split('.');let target=out,baseline=display;
+  for(const segment of path.slice(0,-1)){target=target[segment];baseline=baseline?.[segment];}
+  const raw=el.value.trim(),key=path.at(-1),value=el.dataset.kind==='include'?el.checked===true:el.dataset.kind==='boolean'?raw==='true'?true:raw==='false'?false:null:el.dataset.kind==='number'?raw===''?null:Number(raw):raw||'NI';
+  const unchanged=Object.is(baseline?.[key],value)||!known(baseline?.[key])&&!known(value);
+  if(path[0]==='match'&&unchanged)continue;
+  if(key!=='_include'&&!unchanged)target._fieldSources[key]={kind:'manual',rank:4,source:'Editado na revisão',observedAt:new Date().toISOString()};
+  target[key]=value;
+ }
  const included=out.playerCandidates.filter(p=>p._include===true).map(p=>{const row={...p,_fieldSources:{...p._fieldSources}};delete row._include;delete row._rosterPending;delete row._rosterReason;for(const key of ['name','position','strength','shirtNumber','age','value','training','forSale'])if(known(row[key]))row._fieldSources[key]={kind:'manual',rank:4,source:'Confirmado na revisão'};return row;});
  if(review.type==='match')return out.match;
  if(review.type==='squad')return {players:[...out.players,...included],playerCandidates:out.playerCandidates.filter(p=>p._include!==true),meta:out.meta};

@@ -1,5 +1,5 @@
 import {cleanMatch,cleanPlayers,matchFields,autoMatchFields,reportTacticFields,confirmedMatchSecretTraining,confirmedMatchField,known,num,scoreOutcome} from './domain.js';
-import {normalize} from './utils.js';
+import {normalize,clubKey,sameClub} from './utils.js';
 const safeText=(v,max=100)=>known(v)&&['string','number'].includes(typeof v)?String(v).trim().slice(0,max):'NI';
 function listFrameReference(raw){
  if(!raw||!Number.isInteger(raw.fileIndex)||raw.fileIndex<0||!Number.isFinite(raw.time)||raw.time<0)return null;
@@ -50,6 +50,7 @@ function monetaryAmount(value){
  return Number.isFinite(amount)?amount:null;
 }
 function equivalentField(key,a,b){
+ if(['myName','rivalName','opponent','team'].includes(key))return sameClub(a,b);
  if(textIdentityFields.has(key))return normalize(a).replace(/\s+/g,' ')===normalize(b).replace(/\s+/g,' ');
  if(monetaryFields.has(key)){const first=monetaryAmount(a),second=monetaryAmount(b);if(first!==null&&second!==null)return first===second;}
  return String(a)===String(b);
@@ -199,7 +200,7 @@ function mergeFields(a,b,conflicts,path){
  }return out;
 }
 const calendarHasSchedule=row=>['round','date','time'].some(key=>known(row[key]));
-const calendarValue=(key,value)=>['opponent','nickname','stage'].includes(key)?normalize(value).replace(/\s+/g,' '):String(value);
+const calendarValue=(key,value)=>key==='opponent'?clubKey(value):['nickname','stage'].includes(key)?normalize(value).replace(/\s+/g,' '):String(value);
 const cupStage=value=>{const text=normalize(value).replace(/[- ]+/g,' ').trim();if(/^(?:meias? finais?|semi ?finais?)$/.test(text))return 'semifinal';if(/^(?:quartos?(?: de)? final)$/.test(text))return 'quarterfinal';if(/^(?:oitavos?(?: de)? final)$/.test(text))return 'last16';return /^(?:final|preliminar(?:es)?(?: (?:da |de )?copa)?|qualificacao)$/.test(text)?text:null;};
 function compatibleFixtureField(a,b,key){
  if(!known(a[key])||!known(b[key])||calendarValue(key,a[key])===calendarValue(key,b[key]))return true;
@@ -343,7 +344,7 @@ export function fuseExtraction(first,second){
  const mergedMeta=mergeFields(metaRecord(am),metaRecord(bm),conflicts,'meta');
  Object.assign(out.meta,Object.fromEntries(metaFactFields.map(key=>[key,mergedMeta[key]])),{_fieldSources:mergedMeta._fieldSources});
  if(bm.teamVerified===true&&known(bm.team)&&am.teamVerified!==true){out.meta.team=bm.team;if(bm._fieldSources?.team)out.meta._fieldSources.team=bm._fieldSources.team;}
- out.meta.teamVerified=(am.teamVerified===true&&known(am.team))||(bm.teamVerified===true&&known(bm.team)&&normalize(out.meta.team)===normalize(bm.team));
+ out.meta.teamVerified=(am.teamVerified===true&&known(am.team))||(bm.teamVerified===true&&known(bm.team)&&sameClub(out.meta.team,bm.team));
  out.meta.rivalReportLocked=am.rivalReportLocked===true||bm.rivalReportLocked===true;
  if(out.meta.rivalReportLocked&&(!known(out.match.secretTraining)||(out._matchFieldSources.secretTraining?.rank||0)<2))out.match.secretTraining='Sim';
  out.meta.sawTop=am.sawTop===true||bm.sawTop===true;out.meta.sawBottom=am.sawBottom===true||bm.sawBottom===true;
