@@ -6,6 +6,7 @@ on:
     branches:
       - android-collector-v1
     paths:
+      - 'android-collector/**'
       - 'android-integrated-v2.zip'
       - '.github/workflows/android-collector-bootstrap.yml'
 
