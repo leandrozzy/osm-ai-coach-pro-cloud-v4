@@ -40,23 +40,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Fallback: alguns aparelhos não emitem imediatamente um evento de
-        // acessibilidade ao voltar para o Coach. Se o OSM foi visto depois do
-        // último lançamento, finalizamos a sessão aqui também.
-        android.os.Handler(mainLooper).postDelayed({
-            val runtime=getSharedPreferences("collector_runtime",Context.MODE_PRIVATE)
-            val launchAt=runtime.getLong("coach_launch_at",0L)
-            val lastOsm=runtime.getLong("last_osm_seen_at",0L)
-            if(launchAt>0L && lastOsm>=launchAt && runtime.getBoolean("osm_seen_in_session",false)){
-                repo.finish()
-                runtime.edit()
-                    .putBoolean("osm_seen_in_session",false)
-                    .putLong("coach_launch_at",0L)
-                    .apply()
-                CollectorState.setRecording(false)
-                CollectorState.signalSessionReady()
-            }
-        },900L)
+        // V22: voltar ao Coach NÃO encerra a sessão.
+        // O usuário pode entrar e sair do OSM normalmente e só encerra quando
+        // tocar em "Encerrar captura e atualizar".
+        if (repo.current()?.state == "recording") {
+            CollectorState.setRecording(true)
+        }
     }
 
     @Composable
@@ -85,8 +74,9 @@ class MainActivity : ComponentActivity() {
         // Compose cancelled the active request and restarted it at 0/12.
         val latestForProcessing = repo.latestSession()
         val latestSessionId = latestForProcessing?.id ?: ""
+        val latestSessionState = latestForProcessing?.state ?: ""
 
-        LaunchedEffect(latestSessionId, forceProcessToken) {
+        LaunchedEffect(latestSessionId, latestSessionState, forceProcessToken) {
             val latestNow = repo.latestSession()
             if (latestNow?.state == "ready" && !processing.running) {
                 val processor = NativeSessionProcessor(this@MainActivity, repo, slotStore)
@@ -101,8 +91,8 @@ class MainActivity : ComponentActivity() {
 
         val servicePermission = isAccessibilityServiceEnabledInSettings()
         val serviceConnected = isAccessibilityServiceActuallyConnected()
-        val serviceReady = servicePermission && serviceConnected
-        val recording = CollectorState.isRecording()
+        val serviceReady = servicePermission
+        val recording = CollectorState.isRecording() || repo.current()?.state == "recording"
         val latest = repo.latestSession()
         val sessions = repo.listSessions()
         val slots = slotStore.loadAll()
@@ -151,9 +141,9 @@ class MainActivity : ComponentActivity() {
                         Spacer(Modifier.height(12.dp))
                         Text(
                             when {
-                                recording -> "Lendo o OSM agora • você pode navegar normalmente"
+                                recording -> "Sessão ativa • você pode voltar ao OSM quando quiser"
+                                servicePermission && !serviceConnected -> "Leitura autorizada • Android reconectando o serviço"
                                 serviceReady -> "Leitura automática pronta"
-                                servicePermission -> "Leitura autorizada • reconectando serviço"
                                 else -> "Ative a leitura automática uma única vez"
                             },
                             color = Color.White,
@@ -196,7 +186,19 @@ class MainActivity : ComponentActivity() {
                     SlotDetailScreen(slots[selectedSlot!! - 1], onBack = { selectedSlot = null })
                 } else {
                     when (tab) {
-                        0 -> TodayScreen(serviceReady, recording, latest, processing, slots, onReprocess={ forceProcessToken++ }) { openOsm() }
+                        0 -> TodayScreen(
+                            serviceReady = serviceReady,
+                            recording = recording,
+                            latest = latest,
+                            processing = processing,
+                            slots = slots,
+                            onReprocess = { forceProcessToken++ },
+                            openOsm = { openOsm() },
+                            stopCapture = {
+                                finishCaptureSession()
+                                forceProcessToken++
+                            }
+                        )
                         1 -> SessionsScreen(sessions)
                         2 -> SlotsScreen(slots, latest) { selectedSlot = it }
                         3 -> DirectorScreen(latest)
@@ -215,7 +217,8 @@ class MainActivity : ComponentActivity() {
         processing:NativeSessionProcessor.Progress,
         slots:List<NativeSlotData>,
         onReprocess:()->Unit,
-        openOsm:()->Unit
+        openOsm:()->Unit,
+        stopCapture:()->Unit
     ) {
         LazyColumn(contentPadding=PaddingValues(18.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
             item {
@@ -240,13 +243,44 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                         Spacer(Modifier.height(16.dp))
-                        Button(
-                            onClick=openOsm,
-                            enabled=serviceReady&&!recording&&!processing.running,
-                            modifier=Modifier.fillMaxWidth().height(52.dp),
-                            colors=ButtonDefaults.buttonColors(containerColor=Color(0xFFB8E34D),contentColor=Color(0xFF122630))
-                        ){
-                            Icon(Icons.Default.PlayArrow,null);Spacer(Modifier.width(8.dp));Text("Abrir OSM",fontWeight=FontWeight.Bold)
+                        if(recording) {
+                            Button(
+                                onClick=openOsm,
+                                enabled=serviceReady&&!processing.running,
+                                modifier=Modifier.fillMaxWidth().height(52.dp),
+                                colors=ButtonDefaults.buttonColors(containerColor=Color(0xFFB8E34D),contentColor=Color(0xFF122630))
+                            ){
+                                Icon(Icons.Default.PlayArrow,null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Voltar ao OSM",fontWeight=FontWeight.Bold)
+                            }
+                            Spacer(Modifier.height(9.dp))
+                            OutlinedButton(
+                                onClick=stopCapture,
+                                enabled=!processing.running,
+                                modifier=Modifier.fillMaxWidth().height(48.dp)
+                            ){
+                                Icon(Icons.Default.StopCircle,null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Encerrar captura e atualizar",fontWeight=FontWeight.Bold)
+                            }
+                            Spacer(Modifier.height(7.dp))
+                            Text(
+                                "Jogue normalmente. Não espere entre telas. O app só encerra quando você tocar no botão acima.",
+                                color=Color(0xFFB6C6CE),
+                                fontSize=11.sp
+                            )
+                        } else {
+                            Button(
+                                onClick=openOsm,
+                                enabled=serviceReady&&!processing.running,
+                                modifier=Modifier.fillMaxWidth().height(52.dp),
+                                colors=ButtonDefaults.buttonColors(containerColor=Color(0xFFB8E34D),contentColor=Color(0xFF122630))
+                            ){
+                                Icon(Icons.Default.PlayArrow,null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Abrir OSM e iniciar captura",fontWeight=FontWeight.Bold)
+                            }
                         }
                     }
                 }
@@ -836,7 +870,7 @@ class MainActivity : ComponentActivity() {
                                 val ocrPrefs=this@MainActivity.getSharedPreferences("native_processor_v13",MODE_PRIVATE)
                                 DetailLine("Telas com texto OCR","${ocrPrefs.getInt("local_ocr_readable",0)}/${ocrPrefs.getInt("local_ocr_total",0)}")
                                 DetailLine("Rastreamento de slots",ocrPrefs.getString("slot_tracker_summary","Ainda não processado") ?: "Ainda não processado")
-                    DetailLine("Versão nativa","V19 · ${BuildConfig.VERSION_NAME}")
+                    DetailLine("Versão nativa","V22 · ${BuildConfig.VERSION_NAME}")
                     val rt=getSharedPreferences("collector_runtime",Context.MODE_PRIVATE)
                     DetailLine("Serviço criado",formatDiagnosticTime(rt.getLong("service_created_at",0L)))
                     DetailLine("Serviço conectado em",formatDiagnosticTime(rt.getLong("service_connected_at",0L)))
@@ -914,22 +948,32 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openOsm() {
-        // Registra a intenção de iniciar uma sessão ANTES de abrir o OSM.
-        // Activity e AccessibilityService usam o mesmo marcador; assim não há
-        // perda da sessão mesmo quando o Android recria uma das duas.
         val now=System.currentTimeMillis()
-        val session=repo.beginNewSession()
+        val current=repo.current()
+        val session=current ?: repo.beginNewSession()
         getSharedPreferences("collector_runtime",Context.MODE_PRIVATE).edit()
-            .putBoolean("osm_seen_in_session", false)
-            .putBoolean("start_new_session_pending", true)
-            .putLong("requested_session_at", now)
+            .putBoolean("osm_seen_in_session", current != null)
+            .putBoolean("start_new_session_pending", current == null)
+            .putLong("requested_session_at", if(current==null) now else session.startedAt)
             .putLong("coach_launch_at", now)
             .putString("requested_session_id", session.id)
             .apply()
-        packageManager.getLaunchIntentForPackage(OSM_PACKAGE)?.let {
-            it.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
-            startActivity(it)
-        }
+        CollectorState.setRecording(true)
+        OsmLauncher.open(this)
+    }
+
+    private fun finishCaptureSession() {
+        val finished=repo.finish()
+        getSharedPreferences("collector_runtime",Context.MODE_PRIVATE).edit()
+            .putBoolean("osm_seen_in_session",false)
+            .putBoolean("start_new_session_pending",false)
+            .putLong("requested_session_at",0L)
+            .putLong("coach_launch_at",0L)
+            .remove("requested_session_id")
+            .putLong("session_finished_at",System.currentTimeMillis())
+            .apply()
+        CollectorState.setRecording(false)
+        if(finished!=null) CollectorState.signalSessionReady()
     }
 
     private fun isAccessibilityServiceEnabledInSettings():Boolean {

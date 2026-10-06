@@ -98,8 +98,14 @@ class NativeSessionProcessor(
         segments.forEachIndexed{slotIndex,indices->
             val slot=slots[slotIndex.coerceIn(0,3)]
             localKnownBefore[slotIndex]=knownCount(slot)
-            val texts=indices.mapNotNull{ocrByIndex[it]}.filter{it.isNotBlank()}
+            val texts=indices
+                .filter { idx ->
+                    classifications[idx]?.type in setOf("match","calendar","club","tactics","result")
+                }
+                .mapNotNull{ocrByIndex[it]}
+                .filter{it.isNotBlank()}
             local.applyToSlot(slot,texts)
+            sanitizeCorruptedSlot(slot)
             localKnownAfter[slotIndex]=knownCount(slot)
             slot.lastUpdated=System.currentTimeMillis()
         }
@@ -119,31 +125,24 @@ class NativeSessionProcessor(
         }
 
         fun rowsForType(rows:List<Int>, type:String):List<Int>{
-            val fallbackTypes=when(type){
-                "match" -> setOf("club","tactics","result")
-                "squad" -> setOf("training","market")
-                "calendar" -> setOf("ranking")
+            val accepted=when(type){
+                "match" -> setOf("match","club","tactics","result")
+                "squad" -> setOf("squad","training","market")
+                "calendar" -> setOf("calendar","ranking")
                 else -> emptySet()
             }
-            // Não descarte telas classificadas como "Outra". Em páginas de jogador,
-            // calendário e scout o Accessibility muitas vezes expõe apenas o nome/valor.
-            // Enviamos TODO o OCR textual do slot, priorizando as telas do tipo pedido.
-            return rows.sortedWith(compareBy<Int> { idx ->
-                when {
-                    classifications[idx]?.type==type -> 0
-                    classifications[idx]?.type in fallbackTypes -> 1
-                    classifications[idx]?.type=="other" -> 2
-                    else -> 3
-                }
-            }.thenBy { it })
+            val exact=rows.filter { classifications[it]?.type==type }
+            val related=rows.filter { classifications[it]?.type in accepted && it !in exact }
+            return (exact+related).distinct()
         }
 
         val jobs=mutableListOf<Triple<Int,String,List<Int>>>()
         segments.forEachIndexed{i,rows->
             if(rows.isEmpty()) return@forEachIndexed
-            jobs+=Triple(i,"match",rowsForType(rows,"match"))
-            jobs+=Triple(i,"squad",rowsForType(rows,"squad"))
-            jobs+=Triple(i,"calendar",rowsForType(rows,"calendar"))
+            listOf("match","squad","calendar").forEach { type ->
+                val relevant=rowsForType(rows,type)
+                if(relevant.isNotEmpty()) jobs+=Triple(i,type,relevant)
+            }
         }
 
         jobs.forEach{job->
@@ -151,8 +150,14 @@ class NativeSessionProcessor(
             val friendly=when(job.second){"match"->"Pré-jogo";"squad"->"Elenco";else->"Calendário"}
             onProgress(Progress(true,current,total,"S${slot.id} · $friendly · IA",success,failed,"cloud",lastError))
 
-            val maxImages=4
-            val nativeOcrText=job.third.mapNotNull{ocrByIndex[it]}.filter{it.isNotBlank()}.joinToString("\n\n").take(30000)
+            val maxImages=2
+            val nativeOcrText=job.third
+                .mapNotNull{ocrByIndex[it]?.trim()}
+                .filter{it.isNotBlank()}
+                .distinct()
+                .take(24)
+                .joinToString("\n\n")
+                .take(24000)
             val result=withTimeoutOrNull(65000L){analyzeType(endpoint,session,job.third,job.second,maxImages,slot,nativeOcrText)}
             if(result==null){
                 failed++
@@ -162,6 +167,7 @@ class NativeSessionProcessor(
             }else{
                 val before=knownCount(slot)
                 val changed=runCatching{applyResult(slot,result.first,result.second)}.getOrElse { 0 }
+                sanitizeCorruptedSlot(slot)
                 val after=knownCount(slot)
                 if(after>before || changed>0){
                     success++
@@ -363,13 +369,22 @@ class NativeSessionProcessor(
 
             if(parsed.isNotEmpty()){
                 val merged=slot.players
-                    .filter{ validPlayerName(it.name) && normPos(it.position)!="NI" }
-                    .associateBy{ it.name.trim().lowercase()+"|"+normPos(it.position) }
+                    .filter{ validPlayerName(it.name) }
+                    .associateBy{ it.name.trim().lowercase() }
                     .toMutableMap()
 
                 parsed.forEach{ fresh ->
-                    val key=fresh.name.trim().lowercase()+"|"+fresh.position
-                    merged[key]=fresh
+                    val key=fresh.name.trim().lowercase()
+                    val old=merged[key]
+                    merged[key]=if(old==null) fresh else NativePlayerData(
+                        name=fresh.name,
+                        position=if(fresh.position!="NI")fresh.position else old.position,
+                        age=if(fresh.age!="NI")fresh.age else old.age,
+                        strength=if(fresh.strength!="NI")fresh.strength else old.strength,
+                        value=if(fresh.value!="NI")fresh.value else old.value,
+                        training=if(fresh.training!="NI")fresh.training else old.training,
+                        selling=if(fresh.selling!="NI")fresh.selling else old.selling
+                    )
                 }
 
                 slot.players=merged.values.take(40).toMutableList()
@@ -416,11 +431,27 @@ class NativeSessionProcessor(
         }
 
         if(parsed.isNotEmpty()){
-            slot.calendar=parsed.distinctBy{
-                listOf(it.round,it.opponent,it.date,it.time).joinToString("|").lowercase()
-            }.toMutableList()
+            fun keyOf(g:NativeCalendarGame):String =
+                listOf(g.round,g.date,g.time,g.opponent).joinToString("|").lowercase()
+            val merged=linkedMapOf<String,NativeCalendarGame>()
+            slot.calendar.forEach { old -> merged[keyOf(old)]=old }
+            parsed.forEach { fresh ->
+                val key=keyOf(fresh)
+                val old=merged[key]
+                merged[key]=if(old==null) fresh else NativeCalendarGame(
+                    round=if(fresh.round!="NI")fresh.round else old.round,
+                    opponent=if(fresh.opponent!="NI")fresh.opponent else old.opponent,
+                    date=if(fresh.date!="NI")fresh.date else old.date,
+                    time=if(fresh.time!="NI")fresh.time else old.time,
+                    venue=if(fresh.venue!="NI")fresh.venue else old.venue,
+                    score=if(fresh.score!="NI")fresh.score else old.score,
+                    competition=if(fresh.competition!="NI")fresh.competition else old.competition,
+                    cup=fresh.cup || old.cup
+                )
+            }
+            slot.calendar=merged.values.take(80).toMutableList()
             slot.calendarCount=slot.calendar.size
-            changed += slot.calendar.size
+            changed += parsed.size
 
             val future=slot.calendar.firstOrNull {
                 it.score=="NI" || it.score.isBlank() || it.score=="-" || !Regex("\\d+\\s*[xX:-]\\s*\\d+").containsMatchIn(it.score)

@@ -103,15 +103,11 @@ object SlotNavigationTracker {
                 }
             }
 
-            if (bestSlot == 0 || bestScore < 3) {
-                val remaining = (1..4).filter { it !in used }
-                if (remaining.size == 1) {
-                    bestSlot = remaining.first()
-                    bestScore = 3
-                }
-            }
+            val ranked = signatures.map { it.slotId to score(joined,it) }.sortedByDescending { it.second }
+            val secondScore = ranked.getOrNull(1)?.second ?: 0
+            val confident = bestSlot in 1..4 && bestScore >= 5 && (bestScore-secondScore >= 2 || bestScore >= 14)
 
-            if (bestSlot in 1..4 && bestScore >= 3) {
+            if (confident) {
                 used += bestSlot
                 visit.rows.forEach { idx ->
                     frameToSlot[idx] = bestSlot
@@ -139,7 +135,7 @@ object SlotNavigationTracker {
         if (team.length >= 4 && n.contains(team)) score += 14
         if (comp.length >= 5 && n.contains(comp)) score += 8
         val tokens = tokenize(n)
-        score += minOf(sig.tokens.count { it in tokens }, 12)
+        score += minOf(sig.tokens.count { it in tokens }, 12) * 2
         return score
     }
 
@@ -156,8 +152,9 @@ object SlotNavigationTracker {
             "rodada","jornada","manager","treinador"
         ).count { n.contains(it) }
 
-        if (rounds in 3..6 && leagueWords >= 2) return true
+        if (rounds in 3..8 && leagueWords >= 1) return true
         if (rounds >= 3 && n.contains("leandrozzy")) return true
+        if (rounds >= 3 && listOf("slot","manager","treinador","liga","batalha").any { n.contains(it) }) return true
         return false
     }
 
