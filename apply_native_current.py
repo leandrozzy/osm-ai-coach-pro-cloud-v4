@@ -439,3 +439,158 @@ changed += write_if_changed(gradle_p, gradle)
 print()
 print("V22 aplicada com sucesso.")
 print("Arquivos alterados:", changed)
+
+
+# =============================================================================
+# V23 — correção da regressão V22 + rastreamento forte pela Central dos 4 slots
+# =============================================================================
+print("\nAplicando V23...")
+
+svc = replace_once(svc,
+'''    private fun shouldKeepCapturing(): Boolean {
+        val pkg = detectForegroundPackage() ?: CollectorState.currentForegroundPackage
+        return pkg == OSM_PACKAGE
+    }''',
+'''    private fun shouldKeepCapturing(): Boolean {
+        if (isExplicitSessionArmed()) return true
+        val pkg = detectForegroundPackage() ?: CollectorState.currentForegroundPackage
+        return pkg == OSM_PACKAGE
+    }''',
+"V23 Accessibility explicit-session capture")
+
+tracker = re.sub(
+r'''    private fun learnHubSignatures\(text: String, signatures: MutableList<Signature>, slots: List<NativeSlotData>\) \{.*?^    private fun looksLikeCompetition''',
+'''    private fun learnHubSignatures(text: String, signatures: MutableList<Signature>, slots: List<NativeSlotData>) {
+        val normalized = normalize(text)
+
+        val anchors = Regex("\\\\b\\\\d{1,2}\\\\s*/\\\\s*\\\\d{1,2}\\\\b")
+            .findAll(normalized)
+            .take(4)
+            .toList()
+
+        if (anchors.size >= 3) {
+            anchors.forEachIndexed { slotIndex, anchor ->
+                if (slotIndex > 3) return@forEachIndexed
+
+                val left = if (slotIndex == 0) 0 else
+                    ((anchors[slotIndex - 1].range.last + anchor.range.first) / 2).coerceAtLeast(0)
+
+                val right = if (slotIndex == anchors.lastIndex) normalized.length else
+                    ((anchor.range.last + anchors[slotIndex + 1].range.first) / 2)
+                        .coerceAtMost(normalized.length)
+
+                if (right > left) {
+                    val chunk = normalized.substring(left, right)
+                    addUsefulTokens(signatures[slotIndex].tokens, chunk)
+                }
+            }
+        }
+
+        val lines = text.replace("|", "\\n").lines()
+            .map { it.trim() }
+            .filter { it.length in 2..100 }
+
+        val roundIndices = lines.indices.filter { idx ->
+            Regex("\\\\b\\\\d{1,2}\\\\s*/\\\\s*\\\\d{1,2}\\\\b").containsMatchIn(normalize(lines[idx]))
+        }
+
+        if (roundIndices.size >= 3) {
+            roundIndices.take(4).forEachIndexed { slotIndex, lineIndex ->
+                val from = maxOf(0, lineIndex - 5)
+                val to = minOf(lines.size - 1, lineIndex + 4)
+                val chunk = lines.subList(from, to + 1).joinToString(" ")
+                addUsefulTokens(signatures[slotIndex].tokens, chunk)
+
+                if (signatures[slotIndex].team == "NI") {
+                    lines.subList(from, lineIndex + 1).asReversed()
+                        .firstOrNull { looksLikeName(it) && !looksLikeCompetition(it) }
+                        ?.let { signatures[slotIndex].team = it }
+                }
+
+                if (signatures[slotIndex].competition == "NI") {
+                    lines.subList(from, to + 1)
+                        .firstOrNull { looksLikeCompetition(it) }
+                        ?.let { signatures[slotIndex].competition = it }
+                }
+            }
+        }
+
+        signatures.forEachIndexed { i, sig ->
+            slots.getOrNull(i)?.let {
+                if (sig.team == "NI" && it.team != "NI") sig.team = it.team
+                if (sig.competition == "NI" && it.competition != "NI") sig.competition = it.competition
+                addUsefulTokens(sig.tokens, it.team)
+                addUsefulTokens(sig.tokens, it.competition)
+            }
+        }
+    }
+
+    private fun looksLikeCompetition''',
+tracker,
+count=1,
+flags=re.S|re.M
+)
+
+tracker = tracker.replace(
+'''            val confident = bestSlot in 1..4 &&
+                bestScore >= 5 &&
+                (bestScore - secondScore >= 2 || bestScore >= 14)''',
+'''            val confident = bestSlot in 1..4 &&
+                bestScore >= 2 &&
+                (bestScore - secondScore >= 1 || bestScore >= 10)'''
+)
+
+needle = '''        val frameToSlot = tracked.frameToSlot.toMutableMap()
+        total = session.frames.size + segments.count { it.isNotEmpty() } * 3
+'''
+replacement = '''        val frameToSlot = tracked.frameToSlot.toMutableMap()
+        total = session.frames.size + segments.count { it.isNotEmpty() } * 3
+
+        if (segments.all { it.isEmpty() }) {
+            prefs.edit()
+                .putString("slot_tracker_summary", tracked.summary)
+                .putInt("slot_hub_frames", tracked.hubFrames.size)
+                .putInt("slot_unassigned_frames", session.frames.size)
+                .apply()
+
+            val message = "Nenhuma visita pôde ser ligada a S1-S4. Reprocesse com a V23 ou faça uma nova sessão iniciada pelo botão Abrir OSM."
+            onProgress(
+                Progress(
+                    false,
+                    total,
+                    total,
+                    "Sessão preservada — rastreamento pendente",
+                    0,
+                    1,
+                    "slot-map",
+                    message
+                )
+            )
+            return@withContext true
+        }
+'''
+proc = replace_once(proc, needle, replacement, "V23 slot-map diagnostic")
+
+main = re.sub(
+    r'DetailLine\("Versão nativa","V\d+\s*·\s*\$\{BuildConfig\.VERSION_NAME\}"\)',
+    'DetailLine("Versão nativa","V23 · ${BuildConfig.VERSION_NAME}")',
+    main,
+    count=1
+)
+gradle = re.sub(
+    r'versionName\s*=\s*"[^"]*\$runNumber"',
+    'versionName = "4.1.$runNumber"',
+    gradle,
+    count=1
+)
+
+changed_v23 = 0
+changed_v23 += write_if_changed(main_p, main)
+changed_v23 += write_if_changed(svc_p, svc)
+changed_v23 += write_if_changed(proc_p, proc)
+changed_v23 += write_if_changed(tracker_p, tracker)
+changed_v23 += write_if_changed(gradle_p, gradle)
+
+print("V23 aplicada com sucesso. Arquivos alterados:", changed_v23)
+print("Correção crítica: sessão explícita volta a capturar mesmo quando o Android informa SystemUI.")
+print("Rastreamento: os 4 slots passam a ser aprendidos diretamente da Central do OSM.")
