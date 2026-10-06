@@ -4,38 +4,75 @@ ROOT = Path(__file__).resolve().parent
 MAIN = ROOT / "android-collector/app/src/main/java/com/osmaicoach/collector/MainActivity.kt"
 
 if not MAIN.exists():
-    raise SystemExit(f"Arquivo não encontrado: {MAIN}")
+    raise SystemExit(f"ERRO: {MAIN} não encontrado")
 
 text = MAIN.read_text(encoding="utf-8")
-changed = 0
 
-def patch(old: str, new: str, marker: str):
-    global text, changed
-    if marker in text:
-        print(f"OK: já aplicado -> {marker}")
-        return
-    if old not in text:
-        print(f"AVISO: trecho não encontrado -> {marker}. Mantendo o restante da build.")
-        return
+def replace_once(old: str, new: str, name: str):
+    global text
+    count = text.count(old)
+    if count == 0:
+        if new in text:
+            print(f"OK já aplicado: {name}")
+            return
+        raise SystemExit(f"ERRO: trecho não encontrado para {name}")
+    if count != 1:
+        raise SystemExit(f"ERRO: {name} apareceu {count} vezes; patch abortado para não corromper o app")
     text = text.replace(old, new, 1)
-    changed += 1
-    print(f"OK: aplicado -> {marker}")
+    print(f"OK: {name}")
 
-patch(
+replace_once(
 '''        val servicePermission = isAccessibilityServiceEnabledInSettings()
         val serviceConnected = isAccessibilityServiceActuallyConnected()
         val serviceReady = servicePermission
         val recording = CollectorState.isRecording() || repo.current()?.state == "recording"''',
 '''        val servicePermission = isAccessibilityServiceEnabledInSettings()
         val serviceConnected = isAccessibilityServiceActuallyConnected()
-        // V24: o controle da sessão não pode desaparecer só porque o Android/ASUS
-        // derrubou momentaneamente a conexão do AccessibilityService.
-        val serviceReady = servicePermission || serviceConnected
-        val recording = CollectorState.isRecording() || repo.current()?.state == "recording"''',
-"V24: o controle da sessão"
+        val recording = CollectorState.isRecording() || repo.current()?.state == "recording"
+        // V24: durante uma sessão o usuário nunca pode perder o controle da captura.
+        // A permissão pode continuar marcada enquanto o AccessibilityService oscila.
+        val serviceReady = servicePermission || serviceConnected''',
+"estado da sessão independente do serviço"
 )
 
-patch(
+replace_once(
+'''                            Surface(shape = RoundedCornerShape(999.dp), color = if (serviceReady) Color(0xFF20372A) else Color(0xFF3A2D20)) {
+                                Text(
+                                    if (serviceReady) "LEITURA ON" else "LEITURA OFF",
+                                    Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    color = if (serviceReady) Color(0xFFB8E34D) else Color(0xFFFFC857),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }''',
+'''                            Surface(
+                                shape = RoundedCornerShape(999.dp),
+                                color = when {
+                                    recording -> Color(0xFF4A3A1F)
+                                    serviceReady -> Color(0xFF20372A)
+                                    else -> Color(0xFF3A2D20)
+                                }
+                            ) {
+                                Text(
+                                    when {
+                                        recording -> "SESSÃO ATIVA"
+                                        serviceReady -> "LEITURA ON"
+                                        else -> "LEITURA OFF"
+                                    },
+                                    Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    color = when {
+                                        recording -> Color(0xFFFFC857)
+                                        serviceReady -> Color(0xFFB8E34D)
+                                        else -> Color(0xFFFFC857)
+                                    },
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }''',
+"indicador de sessão no cabeçalho"
+)
+
+replace_once(
 '''                        if (!serviceReady) {
                             Spacer(Modifier.height(10.dp))
                             Button(onClick = { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) {
@@ -60,10 +97,10 @@ patch(
                                 Text("ENCERRAR CAPTURA E ATUALIZAR", fontWeight = FontWeight.Bold)
                             }
 
-                            if (!serviceReady) {
+                            if (!serviceConnected) {
                                 Spacer(Modifier.height(8.dp))
                                 Text(
-                                    "A sessão continua preservada, mas a leitura automática do Android desconectou. Você pode encerrar sem perder a captura ou reativar a leitura.",
+                                    "A sessão está preservada, mas o serviço de leitura do Android desconectou. Você ainda pode encerrar a captura sem perder o que já foi salvo.",
                                     color = Color(0xFFFFD6A0),
                                     fontSize = 11.sp
                                 )
@@ -81,10 +118,10 @@ patch(
                                 Text(if(servicePermission) "Reconectar leitura" else "Ativar leitura automática")
                             }
                         }''',
-"ENCERRAR CAPTURA E ATUALIZAR"
+"botão global de encerrar sessão"
 )
 
-patch(
+replace_once(
 '''                            Button(
                                 onClick=openOsm,
                                 enabled=serviceReady&&!processing.running,
@@ -125,32 +162,40 @@ patch(
                                 modifier=Modifier.fillMaxWidth().height(52.dp),
                                 colors=ButtonDefaults.buttonColors(
                                     containerColor=Color(0xFFFFC857),
-                                    contentColor=Color(0xFF122630),
-                                    disabledContainerColor=Color(0xFFFFC857),
-                                    disabledContentColor=Color(0xFF122630)
+                                    contentColor=Color(0xFF122630)
                                 )
                             ){
                                 Icon(Icons.Default.StopCircle,null)
                                 Spacer(Modifier.width(8.dp))
                                 Text("ENCERRAR CAPTURA E ATUALIZAR",fontWeight=FontWeight.Bold)
                             }''',
-"disabledContainerColor=Color(0xFFFFC857)"
+"botões da tela Hoje sempre utilizáveis"
 )
 
-patch(
+replace_once(
 '''                                onClick=openOsm,
                                 enabled=serviceReady&&!processing.running,''',
 '''                                onClick=openOsm,
                                 enabled=serviceReady,''',
-"enabled=serviceReady,"
+"abrir OSM não bloqueado pelo processamento"
 )
 
-patch(
+replace_once(
 '''                    DetailLine("Versão nativa","V23.2 · ${BuildConfig.VERSION_NAME}")''',
 '''                    DetailLine("Versão nativa","V24.0 · ${BuildConfig.VERSION_NAME}")''',
-'DetailLine("Versão nativa","V24.0'
+"versão V24.0"
 )
 
 MAIN.write_text(text, encoding="utf-8")
-print(f"Concluído. Alterações aplicadas: {changed}")
-print("V24: botão ENCERRAR sempre visível e clicável durante sessão; voltar ao OSM não depende do processamento; sessão não fica sem controle quando o serviço oscila.")
+
+checks = [
+    'Text("ENCERRAR CAPTURA E ATUALIZAR"',
+    'recording -> "SESSÃO ATIVA"',
+    'DetailLine("Versão nativa","V24.0',
+    'enabled=true'
+]
+for check in checks:
+    if check not in text:
+        raise SystemExit(f"ERRO DE VALIDAÇÃO: {check}")
+
+print("PATCH V24 APLICADO COM SUCESSO")
