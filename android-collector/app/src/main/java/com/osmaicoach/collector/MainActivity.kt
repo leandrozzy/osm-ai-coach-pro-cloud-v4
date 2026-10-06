@@ -835,7 +835,7 @@ class MainActivity : ComponentActivity() {
                                 DetailLine("APIs","Configuradas no backend/Vercel")
                                 val ocrPrefs=this@MainActivity.getSharedPreferences("native_processor_v12",MODE_PRIVATE)
                                 DetailLine("Telas com texto OCR","${ocrPrefs.getInt("local_ocr_readable",0)}/${ocrPrefs.getInt("local_ocr_total",0)}")
-                    DetailLine("Versão nativa","V15 · ${BuildConfig.VERSION_NAME}")
+                    DetailLine("Versão nativa","V16 · ${BuildConfig.VERSION_NAME}")
                     val rt=getSharedPreferences("collector_runtime",Context.MODE_PRIVATE)
                     DetailLine("Serviço criado",formatDiagnosticTime(rt.getLong("service_created_at",0L)))
                     DetailLine("Serviço conectado em",formatDiagnosticTime(rt.getLong("service_connected_at",0L)))
