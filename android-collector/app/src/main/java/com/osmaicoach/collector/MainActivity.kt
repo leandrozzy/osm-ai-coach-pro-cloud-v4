@@ -99,11 +99,29 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        val serviceReady = isAccessibilityServiceEnabledRobust()
+        val servicePermission = isAccessibilityServiceEnabledInSettings()
+        val serviceConnected = isAccessibilityServiceActuallyConnected()
+        val serviceReady = servicePermission && serviceConnected
         val recording = CollectorState.isRecording()
         val latest = repo.latestSession()
         val sessions = repo.listSessions()
         val slots = slotStore.loadAll()
+
+        LaunchedEffect(servicePermission, serviceConnected) {
+            if (servicePermission && !serviceConnected) {
+                runCatching {
+                    val component = ComponentName(
+                        this@MainActivity,
+                        OsmCaptureAccessibilityService::class.java
+                    )
+                    packageManager.setComponentEnabledSetting(
+                        component,
+                        android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
+                        android.content.pm.PackageManager.DONT_KILL_APP
+                    )
+                }
+            }
+        }
 
         Scaffold(
             containerColor = Color(0xFFF5F7F2),
@@ -135,6 +153,7 @@ class MainActivity : ComponentActivity() {
                             when {
                                 recording -> "Lendo o OSM agora • você pode navegar normalmente"
                                 serviceReady -> "Leitura automática pronta"
+                                servicePermission -> "Leitura autorizada • reconectando serviço"
                                 else -> "Ative a leitura automática uma única vez"
                             },
                             color = Color.White,
@@ -144,7 +163,7 @@ class MainActivity : ComponentActivity() {
                         if (!serviceReady) {
                             Spacer(Modifier.height(10.dp))
                             Button(onClick = { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) {
-                                Text("Ativar leitura automática")
+                                Text(if(servicePermission) "Reconectar leitura" else "Ativar leitura automática")
                             }
                         }
                     }
@@ -780,13 +799,26 @@ class MainActivity : ComponentActivity() {
             }
             item {
                 SettingsCard("Leitura automática",Icons.Default.Visibility) {
-                    SettingStatus("Serviço de acessibilidade",if(serviceReady)"Ativo" else "Desativado",serviceReady)
-                    SettingStatus("Captura do OSM",if(CollectorState.isRecording())"Gravando" else "Pronta",true)
+                    SettingStatus("Permissão no Android",if(isAccessibilityServiceEnabledInSettings())"Ativa" else "Desativada",isAccessibilityServiceEnabledInSettings())
+                    SettingStatus("Serviço conectado",if(serviceReady)"Conectado" else "Desconectado",serviceReady)
+                    SettingStatus("Captura do OSM",when {
+                        CollectorState.isRecording() -> "Gravando"
+                        serviceReady -> "Pronta"
+                        else -> "Aguardando serviço"
+                    },serviceReady)
                     if(!serviceReady) {
                         Spacer(Modifier.height(10.dp))
                         Button(onClick={startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))},modifier=Modifier.fillMaxWidth()) {
-                            Text("Abrir acessibilidade")
+                            Text(if(isAccessibilityServiceEnabledInSettings()) "Reconectar serviço" else "Abrir acessibilidade")
                         }
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            if(isAccessibilityServiceEnabledInSettings())
+                                "A autorização está marcada no Android, mas o serviço não está executando. Desative e ative novamente uma vez nesta tela."
+                            else
+                                "Ative OSM AI Coach — leitura automática.",
+                            fontSize=11.sp,color=Color(0xFF9C4D36)
+                        )
                     }
                 }
             }
@@ -803,8 +835,10 @@ class MainActivity : ComponentActivity() {
                                 DetailLine("APIs","Configuradas no backend/Vercel")
                                 val ocrPrefs=this@MainActivity.getSharedPreferences("native_processor_v12",MODE_PRIVATE)
                                 DetailLine("Telas com texto OCR","${ocrPrefs.getInt("local_ocr_readable",0)}/${ocrPrefs.getInt("local_ocr_total",0)}")
-                    DetailLine("Versão nativa","V14 · ${BuildConfig.VERSION_NAME}")
+                    DetailLine("Versão nativa","V15 · ${BuildConfig.VERSION_NAME}")
                     val rt=getSharedPreferences("collector_runtime",Context.MODE_PRIVATE)
+                    DetailLine("Serviço criado",formatDiagnosticTime(rt.getLong("service_created_at",0L)))
+                    DetailLine("Serviço conectado em",formatDiagnosticTime(rt.getLong("service_connected_at",0L)))
                     DetailLine("Janela detectada",rt.getString("last_foreground_package","NI") ?: "NI")
                     DetailLine("Último heartbeat",formatDiagnosticTime(rt.getLong("last_heartbeat_at",0L)))
                     DetailLine("Último evento",formatDiagnosticTime(rt.getLong("last_accessibility_event_at",0L)))
@@ -891,13 +925,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun isAccessibilityServiceEnabledRobust():Boolean {
-        if (CollectorState.isServiceReady()) return true
-
+    private fun isAccessibilityServiceEnabledInSettings():Boolean {
+        val expected = ComponentName(this, OsmCaptureAccessibilityService::class.java)
         val manager = getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
         val byManager = runCatching {
             manager.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
-                .any { info -> info.resolveInfo?.serviceInfo?.packageName == packageName }
+                .any { info ->
+                    val si = info.resolveInfo?.serviceInfo
+                    si != null && si.packageName == expected.packageName && si.name == expected.className
+                }
         }.getOrDefault(false)
         if (byManager) return true
 
@@ -905,12 +941,17 @@ class MainActivity : ComponentActivity() {
             contentResolver,
             Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
         ).orEmpty()
-        if (setting.split(':').any { it.contains(packageName, ignoreCase=true) }) return true
+        return setting.split(':').any {
+            runCatching { ComponentName.unflattenFromString(it) == expected }.getOrDefault(false)
+        }
+    }
 
-        if (repo.listSessions(1).isNotEmpty()) return true
-
-        return getSharedPreferences("collector_runtime",Context.MODE_PRIVATE)
-            .getBoolean("accessibility_connected",false)
+    private fun isAccessibilityServiceActuallyConnected():Boolean {
+        if (CollectorState.isServiceReady()) return true
+        val rt = getSharedPreferences("collector_runtime",Context.MODE_PRIVATE)
+        val heartbeat = rt.getLong("last_heartbeat_at",0L)
+        val connected = rt.getBoolean("accessibility_connected",false)
+        return connected && heartbeat > 0L && (System.currentTimeMillis() - heartbeat) < 4500L
     }
 
     private fun completion(s:NativeSlotData):Int {

@@ -32,12 +32,24 @@ class OsmCaptureAccessibilityService : AccessibilityService() {
         }
     }
 
-    override fun onServiceConnected() {
+    override fun onCreate() {
+        super.onCreate()
         repository = SessionRepository(applicationContext)
+        getSharedPreferences("collector_runtime", MODE_PRIVATE).edit()
+            .putLong("service_created_at", System.currentTimeMillis())
+            .putBoolean("service_instance_alive", true)
+            .apply()
+    }
+
+    override fun onServiceConnected() {
+        if (!::repository.isInitialized) repository = SessionRepository(applicationContext)
+        val now = System.currentTimeMillis()
         getSharedPreferences("collector_runtime", MODE_PRIVATE)
             .edit()
             .putBoolean("accessibility_connected", true)
-            .putLong("service_connected_at", System.currentTimeMillis())
+            .putBoolean("service_instance_alive", true)
+            .putLong("service_connected_at", now)
+            .putLong("last_heartbeat_at", now)
             .apply()
         CollectorState.lastError = null
         CollectorState.setServiceReady(true)
@@ -58,13 +70,18 @@ class OsmCaptureAccessibilityService : AccessibilityService() {
     }
 
     private fun pollForegroundAndCapture() {
+        val now = System.currentTimeMillis()
+        val runtime = getSharedPreferences("collector_runtime", MODE_PRIVATE)
+        runtime.edit()
+            .putLong("last_heartbeat_at", now)
+            .putBoolean("accessibility_connected", true)
+            .putBoolean("service_instance_alive", true)
+            .apply()
+
         val pkg = detectForegroundPackage()
         if (!pkg.isNullOrBlank()) {
             CollectorState.currentForegroundPackage = pkg
-            getSharedPreferences("collector_runtime", MODE_PRIVATE).edit()
-                .putString("last_foreground_package", pkg)
-                .putLong("last_heartbeat_at", System.currentTimeMillis())
-                .apply()
+            runtime.edit().putString("last_foreground_package", pkg).apply()
             handleForeground(pkg)
         }
     }
@@ -240,6 +257,11 @@ class OsmCaptureAccessibilityService : AccessibilityService() {
         if (::repository.isInitialized) repository.finish()
         osmWasForeground = false
         pendingCapture = false
+        getSharedPreferences("collector_runtime", MODE_PRIVATE).edit()
+            .putBoolean("accessibility_connected", false)
+            .putBoolean("service_instance_alive", false)
+            .putLong("service_destroyed_at", System.currentTimeMillis())
+            .apply()
         CollectorState.setRecording(false)
         CollectorState.setServiceReady(false)
         super.onDestroy()
