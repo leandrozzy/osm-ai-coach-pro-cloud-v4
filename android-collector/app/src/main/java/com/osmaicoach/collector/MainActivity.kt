@@ -303,24 +303,50 @@ class MainActivity : ComponentActivity() {
         LazyColumn(contentPadding=PaddingValues(20.dp), verticalArrangement=Arrangement.spacedBy(12.dp)) {
             item {
                 Text("Jornada da sessão", fontSize=28.sp, fontWeight=FontWeight.Bold)
-                Text("Tudo que você navegou fica registrado.", color=Color.Gray)
+                Text("Veja o que foi capturado, reconhecido e aplicado em cada slot.", color=Color.Gray)
             }
             sessions.forEach { session ->
                 item {
                     Card(colors=CardDefaults.cardColors(containerColor=Color.White), shape=RoundedCornerShape(18.dp)) {
                         Column(Modifier.padding(16.dp)) {
                             Text(formatTime(session.startedAt), fontWeight=FontWeight.Bold)
-                            Text("${session.frames.size} telas • ${session.state}", fontSize=13.sp, color=Color.Gray)
-                            Spacer(Modifier.height(10.dp))
-                            session.frames.takeLast(20).forEach { frame ->
-                                Row(Modifier.fillMaxWidth().padding(vertical=5.dp), verticalAlignment=Alignment.CenterVertically) {
-                                    Surface(shape=RoundedCornerShape(8.dp), color=typeColor(frame.screenType)) {
-                                        Text(labelType(frame.screenType), Modifier.padding(horizontal=8.dp, vertical=4.dp), fontSize=11.sp)
+                            val ocrOk=session.frames.count{it.ocrText.isNotBlank()}
+                            val understood=session.frames.count{it.screenType!="other"}
+                            Text("${session.frames.size} telas • OCR $ocrOk/${session.frames.size} • reconhecidas $understood",
+                                fontSize=13.sp,color=Color.Gray)
+                            Spacer(Modifier.height(12.dp))
+
+                            (1..4).forEach { slotId ->
+                                val rows=session.frames.filter{it.slotId==slotId}
+                                if(rows.isNotEmpty()){
+                                    Text("S$slotId",fontWeight=FontWeight.Bold,color=Color(0xFF6E9920))
+                                    Spacer(Modifier.height(4.dp))
+                                    rows.forEach { frame ->
+                                        Row(
+                                            Modifier.fillMaxWidth().padding(vertical=6.dp),
+                                            verticalAlignment=Alignment.CenterVertically
+                                        ) {
+                                            Surface(shape=RoundedCornerShape(8.dp), color=typeColor(frame.screenType)) {
+                                                Text(labelType(frame.screenType),Modifier.padding(horizontal=8.dp,vertical=4.dp),fontSize=10.sp)
+                                            }
+                                            Spacer(Modifier.width(9.dp))
+                                            Column(Modifier.weight(1f)) {
+                                                Text(frame.screenTitle.ifBlank{"Tela do OSM"},maxLines=1,fontSize=13.sp)
+                                                val ocr=if(frame.ocrText.isNotBlank())"OCR ✓" else "OCR —"
+                                                Text("$ocr • ${frame.analysisState} • ${frame.extractedFields} dado(s)",
+                                                    fontSize=10.sp,color=Color.Gray)
+                                            }
+                                            Text(SimpleDateFormat("HH:mm:ss",Locale.getDefault()).format(Date(frame.capturedAt)),
+                                                fontSize=10.sp,color=Color.Gray)
+                                        }
                                     }
-                                    Spacer(Modifier.width(10.dp))
-                                    Text(frame.screenTitle, Modifier.weight(1f), maxLines=1)
-                                    Text(SimpleDateFormat("HH:mm:ss",Locale.getDefault()).format(Date(frame.capturedAt)), fontSize=11.sp, color=Color.Gray)
+                                    Spacer(Modifier.height(10.dp))
                                 }
+                            }
+
+                            val unassigned=session.frames.filter{it.slotId==0}
+                            if(unassigned.isNotEmpty()){
+                                Text("Não atribuídas a slot: ${unassigned.size}",fontSize=12.sp,color=Color(0xFF9C4D36))
                             }
                         }
                     }
@@ -526,11 +552,11 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun SlotSquad(slot:NativeSlotData) {
-        LazyColumn(contentPadding=PaddingValues(18.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
+        LazyColumn(contentPadding=PaddingValues(18.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
             item {
                 Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(18.dp)) {
                     Column(Modifier.padding(18.dp)) {
-                        Text("Elenco · ${slot.squadCount} jogadores",fontWeight=FontWeight.Bold,fontSize=18.sp)
+                        Text("Elenco · ${slot.players.size.coerceAtLeast(slot.squadCount)} jogadores",fontWeight=FontWeight.Bold,fontSize=18.sp)
                         Spacer(Modifier.height(14.dp))
                         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                             MiniMetric("ATA",slot.attackers.toString(),Modifier.weight(1f))
@@ -543,11 +569,32 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
-            item {
-                Card(colors=CardDefaults.cardColors(containerColor=Color(0xFFEFF5E5)),shape=RoundedCornerShape(18.dp)) {
-                    Column(Modifier.padding(18.dp)) {
-                        Text("Jogadores",fontWeight=FontWeight.Bold)
-                        Text("A lista individual completa será preenchida pela leitura: nome, posição, idade, força, valor, treino e venda.",color=Color.Gray)
+
+            if(slot.players.isEmpty()) {
+                item {
+                    Card(colors=CardDefaults.cardColors(containerColor=Color(0xFFFFF4D9)),shape=RoundedCornerShape(18.dp)) {
+                        Column(Modifier.padding(18.dp)) {
+                            Text("Nenhum jogador individual confirmado",fontWeight=FontWeight.Bold)
+                            Text("Abra a tela completa do elenco no OSM e reprocese a sessão.",fontSize=12.sp,color=Color.Gray)
+                        }
+                    }
+                }
+            } else {
+                items(slot.players) { p ->
+                    Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(16.dp)) {
+                        Column(Modifier.padding(14.dp)) {
+                            Row(verticalAlignment=Alignment.CenterVertically) {
+                                Surface(shape=RoundedCornerShape(8.dp),color=Color(0xFFEFF5E5)) {
+                                    Text(p.position,Modifier.padding(horizontal=8.dp,vertical=5.dp),fontSize=11.sp,fontWeight=FontWeight.Bold)
+                                }
+                                Spacer(Modifier.width(10.dp))
+                                Text(p.name,Modifier.weight(1f),fontWeight=FontWeight.Bold)
+                                Text(p.strength,fontWeight=FontWeight.Bold,color=Color(0xFF486A19))
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            Text("${p.age} anos • ${p.value} • treino: ${p.training} • venda: ${p.selling}",
+                                fontSize=11.sp,color=Color.Gray)
+                        }
                     }
                 }
             }
@@ -556,16 +603,41 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun SlotCalendar(slot:NativeSlotData) {
-        LazyColumn(contentPadding=PaddingValues(18.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
+        LazyColumn(contentPadding=PaddingValues(18.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
             item { DetailSection("Calendário", listOf(
-                "Jogos lidos" to slot.calendarCount.toString(),"Próximo rival" to slot.nextRival,
-                "Data" to slot.matchDate,"Horário" to slot.matchTime,"Local" to slot.venue
+                "Jogos lidos" to slot.calendar.size.coerceAtLeast(slot.calendarCount).toString(),
+                "Próximo rival" to slot.nextRival,
+                "Data" to slot.matchDate,
+                "Horário" to slot.matchTime,
+                "Local" to slot.venue
             ))}
-            item {
-                Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(18.dp)) {
-                    Column(Modifier.padding(18.dp)) {
-                        Text("Rodadas, Copa e resultados",fontWeight=FontWeight.Bold)
-                        Text("Casa/fora, rodada, adversário, placar e competição aparecerão aqui após o processamento da sessão.",color=Color.Gray)
+
+            if(slot.calendar.isEmpty()){
+                item {
+                    Card(colors=CardDefaults.cardColors(containerColor=Color(0xFFFFF4D9)),shape=RoundedCornerShape(18.dp)) {
+                        Column(Modifier.padding(18.dp)) {
+                            Text("Calendário ainda sem partidas confirmadas",fontWeight=FontWeight.Bold)
+                            Text("Navegue pelo calendário completo no OSM e use Reprocessar última sessão.",fontSize=12.sp,color=Color.Gray)
+                        }
+                    }
+                }
+            } else {
+                items(slot.calendar) { game ->
+                    Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(16.dp)) {
+                        Column(Modifier.padding(14.dp)) {
+                            Row(verticalAlignment=Alignment.CenterVertically) {
+                                Surface(shape=RoundedCornerShape(8.dp),color=Color(0xFFEFF5E5)) {
+                                    Text(game.round,Modifier.padding(horizontal=8.dp,vertical=5.dp),fontSize=11.sp,fontWeight=FontWeight.Bold)
+                                }
+                                Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(game.opponent,fontWeight=FontWeight.Bold)
+                                    Text("${game.date} • ${game.time} • ${game.venue}${if(game.cup)" • Copa" else ""}",
+                                        fontSize=11.sp,color=Color.Gray)
+                                }
+                                Text(game.score,fontWeight=FontWeight.Bold)
+                            }
+                        }
                     }
                 }
             }

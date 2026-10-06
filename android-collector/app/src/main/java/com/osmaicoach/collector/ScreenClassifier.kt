@@ -7,24 +7,30 @@ object ScreenClassifier {
         val t = normalize(text)
         if (t.isBlank()) return Result("other", "Tela do OSM")
 
-        val rules = listOf(
-            "calendar" to listOf("calendario","calendar","rodada","jornada","proximo jogo","próximo jogo","fixtures"),
-            "squad" to listOf("elenco","plantel","squad","jogadores","players","atacante","meio campo","defesa","goleiro"),
-            "match" to listOf("analise","análise","analysis","arbitro","árbitro","formacao","formação","marcacao","marcação","impedimento","offside"),
-            "market" to listOf("transferencia","transferência","transfer list","mercado","comprar jogador","vender jogador"),
-            "training" to listOf("treino","training","treinamento","campo de treinamento","training camp"),
-            "club" to listOf("clube","club","estadio","estádio","stadium","financas","finanças","finance"),
-            "ranking" to listOf("classificacao","classificação","standings","tabela","ranking"),
-            "result" to listOf("resultado","result","estatisticas","estatísticas","statistics","posse de bola"),
-            "tactics" to listOf("tatica","tática","tactics","pressao","pressão","ritmo","estilo de jogo")
+        val rules = linkedMapOf(
+            "calendar" to listOf("calendario","rodada","jornada","proximo jogo","fixtures","copa"),
+            "squad" to listOf("elenco","plantel","jogadores","atacante","meio campo","goleiro","valor do jogador","idade"),
+            "match" to listOf("analise","arbitro","formacao","marcacao","impedimento","adversario","forca geral"),
+            "tactics" to listOf("tatica","pressao","ritmo","estilo de jogo","desarme","linha de ataque"),
+            "market" to listOf("transferencia","lista de transferencias","mercado","comprar jogador","vender jogador","a venda"),
+            "training" to listOf("treino","treinamento","campo de treinamento","training camp"),
+            "result" to listOf("resultado","estatisticas","posse de bola","chutes","cartoes"),
+            "ranking" to listOf("classificacao","tabela","ranking","pontos"),
+            "club" to listOf("clube","estadio","financas","objetivo","valor do elenco")
         )
 
-        val best = rules
-            .map { (type, words) -> type to words.count { t.contains(normalize(it)) } }
-            .maxByOrNull { it.second }
+        var bestType = "other"
+        var bestScore = 0
+        for ((type, words) in rules) {
+            var score = 0
+            for (w in words) if (t.contains(normalize(w))) score++
+            if (score > bestScore) {
+                bestScore = score
+                bestType = type
+            }
+        }
 
-        val type = if (best != null && best.second > 0) best.first else "other"
-        val title = when(type) {
+        val title = when(bestType) {
             "calendar" -> "Calendário"
             "squad" -> "Elenco"
             "match" -> "Pré-jogo / Análise"
@@ -36,7 +42,7 @@ object ScreenClassifier {
             "tactics" -> "Táticas"
             else -> firstMeaningful(text)
         }
-        return Result(type, title)
+        return Result(bestType, title)
     }
 
     private fun normalize(v: String): String =
@@ -47,5 +53,5 @@ object ScreenClassifier {
             .trim()
 
     private fun firstMeaningful(text: String): String =
-        text.split("|").map { it.trim() }.firstOrNull { it.length in 3..50 } ?: "Tela do OSM"
+        text.lines().map { it.trim() }.firstOrNull { it.length in 3..50 } ?: "Tela do OSM"
 }

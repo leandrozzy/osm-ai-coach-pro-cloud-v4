@@ -4,6 +4,27 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 
+data class NativePlayerData(
+    var name: String = "NI",
+    var position: String = "NI",
+    var age: String = "NI",
+    var strength: String = "NI",
+    var value: String = "NI",
+    var training: String = "NI",
+    var selling: String = "NI"
+)
+
+data class NativeCalendarGame(
+    var round: String = "NI",
+    var opponent: String = "NI",
+    var date: String = "NI",
+    var time: String = "NI",
+    var venue: String = "NI",
+    var score: String = "NI",
+    var competition: String = "NI",
+    var cup: Boolean = false
+)
+
 data class NativeSlotData(
     val id: Int,
     var team: String = "NI",
@@ -44,11 +65,13 @@ data class NativeSlotData(
     var calendarCount: Int = 0,
     var marketSeen: Boolean = false,
     var trainingSeen: Boolean = false,
+    var players: MutableList<NativePlayerData> = mutableListOf(),
+    var calendar: MutableList<NativeCalendarGame> = mutableListOf(),
     var lastUpdated: Long = 0L
 )
 
 class NativeSlotStore(context: Context) {
-    private val prefs = context.getSharedPreferences("native_slots_v2", Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences("native_slots_v3", Context.MODE_PRIVATE)
 
     fun loadAll(): MutableList<NativeSlotData> {
         val raw = prefs.getString("slots", null) ?: return MutableList(4) { NativeSlotData(it + 1) }
@@ -56,6 +79,37 @@ class NativeSlotStore(context: Context) {
             val arr = JSONArray(raw)
             MutableList(4) { index ->
                 val o = if (index < arr.length()) arr.getJSONObject(index) else JSONObject()
+                val players = mutableListOf<NativePlayerData>()
+                val pArr = o.optJSONArray("players") ?: JSONArray()
+                for (i in 0 until pArr.length()) {
+                    val p = pArr.optJSONObject(i) ?: continue
+                    players += NativePlayerData(
+                        name=p.optString("name","NI"),
+                        position=p.optString("position","NI"),
+                        age=p.optString("age","NI"),
+                        strength=p.optString("strength","NI"),
+                        value=p.optString("value","NI"),
+                        training=p.optString("training","NI"),
+                        selling=p.optString("selling","NI")
+                    )
+                }
+
+                val calendar = mutableListOf<NativeCalendarGame>()
+                val cArr = o.optJSONArray("calendar") ?: JSONArray()
+                for (i in 0 until cArr.length()) {
+                    val g = cArr.optJSONObject(i) ?: continue
+                    calendar += NativeCalendarGame(
+                        round=g.optString("round","NI"),
+                        opponent=g.optString("opponent","NI"),
+                        date=g.optString("date","NI"),
+                        time=g.optString("time","NI"),
+                        venue=g.optString("venue","NI"),
+                        score=g.optString("score","NI"),
+                        competition=g.optString("competition","NI"),
+                        cup=g.optBoolean("cup",false)
+                    )
+                }
+
                 NativeSlotData(
                     id=index+1,
                     team=o.optString("team","NI"),
@@ -86,16 +140,18 @@ class NativeSlotStore(context: Context) {
                     trainingCamp=o.optString("trainingCamp","NI"),
                     stadium=o.optString("stadium","NI"),
                     bonus=o.optString("bonus","NI"),
-                    squadCount=o.optInt("squadCount",0),
+                    squadCount=o.optInt("squadCount",players.size),
                     attackers=o.optInt("attackers",0),
                     midfielders=o.optInt("midfielders",0),
                     defenders=o.optInt("defenders",0),
                     goalkeepers=o.optInt("goalkeepers",0),
                     trainingCount=o.optInt("trainingCount",0),
                     sellingCount=o.optInt("sellingCount",0),
-                    calendarCount=o.optInt("calendarCount",0),
+                    calendarCount=o.optInt("calendarCount",calendar.size),
                     marketSeen=o.optBoolean("marketSeen",false),
                     trainingSeen=o.optBoolean("trainingSeen",false),
+                    players=players,
+                    calendar=calendar,
                     lastUpdated=o.optLong("lastUpdated",0L)
                 )
             }
@@ -117,6 +173,25 @@ class NativeSlotStore(context: Context) {
                 put("squadCount",s.squadCount); put("attackers",s.attackers); put("midfielders",s.midfielders); put("defenders",s.defenders); put("goalkeepers",s.goalkeepers)
                 put("trainingCount",s.trainingCount); put("sellingCount",s.sellingCount); put("calendarCount",s.calendarCount)
                 put("marketSeen",s.marketSeen); put("trainingSeen",s.trainingSeen); put("lastUpdated",s.lastUpdated)
+
+                put("players", JSONArray().apply {
+                    s.players.forEach { p ->
+                        put(JSONObject().apply {
+                            put("name",p.name); put("position",p.position); put("age",p.age)
+                            put("strength",p.strength); put("value",p.value)
+                            put("training",p.training); put("selling",p.selling)
+                        })
+                    }
+                })
+                put("calendar", JSONArray().apply {
+                    s.calendar.forEach { g ->
+                        put(JSONObject().apply {
+                            put("round",g.round); put("opponent",g.opponent); put("date",g.date)
+                            put("time",g.time); put("venue",g.venue); put("score",g.score)
+                            put("competition",g.competition); put("cup",g.cup)
+                        })
+                    }
+                })
             })
         }
         prefs.edit().putString("slots", arr.toString()).apply()

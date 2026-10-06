@@ -69,8 +69,7 @@ class SessionRepository(private val context: Context) {
         return sessionJson(id)
     }
 
-    fun latestSession(): CaptureSession? =
-        parseSession(latestSessionJson())
+    fun latestSession(): CaptureSession? = parseSession(latestSessionJson())
 
     fun listSessions(limit: Int = 20): List<CaptureSession> =
         root.listFiles()
@@ -80,7 +79,6 @@ class SessionRepository(private val context: Context) {
             ?.mapNotNull { parseSession(File(it,"session.json").readText()) }
             ?: emptyList()
 
-
     fun frameFile(session: CaptureSession, index: Int): File? {
         val frame = session.frames.firstOrNull { it.index == index } ?: return null
         val file = File(File(root, session.id), frame.fileName)
@@ -88,7 +86,7 @@ class SessionRepository(private val context: Context) {
     }
 
     @Synchronized
-    fun updateLatestFrameClassification(classifications: Map<Int, ScreenClassifier.Result>) {
+    fun updateLatestFrameAnalysis(updates: Map<Int, FrameAnalysisUpdate>) {
         val id=context.getSharedPreferences("collector",Context.MODE_PRIVATE)
             .getString("latest_session_id",null) ?: return
         val file=File(File(root,id),"session.json")
@@ -99,9 +97,34 @@ class SessionRepository(private val context: Context) {
             for(i in 0 until frames.length()){
                 val frame=frames.getJSONObject(i)
                 val index=frame.optInt("index",i)
-                val c=classifications[index] ?: continue
-                frame.put("screenType",c.type)
-                frame.put("screenTitle",c.title.take(80))
+                val u=updates[index] ?: continue
+                frame.put("slotId",u.slotId)
+                frame.put("screenType",u.screenType)
+                frame.put("screenTitle",u.screenTitle.take(80))
+                frame.put("ocrText",u.ocrText.take(12000))
+                frame.put("analysisState",u.analysisState)
+                frame.put("extractedFields",u.extractedFields)
+            }
+            file.writeText(json.toString(2))
+        }
+    }
+
+    @Synchronized
+    fun markLatestFrames(indices: List<Int>, slotId:Int, state:String, extractedFields:Int) {
+        val id=context.getSharedPreferences("collector",Context.MODE_PRIVATE)
+            .getString("latest_session_id",null) ?: return
+        val file=File(File(root,id),"session.json")
+        if(!file.exists()) return
+        runCatching {
+            val json=JSONObject(file.readText())
+            val frames=json.optJSONArray("frames") ?: return@runCatching
+            val wanted=indices.toSet()
+            for(i in 0 until frames.length()){
+                val frame=frames.getJSONObject(i)
+                if(frame.optInt("index",i) !in wanted) continue
+                frame.put("slotId",slotId)
+                frame.put("analysisState",state)
+                frame.put("extractedFields",maxOf(frame.optInt("extractedFields",0),extractedFields))
             }
             file.writeText(json.toString(2))
         }
@@ -119,6 +142,7 @@ class SessionRepository(private val context: Context) {
     }
 
     private fun sessionDir(session:CaptureSession)=File(root,session.id)
+
     private fun sessionJson(id:String):String{
         val f=File(File(root,id),"session.json")
         return if(f.exists()) f.readText() else "null"
@@ -132,10 +156,12 @@ class SessionRepository(private val context: Context) {
                 put("sourcePackage",f.sourcePackage);put("width",f.width);put("height",f.height)
                 put("fingerprint",f.fingerprint.toString());put("textHint",f.textHint)
                 put("screenType",f.screenType);put("screenTitle",f.screenTitle)
+                put("slotId",f.slotId);put("ocrText",f.ocrText)
+                put("analysisState",f.analysisState);put("extractedFields",f.extractedFields)
             })
         }
         val json=JSONObject().apply{
-            put("version",3);put("kind","osm-native-session");put("id",session.id)
+            put("version",4);put("kind","osm-native-session");put("id",session.id)
             put("startedAt",session.startedAt);put("endedAt",session.endedAt?:JSONObject.NULL)
             put("state",session.state);put("frames",frames)
         }
@@ -164,7 +190,11 @@ class SessionRepository(private val context: Context) {
                 fingerprint=f.optString("fingerprint","0").toLongOrNull()?:0L,
                 textHint=f.optString("textHint"),
                 screenType=f.optString("screenType","other"),
-                screenTitle=f.optString("screenTitle","Tela do OSM")
+                screenTitle=f.optString("screenTitle","Tela do OSM"),
+                slotId=f.optInt("slotId",0),
+                ocrText=f.optString("ocrText",""),
+                analysisState=f.optString("analysisState","captured"),
+                extractedFields=f.optInt("extractedFields",0)
             )
         }
         s
