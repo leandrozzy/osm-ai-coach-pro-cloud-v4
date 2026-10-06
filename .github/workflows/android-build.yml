@@ -7,6 +7,8 @@ on:
       - android-collector-v1
     paths:
       - 'android-collector/**'
+      - 'api/analyze.js'
+      - 'lib/providers.js'
       - 'apply_native_current.py'
       - '.github/workflows/android-build.yml'
 
@@ -21,15 +23,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Apply current Android fixes
+      - name: Apply current fixes
         run: python apply_native_current.py
 
-      - name: Save current implementation
+      - name: Save generated implementation
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add android-collector
-          git diff --cached --quiet || git commit -m "Apply current Android fixes"
+          git add android-collector api/analyze.js lib/providers.js
+          git diff --cached --quiet || git commit -m "Apply native OCR backend integration"
           git push
 
       - name: Java 17
