@@ -126,6 +126,7 @@ class OsmCaptureAccessibilityService : AccessibilityService() {
     }
 
     private fun shouldKeepCapturing(): Boolean {
+        if (isExplicitSessionArmed()) return true
         val pkg = detectForegroundPackage() ?: CollectorState.currentForegroundPackage
         return pkg == OSM_PACKAGE
     }

@@ -68,6 +68,29 @@ class NativeSessionProcessor(
         val frameToSlot = tracked.frameToSlot.toMutableMap()
         total = session.frames.size + segments.count { it.isNotEmpty() } * 3
 
+        if (segments.all { it.isEmpty() }) {
+            prefs.edit()
+                .putString("slot_tracker_summary", tracked.summary)
+                .putInt("slot_hub_frames", tracked.hubFrames.size)
+                .putInt("slot_unassigned_frames", session.frames.size)
+                .apply()
+
+            val message = "Nenhuma visita pôde ser ligada a S1-S4. Reprocesse com a V23 ou faça uma nova sessão iniciada pelo botão Abrir OSM."
+            onProgress(
+                Progress(
+                    false,
+                    total,
+                    total,
+                    "Sessão preservada — rastreamento pendente",
+                    0,
+                    1,
+                    "slot-map",
+                    message
+                )
+            )
+            return@withContext true
+        }
+
         prefs.edit()
             .putString("slot_tracker_summary", tracked.summary)
             .putInt("slot_hub_frames", tracked.hubFrames.size)

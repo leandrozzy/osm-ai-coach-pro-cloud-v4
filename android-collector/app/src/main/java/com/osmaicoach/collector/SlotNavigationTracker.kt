@@ -135,7 +135,7 @@ object SlotNavigationTracker {
         if (team.length >= 4 && n.contains(team)) score += 14
         if (comp.length >= 5 && n.contains(comp)) score += 8
         val tokens = tokenize(n)
-        score += minOf(sig.tokens.count { it in tokens }, 12) * 2
+        score += minOf(sig.tokens.count { it in tokens }, 12) * 2 * 2
         return score
     }
 
@@ -159,12 +159,38 @@ object SlotNavigationTracker {
     }
 
     private fun learnHubSignatures(text: String, signatures: MutableList<Signature>, slots: List<NativeSlotData>) {
-        val lines = text.replace("|", "\n").lines()
+        val normalized = normalize(text)
+
+        val anchors = Regex("\b\d{1,2}\s*/\s*\d{1,2}\b")
+            .findAll(normalized)
+            .take(4)
+            .toList()
+
+        if (anchors.size >= 3) {
+            anchors.forEachIndexed { slotIndex, anchor ->
+                if (slotIndex > 3) return@forEachIndexed
+
+                val left = if (slotIndex == 0) 0 else
+                    ((anchors[slotIndex - 1].range.last + anchor.range.first) / 2).coerceAtLeast(0)
+
+                val right = if (slotIndex == anchors.lastIndex) normalized.length else
+                    ((anchor.range.last + anchors[slotIndex + 1].range.first) / 2)
+                        .coerceAtMost(normalized.length)
+
+                if (right > left) {
+                    val chunk = normalized.substring(left, right)
+                    addUsefulTokens(signatures[slotIndex].tokens, chunk)
+                }
+            }
+        }
+
+        val lines = text.replace("|", "
+").lines()
             .map { it.trim() }
             .filter { it.length in 2..100 }
 
         val roundIndices = lines.indices.filter { idx ->
-            Regex("\\b\\d{1,2}\\s*/\\s*\\d{1,2}\\b").containsMatchIn(normalize(lines[idx]))
+            Regex("\b\d{1,2}\s*/\s*\d{1,2}\b").containsMatchIn(normalize(lines[idx]))
         }
 
         if (roundIndices.size >= 3) {
