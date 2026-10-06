@@ -803,7 +803,13 @@ class MainActivity : ComponentActivity() {
                                 DetailLine("APIs","Configuradas no backend/Vercel")
                                 val ocrPrefs=this@MainActivity.getSharedPreferences("native_processor_v12",MODE_PRIVATE)
                                 DetailLine("Telas com texto OCR","${ocrPrefs.getInt("local_ocr_readable",0)}/${ocrPrefs.getInt("local_ocr_total",0)}")
-                    DetailLine("Versão nativa","V13 · ${BuildConfig.VERSION_NAME}")
+                    DetailLine("Versão nativa","V14 · ${BuildConfig.VERSION_NAME}")
+                    val rt=getSharedPreferences("collector_runtime",Context.MODE_PRIVATE)
+                    DetailLine("Janela detectada",rt.getString("last_foreground_package","NI") ?: "NI")
+                    DetailLine("Último heartbeat",formatDiagnosticTime(rt.getLong("last_heartbeat_at",0L)))
+                    DetailLine("Último evento",formatDiagnosticTime(rt.getLong("last_accessibility_event_at",0L)))
+                    DetailLine("Último frame salvo",formatDiagnosticTime(rt.getLong("last_saved_frame_at",0L)))
+                    DetailLine("Sessão ativa",repo.current()?.let { "${it.frames.size} telas · ${formatTime(it.startedAt)}" } ?: "Não")
                     DetailLine("Última sessão",latest?.let{"${formatTime(it.startedAt)} · ${it.frames.size} telas"}?:"Nenhuma")
                     DetailLine("Resultado","${processing.success} aplicados · ${processing.failed} falhas")
                     Spacer(Modifier.height(10.dp))
@@ -926,6 +932,8 @@ class MainActivity : ComponentActivity() {
         )
         return rows.filter{it.second=="NI"||it.second.isBlank()}.joinToString(" • "){it.first}
     }
+
+    private fun formatDiagnosticTime(ms:Long):String = if(ms<=0L) "Nunca" else SimpleDateFormat("dd/MM HH:mm:ss",Locale.getDefault()).format(Date(ms))
 
     private fun formatTime(ms:Long)=SimpleDateFormat("dd/MM/yyyy HH:mm",Locale.getDefault()).format(Date(ms))
 
