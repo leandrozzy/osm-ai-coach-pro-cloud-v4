@@ -18,22 +18,29 @@ object SlotNavigationTracker {
         var competition: String = "NI"
     )
 
-    fun assign(session: CaptureSession, ocrByIndex: Map<Int, String>, slots: List<NativeSlotData>): Result {
-        val ordered = session.frames.sortedBy { it.capturedAt }
-        if (ordered.isEmpty()) return Result(List(4) { emptyList() }, emptyMap(), emptySet(), "sem telas")
+    fun assign(
+        session: CaptureSession,
+        ocrByIndex: Map<Int, String>,
+        slots: List<NativeSlotData>
+    ): Result {
+        val ordered = session.frames.sortedBy { frame -> frame.capturedAt }
+        if (ordered.isEmpty()) {
+            return Result(List(4) { emptyList() }, emptyMap(), emptySet(), "sem telas")
+        }
 
         val signatures = MutableList(4) { i ->
             Signature(i + 1).apply {
-                slots.getOrNull(i)?.let { s ->
-                    team = s.team
-                    competition = s.competition
-                    addUsefulTokens(tokens, s.team)
-                    addUsefulTokens(tokens, s.competition)
+                slots.getOrNull(i)?.let { slot ->
+                    team = slot.team
+                    competition = slot.competition
+                    addUsefulTokens(tokens, slot.team)
+                    addUsefulTokens(tokens, slot.competition)
                 }
             }
         }
 
         val hubFrames = linkedSetOf<Int>()
+
         ordered.forEach { frame ->
             val text = ocrByIndex[frame.index].orEmpty()
             if (isSlotsHub(text)) {
@@ -57,11 +64,14 @@ object SlotNavigationTracker {
 
         ordered.forEach { frame ->
             val text = ocrByIndex[frame.index].orEmpty()
+
             if (frame.index in hubFrames) {
                 flush()
                 return@forEach
             }
+
             if (isNoise(text)) return@forEach
+
             current.rows += frame.index
             if (text.isNotBlank()) current.texts += text
         }
@@ -69,205 +79,415 @@ object SlotNavigationTracker {
 
         val frameToSlot = linkedMapOf<Int, Int>()
         val slotRows = MutableList(4) { mutableListOf<Int>() }
-        val used = mutableSetOf<Int>()
         var unresolved = 0
 
         visits.forEach { visit ->
             val joined = visit.texts.joinToString("\n").take(100000)
+
             var bestSlot = 0
             var bestScore = 0
 
-            signatures.forEach { sig ->
-                val score = score(joined, sig)
-                if (score > bestScore) {
-                    bestScore = score
-                    bestSlot = sig.slotId
+            signatures.forEach { signature ->
+                val currentScore = score(joined, signature)
+                if (currentScore > bestScore) {
+                    bestScore = currentScore
+                    bestSlot = signature.slotId
                 }
             }
 
             if (bestScore < 3) {
-                val n = normalize(joined)
-                val direct = slots.mapIndexedNotNull { i, s ->
-                    val team = normalize(s.team)
-                    val comp = normalize(s.competition)
-                    val strong = when {
-                        team.length >= 3 && n.contains(team) -> 16
-                        comp.length >= 4 && n.contains(comp) -> 10
+                val normalized = normalize(joined)
+
+                val direct = slots.mapIndexedNotNull { index, slot ->
+                    val team = normalize(slot.team)
+                    val competition = normalize(slot.competition)
+
+                    val strongScore = when {
+                        team.length >= 3 && normalized.contains(team) -> 16
+                        competition.length >= 4 && normalized.contains(competition) -> 10
                         else -> 0
                     }
-                    if (strong > 0) (i + 1) to strong else null
-                }.maxByOrNull { it.second }
+
+                    if (strongScore > 0) (index + 1) to strongScore else null
+                }.maxByOrNull { pair -> pair.second }
+
                 if (direct != null) {
                     bestSlot = direct.first
                     bestScore = direct.second
                 }
             }
 
-            val ranked = signatures.map { it.slotId to score(joined,it) }.sortedByDescending { it.second }
+            val ranked = signatures
+                .map { signature -> signature.slotId to score(joined, signature) }
+                .sortedByDescending { pair -> pair.second }
+
             val secondScore = ranked.getOrNull(1)?.second ?: 0
-            val confident = bestSlot in 1..4 && bestScore >= 2 && (bestScore-secondScore >= 1 || bestScore >= 10)
+            val confident =
+                bestSlot in 1..4 &&
+                bestScore >= 2 &&
+                (bestScore - secondScore >= 1 || bestScore >= 10)
 
             if (confident) {
-                used += bestSlot
-                visit.rows.forEach { idx ->
-                    frameToSlot[idx] = bestSlot
-                    slotRows[bestSlot - 1] += idx
+                visit.rows.forEach { index ->
+                    frameToSlot[index] = bestSlot
+                    slotRows[bestSlot - 1] += index
                 }
+
                 addUsefulTokens(signatures[bestSlot - 1].tokens, joined)
             } else {
                 unresolved += visit.rows.size
             }
         }
 
-        hubFrames.forEach { frameToSlot[it] = 0 }
+        hubFrames.forEach { frameIndex ->
+            frameToSlot[frameIndex] = 0
+        }
 
-        val c = slotRows.map { it.size }
-        val summary = "central=${hubFrames.size} • visitas=${visits.size} • S1=${c[0]} S2=${c[1]} S3=${c[2]} S4=${c[3]} • não atribuídas=$unresolved"
-        return Result(slotRows.map { it.toList() }, frameToSlot, hubFrames, summary)
+        val counts = slotRows.map { rows -> rows.size }
+
+        val summary =
+            "central=${hubFrames.size} • visitas=${visits.size} • " +
+            "S1=${counts[0]} S2=${counts[1]} S3=${counts[2]} S4=${counts[3]} • " +
+            "não atribuídas=$unresolved"
+
+        return Result(
+            slotRows = slotRows.map { rows -> rows.toList() },
+            frameToSlot = frameToSlot,
+            hubFrames = hubFrames,
+            summary = summary
+        )
     }
 
-    private fun score(text: String, sig: Signature): Int {
-        val n = normalize(text)
-        if (n.isBlank()) return 0
-        var score = 0
-        val team = normalize(sig.team)
-        val comp = normalize(sig.competition)
-        if (team.length >= 4 && n.contains(team)) score += 14
-        if (comp.length >= 5 && n.contains(comp)) score += 8
-        val tokens = tokenize(n)
-        score += minOf(sig.tokens.count { it in tokens }, 12) * 2 * 2
-        return score
+    private fun score(text: String, signature: Signature): Int {
+        val normalized = normalize(text)
+        if (normalized.isBlank()) return 0
+
+        var result = 0
+
+        val team = normalize(signature.team)
+        val competition = normalize(signature.competition)
+
+        if (team.length >= 4 && normalized.contains(team)) result += 14
+        if (competition.length >= 5 && normalized.contains(competition)) result += 8
+
+        val tokens = tokenize(normalized)
+        result += minOf(signature.tokens.count { token -> token in tokens }, 12) * 2
+
+        return result
     }
 
     private fun isSlotsHub(text: String): Boolean {
-        val n = normalize(text)
-        if (n.isBlank()) return false
-        val slotMentions = Regex("\\bslot\\s*[1-4]\\b").findAll(n).count()
-        if (slotMentions >= 3) return true
-        if (n.contains("calendario") || n.contains("fixtures")) return false
+        val normalized = normalize(text)
+        if (normalized.isBlank()) return false
 
-        val rounds = Regex("\\b\\d{1,2}\\s*/\\s*\\d{1,2}\\b").findAll(n).count()
+        val slotMentions =
+            Regex("""\bslot\s*[1-4]\b""")
+                .findAll(normalized)
+                .count()
+
+        if (slotMentions >= 3) return true
+
+        if (
+            normalized.contains("calendario") ||
+            normalized.contains("fixtures")
+        ) {
+            return false
+        }
+
+        val rounds =
+            Regex("""\b\d{1,2}\s*/\s*\d{1,2}\b""")
+                .findAll(normalized)
+                .count()
+
         val leagueWords = listOf(
-            "liga","league","batalha","battle","divisao","division",
-            "rodada","jornada","manager","treinador"
-        ).count { n.contains(it) }
+            "liga",
+            "league",
+            "batalha",
+            "battle",
+            "divisao",
+            "division",
+            "rodada",
+            "jornada",
+            "manager",
+            "treinador"
+        ).count { word -> normalized.contains(word) }
 
         if (rounds in 3..8 && leagueWords >= 1) return true
-        if (rounds >= 3 && n.contains("leandrozzy")) return true
-        if (rounds >= 3 && listOf("slot","manager","treinador","liga","batalha").any { n.contains(it) }) return true
-        if (rounds >= 3 && listOf("slot","manager","treinador","liga","batalha").any { n.contains(it) }) return true
+        if (rounds >= 3 && normalized.contains("leandrozzy")) return true
+
+        if (
+            rounds >= 3 &&
+            listOf("slot", "manager", "treinador", "liga", "batalha")
+                .any { word -> normalized.contains(word) }
+        ) {
+            return true
+        }
+
         return false
     }
 
-    private fun learnHubSignatures(text: String, signatures: MutableList<Signature>, slots: List<NativeSlotData>) {
+    private fun learnHubSignatures(
+        text: String,
+        signatures: MutableList<Signature>,
+        slots: List<NativeSlotData>
+    ) {
         val normalized = normalize(text)
 
-        val anchors = Regex("\b\d{1,2}\s*/\s*\d{1,2}\b")
-            .findAll(normalized)
-            .take(4)
-            .toList()
+        val anchors =
+            Regex("""\b\d{1,2}\s*/\s*\d{1,2}\b""")
+                .findAll(normalized)
+                .take(4)
+                .toList()
 
         if (anchors.size >= 3) {
             anchors.forEachIndexed { slotIndex, anchor ->
                 if (slotIndex > 3) return@forEachIndexed
 
-                val left = if (slotIndex == 0) 0 else
-                    ((anchors[slotIndex - 1].range.last + anchor.range.first) / 2).coerceAtLeast(0)
+                val left =
+                    if (slotIndex == 0) {
+                        0
+                    } else {
+                        (
+                            (
+                                anchors[slotIndex - 1].range.last +
+                                anchor.range.first
+                            ) / 2
+                        ).coerceAtLeast(0)
+                    }
 
-                val right = if (slotIndex == anchors.lastIndex) normalized.length else
-                    ((anchor.range.last + anchors[slotIndex + 1].range.first) / 2)
-                        .coerceAtMost(normalized.length)
+                val right =
+                    if (slotIndex == anchors.lastIndex) {
+                        normalized.length
+                    } else {
+                        (
+                            (
+                                anchor.range.last +
+                                anchors[slotIndex + 1].range.first
+                            ) / 2
+                        ).coerceAtMost(normalized.length)
+                    }
 
                 if (right > left) {
                     val chunk = normalized.substring(left, right)
-                    addUsefulTokens(signatures[slotIndex].tokens, chunk)
+                    addUsefulTokens(
+                        signatures[slotIndex].tokens,
+                        chunk
+                    )
                 }
             }
         }
 
-        val lines = text.replace("|", "
-").lines()
-            .map { it.trim() }
-            .filter { it.length in 2..100 }
+        val lines =
+            text
+                .replace("|", "\n")
+                .lines()
+                .map { line -> line.trim() }
+                .filter { line -> line.length in 2..100 }
 
-        val roundIndices = lines.indices.filter { idx ->
-            Regex("\b\d{1,2}\s*/\s*\d{1,2}\b").containsMatchIn(normalize(lines[idx]))
-        }
+        val roundIndices =
+            lines.indices.filter { index ->
+                Regex("""\b\d{1,2}\s*/\s*\d{1,2}\b""")
+                    .containsMatchIn(
+                        normalize(lines[index])
+                    )
+            }
 
         if (roundIndices.size >= 3) {
-            roundIndices.take(4).forEachIndexed { slotIndex, lineIndex ->
-                val from = maxOf(0, lineIndex - 5)
-                val to = minOf(lines.size - 1, lineIndex + 4)
-                val chunk = lines.subList(from, to + 1).joinToString(" ")
-                addUsefulTokens(signatures[slotIndex].tokens, chunk)
+            roundIndices
+                .take(4)
+                .forEachIndexed { slotIndex, lineIndex ->
+                    val from = maxOf(0, lineIndex - 5)
+                    val to = minOf(lines.size - 1, lineIndex + 4)
 
-                if (signatures[slotIndex].team == "NI") {
-                    lines.subList(from, lineIndex + 1).asReversed()
-                        .firstOrNull { looksLikeName(it) && !looksLikeCompetition(it) }
-                        ?.let { signatures[slotIndex].team = it }
-                }
+                    val chunk =
+                        lines
+                            .subList(from, to + 1)
+                            .joinToString(" ")
 
-                if (signatures[slotIndex].competition == "NI") {
-                    lines.subList(from, to + 1)
-                        .firstOrNull { looksLikeCompetition(it) }
-                        ?.let { signatures[slotIndex].competition = it }
+                    addUsefulTokens(
+                        signatures[slotIndex].tokens,
+                        chunk
+                    )
+
+                    if (signatures[slotIndex].team == "NI") {
+                        lines
+                            .subList(from, lineIndex + 1)
+                            .asReversed()
+                            .firstOrNull { line ->
+                                looksLikeName(line) &&
+                                !looksLikeCompetition(line)
+                            }
+                            ?.let { teamName ->
+                                signatures[slotIndex].team = teamName
+                            }
+                    }
+
+                    if (signatures[slotIndex].competition == "NI") {
+                        lines
+                            .subList(from, to + 1)
+                            .firstOrNull { line ->
+                                looksLikeCompetition(line)
+                            }
+                            ?.let { competitionName ->
+                                signatures[slotIndex].competition =
+                                    competitionName
+                            }
+                    }
                 }
-            }
         }
 
-        signatures.forEachIndexed { i, sig ->
-            slots.getOrNull(i)?.let {
-                if (sig.team == "NI" && it.team != "NI") sig.team = it.team
-                if (sig.competition == "NI" && it.competition != "NI") sig.competition = it.competition
-                addUsefulTokens(sig.tokens, it.team)
-                addUsefulTokens(sig.tokens, it.competition)
+        signatures.forEachIndexed { index, signature ->
+            slots.getOrNull(index)?.let { slot ->
+                if (
+                    signature.team == "NI" &&
+                    slot.team != "NI"
+                ) {
+                    signature.team = slot.team
+                }
+
+                if (
+                    signature.competition == "NI" &&
+                    slot.competition != "NI"
+                ) {
+                    signature.competition =
+                        slot.competition
+                }
+
+                addUsefulTokens(
+                    signature.tokens,
+                    slot.team
+                )
+
+                addUsefulTokens(
+                    signature.tokens,
+                    slot.competition
+                )
             }
         }
     }
 
-    private fun looksLikeCompetition(v: String): Boolean {
-        val n = normalize(v)
-        return listOf("liga","league","divisao","division","batalha","battle","copa","cup").any { n.contains(it) }
-    }
+    private fun looksLikeCompetition(value: String): Boolean {
+        val normalized = normalize(value)
 
-    private fun looksLikeName(v: String): Boolean {
-        val n = normalize(v)
-        if (n.length !in 3..45 || !n.any { it.isLetter() }) return false
-        if (looksLikeCompetition(v)) return false
         return listOf(
-            "proximo jogo","calendario","elenco","tatica","mercado",
-            "treino","perfil","comunicacoes","diamantes","classificacao"
-        ).none { n.contains(it) }
+            "liga",
+            "league",
+            "divisao",
+            "division",
+            "batalha",
+            "battle",
+            "copa",
+            "cup"
+        ).any { word ->
+            normalized.contains(word)
+        }
+    }
+
+    private fun looksLikeName(value: String): Boolean {
+        val normalized = normalize(value)
+
+        if (
+            normalized.length !in 3..45 ||
+            !normalized.any { char -> char.isLetter() }
+        ) {
+            return false
+        }
+
+        if (looksLikeCompetition(value)) return false
+
+        return listOf(
+            "proximo jogo",
+            "calendario",
+            "elenco",
+            "tatica",
+            "mercado",
+            "treino",
+            "perfil",
+            "comunicacoes",
+            "diamantes",
+            "classificacao"
+        ).none { blocked ->
+            normalized.contains(blocked)
+        }
     }
 
     private fun isNoise(text: String): Boolean {
-        val n = normalize(text)
-        if (n.isBlank()) return false
+        val normalized = normalize(text)
+        if (normalized.isBlank()) return false
+
         return listOf(
-            "instalar agora","install now","anuncio","advertisement",
-            "patrocinado","sponsored","fechar anuncio"
-        ).any { n.contains(it) }
+            "instalar agora",
+            "install now",
+            "anuncio",
+            "advertisement",
+            "patrocinado",
+            "sponsored",
+            "fechar anuncio"
+        ).any { noise ->
+            normalized.contains(noise)
+        }
     }
 
-    private fun addUsefulTokens(out: MutableSet<String>, raw: String) {
+    private fun addUsefulTokens(
+        output: MutableSet<String>,
+        raw: String
+    ) {
         tokenize(normalize(raw))
-            .filter { it.length >= 4 && it !in STOP }
+            .filter { token ->
+                token.length >= 4 &&
+                token !in STOP
+            }
             .take(48)
-            .forEach(out::add)
+            .forEach { token ->
+                output.add(token)
+            }
     }
 
-    private fun tokenize(v: String): Set<String> = v.split(' ').filter { it.length >= 3 }.toSet()
+    private fun tokenize(value: String): Set<String> =
+        value
+            .split(' ')
+            .filter { token -> token.length >= 3 }
+            .toSet()
 
-    private fun normalize(v: String): String =
-        Normalizer.normalize(v.lowercase(Locale.ROOT), Normalizer.Form.NFD)
-            .replace(Regex("\\p{Mn}+"), "")
-            .replace(Regex("[^a-z0-9 /.-]+"), " ")
-            .replace(Regex("\\s+"), " ")
+    private fun normalize(value: String): String =
+        Normalizer
+            .normalize(
+                value.lowercase(Locale.ROOT),
+                Normalizer.Form.NFD
+            )
+            .replace(
+                Regex("""\p{Mn}+"""),
+                ""
+            )
+            .replace(
+                Regex("""[^a-z0-9 /.-]+"""),
+                " "
+            )
+            .replace(
+                Regex("""\s+"""),
+                " "
+            )
             .trim()
 
     private val STOP = setOf(
-        "jogo","jogar","clube","time","manager","treinador","proximo",
-        "rodada","jornada","casa","fora","valor","pontos","slot",
-        "liga","league","division","divisao","osm"
+        "jogo",
+        "jogar",
+        "clube",
+        "time",
+        "manager",
+        "treinador",
+        "proximo",
+        "rodada",
+        "jornada",
+        "casa",
+        "fora",
+        "valor",
+        "pontos",
+        "slot",
+        "liga",
+        "league",
+        "division",
+        "divisao",
+        "osm"
     )
 }
