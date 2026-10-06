@@ -33,12 +33,18 @@ class OsmCaptureAccessibilityService : AccessibilityService() {
         CollectorState.currentForegroundPackage=pkg
 
         if(isOsm){
-            finishRunnable?.let(handler::removeCallbacks);finishRunnable=null
+            finishRunnable?.let(handler::removeCallbacks); finishRunnable=null
             osmWasForeground=true
             repository.startIfNeeded()
+            getSharedPreferences("collector_runtime", MODE_PRIVATE).edit()
+                .putBoolean("osm_seen_in_session", true)
+                .putLong("last_osm_seen_at", System.currentTimeMillis())
+                .apply()
             CollectorState.setRecording(true)
             scheduleCapture()
-        }else if(osmWasForeground){
+        } else if (pkg == packageName && osmWasForeground) {
+            // Só encerra quando o usuário VOLTA ao Coach. Propagandas, navegador,
+            // Play Store e outras telas externas não quebram a sessão do OSM.
             scheduleFinish()
         }
     }
@@ -46,8 +52,11 @@ class OsmCaptureAccessibilityService : AccessibilityService() {
     private fun scheduleFinish(){
         finishRunnable?.let(handler::removeCallbacks)
         val task=Runnable{
-            if(CollectorState.currentForegroundPackage!=OSM_PACKAGE&&osmWasForeground){
+            if(CollectorState.currentForegroundPackage==packageName&&osmWasForeground){
                 repository.finish()
+                getSharedPreferences("collector_runtime", MODE_PRIVATE).edit()
+                    .putBoolean("osm_seen_in_session", false)
+                    .apply()
                 osmWasForeground=false
                 pendingCapture=false
                 CollectorState.setRecording(false)
@@ -55,7 +64,7 @@ class OsmCaptureAccessibilityService : AccessibilityService() {
             }
         }
         finishRunnable=task
-        handler.postDelayed(task,1200L)
+        handler.postDelayed(task,700L)
     }
 
     private fun scheduleCapture(){

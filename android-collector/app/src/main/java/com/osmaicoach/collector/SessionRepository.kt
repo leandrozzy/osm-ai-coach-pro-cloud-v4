@@ -10,21 +10,52 @@ import java.util.UUID
 
 class SessionRepository(private val context: Context) {
     private val root = File(context.filesDir, "osm_sessions").apply { mkdirs() }
+    private val prefs = context.getSharedPreferences("collector", Context.MODE_PRIVATE)
     private var active: CaptureSession? = null
 
     @Synchronized
     fun startIfNeeded(): CaptureSession {
         active?.let { return it }
-        val now = System.currentTimeMillis()
-        val id = "osm-${now}-${UUID.randomUUID().toString().take(8)}"
-        return CaptureSession(id=id, startedAt=now).also {
-            active=it
-            sessionDir(it).mkdirs()
-            persist(it)
+
+        val persistedId = prefs.getString("active_session_id", null)
+        if (!persistedId.isNullOrBlank()) {
+            val restored = parseSession(sessionJson(persistedId))
+            if (restored != null && restored.state == "recording") {
+                active = restored
+                return restored
+            }
         }
+
+        return createSession()
     }
 
-    @Synchronized fun current(): CaptureSession? = active
+    @Synchronized
+    fun beginNewSession(): CaptureSession {
+        finish()
+        return createSession()
+    }
+
+    @Synchronized
+    fun current(): CaptureSession? {
+        active?.let { return it }
+        val persistedId = prefs.getString("active_session_id", null) ?: return null
+        return parseSession(sessionJson(persistedId))?.takeIf { it.state == "recording" }?.also { active = it }
+    }
+
+    private fun createSession(): CaptureSession {
+        val now = System.currentTimeMillis()
+        val id = "osm-${now}-${UUID.randomUUID().toString().take(8)}"
+        return CaptureSession(id=id, startedAt=now).also { session ->
+            active = session
+            sessionDir(session).mkdirs()
+            persist(session)
+            prefs.edit()
+                .putString("active_session_id", session.id)
+                .putString("latest_session_id", session.id)
+                .putLong("latest_session_started_at", now)
+                .apply()
+        }
+    }
 
     @Synchronized
     fun saveFrame(bitmap: Bitmap, fingerprint: Long, textHint: String = ""): CaptureFrame {
@@ -53,19 +84,22 @@ class SessionRepository(private val context: Context) {
 
     @Synchronized
     fun finish(): CaptureSession? {
-        val session=active ?: return null
-        session.endedAt=System.currentTimeMillis()
-        session.state="ready"
+        val session = current() ?: return null
+        if (session.state == "ready") return session
+        session.endedAt = System.currentTimeMillis()
+        session.state = "ready"
         persist(session)
-        active=null
-        context.getSharedPreferences("collector",Context.MODE_PRIVATE)
-            .edit().putString("latest_session_id",session.id).apply()
+        active = null
+        prefs.edit()
+            .putString("latest_session_id", session.id)
+            .remove("active_session_id")
+            .putLong("latest_session_ended_at", session.endedAt ?: System.currentTimeMillis())
+            .apply()
         return session
     }
 
     fun latestSessionJson(): String {
-        val id=context.getSharedPreferences("collector",Context.MODE_PRIVATE)
-            .getString("latest_session_id",null) ?: return "null"
+        val id=prefs.getString("latest_session_id",null) ?: return "null"
         return sessionJson(id)
     }
 
@@ -87,8 +121,7 @@ class SessionRepository(private val context: Context) {
 
     @Synchronized
     fun updateLatestFrameAnalysis(updates: Map<Int, FrameAnalysisUpdate>) {
-        val id=context.getSharedPreferences("collector",Context.MODE_PRIVATE)
-            .getString("latest_session_id",null) ?: return
+        val id=prefs.getString("latest_session_id",null) ?: return
         val file=File(File(root,id),"session.json")
         if(!file.exists()) return
         runCatching {
@@ -111,8 +144,7 @@ class SessionRepository(private val context: Context) {
 
     @Synchronized
     fun markLatestFrames(indices: List<Int>, slotId:Int, state:String, extractedFields:Int) {
-        val id=context.getSharedPreferences("collector",Context.MODE_PRIVATE)
-            .getString("latest_session_id",null) ?: return
+        val id=prefs.getString("latest_session_id",null) ?: return
         val file=File(File(root,id),"session.json")
         if(!file.exists()) return
         runCatching {
@@ -131,8 +163,7 @@ class SessionRepository(private val context: Context) {
     }
 
     fun latestFrameBase64(index:Int):String?{
-        val id=context.getSharedPreferences("collector",Context.MODE_PRIVATE)
-            .getString("latest_session_id",null) ?: return null
+        val id=prefs.getString("latest_session_id",null) ?: return null
         val json=JSONObject(sessionJson(id))
         val frames=json.optJSONArray("frames") ?: return null
         if(index !in 0 until frames.length()) return null

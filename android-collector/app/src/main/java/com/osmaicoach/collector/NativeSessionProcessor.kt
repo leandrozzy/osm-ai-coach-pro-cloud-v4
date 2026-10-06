@@ -29,7 +29,7 @@ class NativeSessionProcessor(
         val lastError:String=""
     )
 
-    private val prefs=context.getSharedPreferences("native_processor_v11",Context.MODE_PRIVATE)
+    private val prefs=context.getSharedPreferences("native_processor_v12",Context.MODE_PRIVATE)
     private val local=LocalOcrExtractor()
     @Volatile private var cloudError:String=""
 
@@ -84,12 +84,14 @@ class NativeSessionProcessor(
             }
         )
 
+        val localKnownBefore = IntArray(4)
+        val localKnownAfter = IntArray(4)
         segments.forEachIndexed{slotIndex,indices->
             val slot=slots[slotIndex.coerceIn(0,3)]
-            val useful=indices.filter { idx -> classifications[idx]?.type!="other" }
-            val source=if(useful.isNotEmpty())useful else indices
-            val texts=source.mapNotNull{ocrByIndex[it]}.filter{it.isNotBlank()}
+            localKnownBefore[slotIndex]=knownCount(slot)
+            val texts=indices.mapNotNull{ocrByIndex[it]}.filter{it.isNotBlank()}
             local.applyToSlot(slot,texts)
+            localKnownAfter[slotIndex]=knownCount(slot)
             slot.lastUpdated=System.currentTimeMillis()
         }
         store.saveAll(slots)
@@ -105,16 +107,23 @@ class NativeSessionProcessor(
         }
 
         fun rowsForType(rows:List<Int>, type:String):List<Int>{
-            val direct=rows.filter { classifications[it]?.type==type }
-            if(direct.isNotEmpty()) return direct
             val fallbackTypes=when(type){
                 "match" -> setOf("club","tactics","result")
                 "squad" -> setOf("training","market")
                 "calendar" -> setOf("ranking")
                 else -> emptySet()
             }
-            val related=rows.filter { classifications[it]?.type in fallbackTypes }
-            return if(related.isNotEmpty()) related else rows
+            // Não descarte telas classificadas como "Outra". Em páginas de jogador,
+            // calendário e scout o Accessibility muitas vezes expõe apenas o nome/valor.
+            // Enviamos TODO o OCR textual do slot, priorizando as telas do tipo pedido.
+            return rows.sortedWith(compareBy<Int> { idx ->
+                when {
+                    classifications[idx]?.type==type -> 0
+                    classifications[idx]?.type in fallbackTypes -> 1
+                    classifications[idx]?.type=="other" -> 2
+                    else -> 3
+                }
+            }.thenBy { it })
         }
 
         val jobs=mutableListOf<Triple<Int,String,List<Int>>>()
@@ -167,13 +176,16 @@ class NativeSessionProcessor(
             .filter{it.isNotBlank()}.distinct()
         for(base in candidates){
             try{
-                val conn=(URL(base.trimEnd('/')+"/api/analyze").openConnection() as HttpURLConnection).apply{
-                    requestMethod="GET";connectTimeout=6000;readTimeout=6000;instanceFollowRedirects=true
-                    setRequestProperty("User-Agent","OSM-AI-Coach-Native/9")
+                val conn=(URL(base.trimEnd('/')+"/api/status").openConnection() as HttpURLConnection).apply{
+                    requestMethod="GET";connectTimeout=6000;readTimeout=6000;instanceFollowRedirects=false
+                    setRequestProperty("Accept","application/json")
+                    setRequestProperty("User-Agent","OSM-AI-Coach-Native/12")
                 }
                 val code=conn.responseCode
+                val contentType=conn.contentType.orEmpty().lowercase()
+                val raw=runCatching{(if(code in 200..299)conn.inputStream else conn.errorStream)?.bufferedReader()?.use{it.readText()}.orEmpty()}.getOrDefault("")
                 conn.disconnect()
-                if(code in 200..499)return base
+                if(code in 200..299 && (contentType.contains("json") || raw.trim().startsWith("{"))) return base
             }catch(_:Throwable){}
         }
         return null
@@ -187,7 +199,10 @@ class NativeSessionProcessor(
         for(i in 1 until frames.size) {
             gaps += i to (frames[i].capturedAt-frames[i-1].capturedAt).coerceAtLeast(0)
         }
-        val cuts=gaps.filter{it.second>=2500L}
+        // Pausas muito longas costumam ser propaganda/app externo e não troca de slot.
+        // Só usamos pausas moderadas como possível fronteira; caso contrário dividimos
+        // a navegação sequencial em quatro blocos estáveis.
+        val cuts=gaps.filter{it.second in 2500L..15000L}
             .sortedByDescending{it.second}.take(3).map{it.first}.sorted()
 
         val result=mutableListOf<List<Int>>()
@@ -252,7 +267,7 @@ class NativeSessionProcessor(
             requestMethod="POST";connectTimeout=12000;readTimeout=56000;doOutput=true;instanceFollowRedirects=true
             setRequestProperty("Content-Type","application/json")
             setRequestProperty("Accept","application/json")
-            setRequestProperty("User-Agent","OSM-AI-Coach-Native/9")
+            setRequestProperty("User-Agent","OSM-AI-Coach-Native/12")
         }
 
         return@withContext try{

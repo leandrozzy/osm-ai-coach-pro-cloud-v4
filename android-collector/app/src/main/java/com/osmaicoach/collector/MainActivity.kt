@@ -309,7 +309,10 @@ class MainActivity : ComponentActivity() {
                 item {
                     Card(colors=CardDefaults.cardColors(containerColor=Color.White), shape=RoundedCornerShape(18.dp)) {
                         Column(Modifier.padding(16.dp)) {
-                            Text(formatTime(session.startedAt), fontWeight=FontWeight.Bold)
+                            val ended = session.endedAt?.let { formatTime(it) } ?: "em andamento"
+                            Text("${formatTime(session.startedAt)} → $ended", fontWeight=FontWeight.Bold)
+                            Text(if(session.state=="recording") "CAPTURANDO AGORA" else "Sessão concluída",
+                                fontSize=11.sp, color=if(session.state=="recording") Color(0xFFB36B00) else Color(0xFF6E9920), fontWeight=FontWeight.Bold)
                             val ocrOk=session.frames.count{it.ocrText.isNotBlank()}
                             val understood=session.frames.count{it.screenType!="other"}
                             Text("${session.frames.size} telas • OCR $ocrOk/${session.frames.size} • reconhecidas $understood",
@@ -777,7 +780,7 @@ class MainActivity : ComponentActivity() {
                 SettingsCard("IA e processamento",Icons.Default.AutoAwesome) {
                     DetailLine("Processamento","OCR local + IA Cloud")
                                 DetailLine("APIs","Configuradas no backend/Vercel")
-                                val ocrPrefs=this@MainActivity.getSharedPreferences("native_processor_v7",MODE_PRIVATE)
+                                val ocrPrefs=this@MainActivity.getSharedPreferences("native_processor_v12",MODE_PRIVATE)
                                 DetailLine("Telas com texto OCR","${ocrPrefs.getInt("local_ocr_readable",0)}/${ocrPrefs.getInt("local_ocr_total",0)}")
                     DetailLine("Última sessão",latest?.let{"${it.frames.size} telas"}?:"Nenhuma")
                     DetailLine("Resultado","${processing.success} aplicados · ${processing.failed} falhas")
@@ -842,7 +845,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openOsm() {
-        packageManager.getLaunchIntentForPackage(OSM_PACKAGE)?.let { startActivity(it) }
+        // Cada toque inicia uma sessão nova e persistida ANTES de abrir o jogo.
+        // Assim a sessão aparece imediatamente em Sessões e sobrevive a Activity/Service distintos.
+        repo.beginNewSession()
+        getSharedPreferences("collector_runtime",Context.MODE_PRIVATE).edit()
+            .putBoolean("osm_seen_in_session", false)
+            .putLong("coach_launch_at", System.currentTimeMillis())
+            .apply()
+        packageManager.getLaunchIntentForPackage(OSM_PACKAGE)?.let {
+            it.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+            startActivity(it)
+        }
     }
 
     private fun isAccessibilityServiceEnabledRobust():Boolean {
