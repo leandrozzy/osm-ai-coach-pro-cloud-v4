@@ -29,7 +29,7 @@ class NativeSessionProcessor(
         val lastError:String=""
     )
 
-    private val prefs=context.getSharedPreferences("native_processor_v10",Context.MODE_PRIVATE)
+    private val prefs=context.getSharedPreferences("native_processor_v11",Context.MODE_PRIVATE)
     private val local=LocalOcrExtractor()
     @Volatile private var cloudError:String=""
 
