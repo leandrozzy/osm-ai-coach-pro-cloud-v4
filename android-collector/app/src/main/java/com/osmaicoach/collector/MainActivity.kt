@@ -703,7 +703,7 @@ class MainActivity : ComponentActivity() {
             }
             item {
                 SettingsCard("IA e processamento",Icons.Default.AutoAwesome) {
-                    DetailLine("Backend","OSM AI Coach Cloud")
+                    DetailLine("Processamento","OCR local + IA Cloud")
                     DetailLine("Última sessão",latest?.let{"${it.frames.size} telas"}?:"Nenhuma")
                     DetailLine("Resultado","${processing.success} aplicados · ${processing.failed} falhas")
                     Spacer(Modifier.height(10.dp))

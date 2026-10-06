@@ -12,7 +12,6 @@ import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.Locale
 
 class NativeSessionProcessor(
     private val context: Context,
@@ -20,178 +19,157 @@ class NativeSessionProcessor(
     private val store: NativeSlotStore
 ) {
     data class Progress(
-        val running: Boolean = false,
-        val current: Int = 0,
-        val total: Int = 0,
-        val label: String = "",
-        val success: Int = 0,
-        val failed: Int = 0,
-        val stage: String = "idle",
-        val lastError: String = ""
+        val running:Boolean=false,
+        val current:Int=0,
+        val total:Int=0,
+        val label:String="",
+        val success:Int=0,
+        val failed:Int=0,
+        val stage:String="idle",
+        val lastError:String=""
     )
 
-    private val prefs = context.getSharedPreferences("native_processor_v5", Context.MODE_PRIVATE)
+    private val prefs=context.getSharedPreferences("native_processor_v7",Context.MODE_PRIVATE)
+    private val local=LocalOcrExtractor()
 
-    fun resetLatest() {
-        prefs.edit().remove("processed_session").apply()
-    }
+    fun isProcessed(sessionId:String)=prefs.getString("processed_session",null)==sessionId
 
-    fun isProcessed(sessionId:String):Boolean =
-        prefs.getString("processed_session", null) == sessionId
+    suspend fun processLatest(force:Boolean=false,onProgress:(Progress)->Unit):Boolean=withContext(Dispatchers.IO){
+        val session=repository.latestSession()?:return@withContext false
+        if(session.state!="ready"||session.frames.isEmpty())return@withContext false
+        if(!force&&isProcessed(session.id))return@withContext false
 
-    suspend fun processLatest(
-        force:Boolean = false,
-        onProgress:(Progress)->Unit
-    ): Boolean = withContext(Dispatchers.IO) {
-        val session = repository.latestSession() ?: return@withContext false
-        if (session.state != "ready" || session.frames.isEmpty()) return@withContext false
-        if (!force && isProcessed(session.id)) return@withContext false
+        val segments=splitIntoSlots(session)
+        if(segments.isEmpty())return@withContext false
 
-        val segments = splitIntoSlots(session)
-        if (segments.isEmpty()) return@withContext false
+        val slots=store.loadAll()
+        val total=session.frames.size + segments.size*3
+        var current=0
+        var success=0
+        var failed=0
+        var lastError=""
 
-        val slots = store.loadAll()
-        val jobs = mutableListOf<Triple<Int,String,List<Int>>>()
-        segments.forEachIndexed { index, rows ->
-            jobs += Triple(index, "match", rows)
-            jobs += Triple(index, "squad", rows)
-            jobs += Triple(index, "calendar", rows)
+        onProgress(Progress(true,0,total,"OCR local: preparando ${session.frames.size} telas",0,0,"ocr",""))
+
+        val ocrByIndex=linkedMapOf<Int,String>()
+        session.frames.sortedBy{it.index}.forEach{frame->
+            val file=repository.frameFile(session,frame.index)
+            val text=if(file!=null) withTimeoutOrNull(12000L){local.read(file)} ?: "" else ""
+            ocrByIndex[frame.index]=text
+            current++
+            onProgress(Progress(true,current,total,"OCR local · tela ${frame.index+1}/${session.frames.size}",success,failed,"ocr",lastError))
         }
 
-        var success = 0
-        var failed = 0
-        var lastError = ""
+        segments.forEachIndexed{slotIndex,indices->
+            val slot=slots[slotIndex.coerceIn(0,3)]
+            val texts=indices.mapNotNull{ocrByIndex[it]}.filter{it.isNotBlank()}
+            local.applyToSlot(slot,texts)
+            slot.lastUpdated=System.currentTimeMillis()
+        }
+        store.saveAll(slots)
 
-        onProgress(Progress(true,0,jobs.size,"Preparando ${session.frames.size} telas",0,0,"prepare",""))
+        val endpoint=probeBackend()
+        if(endpoint==null){
+            lastError="IA Cloud indisponível. OCR local aplicado; os dados reconhecidos foram mantidos."
+            failed += segments.size*3
+            current=total
+            prefs.edit().putString("processed_session",session.id).apply()
+            onProgress(Progress(false,current,total,"Sessão concluída com OCR local",success,failed,"done",lastError))
+            return@withContext true
+        }
 
-        jobs.forEachIndexed { index, job ->
-            val slot = slots[job.first.coerceIn(0,3)]
-            val type = job.second
-            val friendly = when(type) {
-                "match" -> "Pré-jogo"
-                "squad" -> "Elenco"
-                else -> "Calendário"
-            }
+        val jobs=mutableListOf<Triple<Int,String,List<Int>>>()
+        segments.forEachIndexed{i,rows->
+            jobs+=Triple(i,"match",rows)
+            jobs+=Triple(i,"squad",rows)
+            jobs+=Triple(i,"calendar",rows)
+        }
 
-            onProgress(Progress(
-                true,index,jobs.size,
-                "S${slot.id} · $friendly · enviando",
-                success,failed,"upload",lastError
-            ))
+        jobs.forEach{job->
+            val slot=slots[job.first.coerceIn(0,3)]
+            val friendly=when(job.second){"match"->"Pré-jogo";"squad"->"Elenco";else->"Calendário"}
+            onProgress(Progress(true,current,total,"S${slot.id} · $friendly · IA",success,failed,"cloud",lastError))
 
-            val result = withTimeoutOrNull(30000L) {
-                analyzeType(session, job.third, type, 2, slot)
-            }
-
-            if (result == null) {
+            val result=withTimeoutOrNull(30000L){analyzeType(endpoint,session,job.third,job.second,2,slot)}
+            if(result==null){
                 failed++
-                lastError = "S${slot.id} $friendly: tempo limite ou backend sem resposta"
-            } else {
-                runCatching { applyResult(slot,result.first,result.second) }
-                    .onSuccess { success++ }
-                    .onFailure {
-                        failed++
-                        lastError = "S${slot.id} $friendly: ${it.message ?: "falha ao aplicar"}"
-                    }
+                lastError="S${slot.id} $friendly: IA Cloud sem resposta"
+            }else{
+                runCatching{applyResult(slot,result.first,result.second)}
+                    .onSuccess{success++}
+                    .onFailure{failed++;lastError="S${slot.id} $friendly: ${it.message?:"falha ao aplicar"}"}
             }
-
-            slot.lastUpdated = System.currentTimeMillis()
-            val segmentFrames = job.third.mapNotNull { idx -> session.frames.firstOrNull { it.index == idx } }
-            slot.marketSeen = slot.marketSeen || segmentFrames.any { it.screenType == "market" }
-            slot.trainingSeen = slot.trainingSeen || segmentFrames.any { it.screenType == "training" }
+            current++
+            slot.lastUpdated=System.currentTimeMillis()
             store.saveAll(slots)
-
-            val done = index + 1
-            onProgress(Progress(
-                done < jobs.size,done,jobs.size,
-                "S${slot.id} · $friendly · ${if(result!=null) "concluído" else "falhou"}",
-                success,failed,if(done<jobs.size)"apply" else "done",lastError
-            ))
+            onProgress(Progress(true,current,total,"S${slot.id} · $friendly · concluído",success,failed,"cloud",lastError))
         }
 
         prefs.edit().putString("processed_session",session.id).apply()
-        onProgress(Progress(false,jobs.size,jobs.size,"Sessão finalizada",success,failed,"done",lastError))
+        onProgress(Progress(false,total,total,"Sessão finalizada",success,failed,"done",lastError))
         true
     }
 
-    private fun splitIntoSlots(session:CaptureSession):List<List<Int>> {
+    private fun probeBackend():String?{
+        val candidates=listOf(BuildConfig.BACKEND_URL,BuildConfig.BACKEND_FALLBACK_URL).distinct()
+        for(base in candidates){
+            try{
+                val conn=(URL(base.trimEnd('/')+"/api/analyze").openConnection() as HttpURLConnection).apply{
+                    requestMethod="GET";connectTimeout=5000;readTimeout=5000;instanceFollowRedirects=true
+                    setRequestProperty("User-Agent","OSM-AI-Coach-Native/7")
+                }
+                val code=conn.responseCode
+                conn.disconnect()
+                if(code in 200..499)return base
+            }catch(_:Throwable){}
+        }
+        return null
+    }
+
+    private fun splitIntoSlots(session:CaptureSession):List<List<Int>>{
         val frames=session.frames.sortedBy{it.capturedAt}
         if(frames.isEmpty())return emptyList()
-
         val gaps=mutableListOf<Pair<Int,Long>>()
-        for(i in 1 until frames.size){
-            gaps += i to (frames[i].capturedAt-frames[i-1].capturedAt).coerceAtLeast(0)
-        }
-
-        val cuts=gaps.filter{it.second>=2200L}
-            .sortedByDescending{it.second}.take(3)
-            .map{it.first}.sorted()
-
+        for(i in 1 until frames.size)gaps+=i to (frames[i].capturedAt-frames[i-1].capturedAt).coerceAtLeast(0)
+        val cuts=gaps.filter{it.second>=2200L}.sortedByDescending{it.second}.take(3).map{it.first}.sorted()
         val result=mutableListOf<List<Int>>()
         if(cuts.isNotEmpty()){
             var from=0
             for(cut in cuts+frames.size){
-                if(cut>from)result += frames.subList(from,cut).map{it.index}
+                if(cut>from)result+=frames.subList(from,cut).map{it.index}
                 from=cut
             }
         }
-
-        if(result.size<2 && frames.size>=16){
+        if(result.size<2&&frames.size>=16){
             result.clear()
             var from=0
             for(i in 0 until 4){
                 val to=if(i==3)frames.size else ((i+1)*frames.size/4)
-                result += frames.subList(from,to).map{it.index}
+                result+=frames.subList(from,to).map{it.index}
                 from=to
             }
         }
-
-        if(result.isEmpty())result += frames.map{it.index}
+        if(result.isEmpty())result+=frames.map{it.index}
         return result.take(4)
     }
 
     private suspend fun analyzeType(
-        session:CaptureSession,
-        indices:List<Int>,
-        type:String,
-        maxImages:Int,
-        slot:NativeSlotData
-    ):Pair<String,JSONObject>? = withContext(Dispatchers.IO) {
-        val exact=indices.filter{idx->
-            val f=session.frames.firstOrNull{it.index==idx}
-            f!=null && f.screenType==type
-        }
-        val unknown=indices.filter{idx->
-            val f=session.frames.firstOrNull{it.index==idx}
-            f!=null && f.screenType=="other"
-        }
-        val pool=when{
-            exact.isNotEmpty()->exact
-            unknown.isNotEmpty()->unknown
-            else->indices
-        }
-        val selected=sample(pool,maxImages)
+        endpointBase:String,session:CaptureSession,indices:List<Int>,type:String,maxImages:Int,slot:NativeSlotData
+    ):Pair<String,JSONObject>?=withContext(Dispatchers.IO){
+        val selected=sample(indices,maxImages)
         if(selected.isEmpty())return@withContext null
-
         val images=JSONArray()
         selected.forEach{index->
-            val file=repository.frameFile(session,index) ?: return@forEach
-            val encoded=encodeImage(file.absolutePath) ?: return@forEach
+            val file=repository.frameFile(session,index)?:return@forEach
+            val encoded=encodeImage(file.absolutePath)?:return@forEach
             images.put(JSONObject().apply{
-                put("url",encoded.first)
-                put("width",encoded.second.first)
-                put("height",encoded.second.second)
-                put("frameIndex",index)
+                put("url",encoded.first);put("width",encoded.second.first);put("height",encoded.second.second);put("frameIndex",index)
             })
         }
         if(images.length()==0)return@withContext null
 
         val body=JSONObject().apply{
-            put("type",type)
-            put("images",images)
-            put("ocrImages",images)
-            put("forceOCR",true)
-            put("useVisual",true)
+            put("type",type);put("images",images);put("ocrImages",images);put("forceOCR",true);put("useVisual",true)
             put("context",JSONObject().apply{
                 put("username","leandrozzy")
                 if(slot.team!="NI")put("myTeam",slot.team)
@@ -200,42 +178,22 @@ class NativeSessionProcessor(
             })
         }
 
-        val endpoint=BuildConfig.BACKEND_URL.trimEnd('/')+"/api/analyze"
-        val conn=(URL(endpoint).openConnection() as HttpURLConnection).apply{
-            requestMethod="POST"
-            connectTimeout=10000
-            readTimeout=22000
-            doOutput=true
-            instanceFollowRedirects=true
-            setRequestProperty("Content-Type","application/json")
-            setRequestProperty("Accept","application/json")
-            setRequestProperty("User-Agent","OSM-AI-Coach-Native/5")
+        val conn=(URL(endpointBase.trimEnd('/')+"/api/analyze").openConnection() as HttpURLConnection).apply{
+            requestMethod="POST";connectTimeout=10000;readTimeout=22000;doOutput=true;instanceFollowRedirects=true
+            setRequestProperty("Content-Type","application/json");setRequestProperty("Accept","application/json")
+            setRequestProperty("User-Agent","OSM-AI-Coach-Native/7")
         }
-
-        runCatching{
-            conn.outputStream.use{
-                val bytes=body.toString().toByteArray(Charsets.UTF_8)
-                it.write(bytes)
-                it.flush()
+        return@withContext try{
+            conn.outputStream.use{it.write(body.toString().toByteArray(Charsets.UTF_8));it.flush()}
+            val code=conn.responseCode
+            val raw=(if(code in 200..299)conn.inputStream else conn.errorStream)?.bufferedReader()?.use{it.readText()}.orEmpty()
+            if(code !in 200..299||raw.isBlank())null
+            else{
+                val root=JSONObject(raw)
+                val data=root.optJSONObject("data")?:return@withContext null
+                type to data
             }
-        }.getOrElse{
-            conn.disconnect()
-            return@withContext null
-        }
-
-        val code=runCatching{conn.responseCode}.getOrElse{
-            conn.disconnect(); return@withContext null
-        }
-        val raw=runCatching{
-            (if(code in 200..299)conn.inputStream else conn.errorStream)
-                ?.bufferedReader()?.use{it.readText()}.orEmpty()
-        }.getOrDefault("")
-        conn.disconnect()
-
-        if(code !in 200..299 || raw.isBlank())return@withContext null
-        val root=runCatching{JSONObject(raw)}.getOrNull() ?: return@withContext null
-        val data=root.optJSONObject("data") ?: return@withContext null
-        type to data
+        }catch(_:Throwable){null}finally{conn.disconnect()}
     }
 
     private fun applyResult(slot:NativeSlotData,type:String,data:JSONObject){
@@ -247,75 +205,36 @@ class NativeSessionProcessor(
     }
 
     private fun applyMatch(slot:NativeSlotData,m:JSONObject){
-        putIfKnown(m,"myName"){slot.team=it}
-        putIfKnown(m,"rivalName"){slot.nextRival=it}
-        putIfKnown(m,"location"){slot.venue=it}
-        putIfKnown(m,"referee"){slot.referee=it}
-        putIfKnown(m,"myStrength"){slot.myStrength=it}
-        putIfKnown(m,"rivalStrength"){slot.rivalStrength=it}
-        putIfKnown(m,"mySquadValue"){slot.myValue=it}
-        putIfKnown(m,"rivalSquadValue"){slot.rivalValue=it}
-        putIfKnown(m,"myGK"){slot.myGoalkeeper=it}
-        putIfKnown(m,"myDEF"){slot.myDefense=it}
-        putIfKnown(m,"myMID"){slot.myMidfield=it}
-        putIfKnown(m,"myATT"){slot.myAttack=it}
-        putIfKnown(m,"rivalGK"){slot.rivalGoalkeeper=it}
-        putIfKnown(m,"rivalDEF"){slot.rivalDefense=it}
-        putIfKnown(m,"rivalMID"){slot.rivalMidfield=it}
-        putIfKnown(m,"rivalATT"){slot.rivalAttack=it}
-        putIfKnown(m,"rivalFormation"){slot.rivalFormation=it}
-        putIfKnown(m,"rivalPlan"){slot.rivalPlan=it}
-        putIfKnown(m,"rivalMarking"){slot.marking=it}
-        putIfKnown(m,"rivalOffside"){slot.offside=it}
-        putIfKnown(m,"secretTraining"){slot.secretTraining=it}
-        putIfKnown(m,"trainingCamp"){slot.trainingCamp=it}
-        putIfKnown(m,"stadium"){slot.stadium=it}
-        putIfKnown(m,"myBonus"){slot.bonus=it}
+        putIfKnown(m,"myName"){slot.team=it};putIfKnown(m,"rivalName"){slot.nextRival=it}
+        putIfKnown(m,"location"){slot.venue=it};putIfKnown(m,"referee"){slot.referee=it}
+        putIfKnown(m,"myStrength"){slot.myStrength=it};putIfKnown(m,"rivalStrength"){slot.rivalStrength=it}
+        putIfKnown(m,"mySquadValue"){slot.myValue=it};putIfKnown(m,"rivalSquadValue"){slot.rivalValue=it}
+        putIfKnown(m,"myGK"){slot.myGoalkeeper=it};putIfKnown(m,"myDEF"){slot.myDefense=it}
+        putIfKnown(m,"myMID"){slot.myMidfield=it};putIfKnown(m,"myATT"){slot.myAttack=it}
+        putIfKnown(m,"rivalGK"){slot.rivalGoalkeeper=it};putIfKnown(m,"rivalDEF"){slot.rivalDefense=it}
+        putIfKnown(m,"rivalMID"){slot.rivalMidfield=it};putIfKnown(m,"rivalATT"){slot.rivalAttack=it}
+        putIfKnown(m,"rivalFormation"){slot.rivalFormation=it};putIfKnown(m,"rivalPlan"){slot.rivalPlan=it}
+        putIfKnown(m,"rivalMarking"){slot.marking=it};putIfKnown(m,"rivalOffside"){slot.offside=it}
+        putIfKnown(m,"secretTraining"){slot.secretTraining=it};putIfKnown(m,"trainingCamp"){slot.trainingCamp=it}
+        putIfKnown(m,"stadium"){slot.stadium=it};putIfKnown(m,"myBonus"){slot.bonus=it}
     }
 
     private fun applySquad(slot:NativeSlotData,data:JSONObject){
         val meta=data.optJSONObject("meta")?:JSONObject()
-        putIfKnown(meta,"team"){slot.team=it}
-        putIfKnown(meta,"competition"){slot.competition=it}
-        putIfKnown(meta,"competitionType"){slot.competitionType=it}
-        putIfKnown(meta,"squadValue"){slot.myValue=it}
-        putIfKnown(meta,"strength"){slot.myStrength=it}
-        putIfKnown(meta,"GK"){slot.myGoalkeeper=it}
-        putIfKnown(meta,"DEF"){slot.myDefense=it}
-        putIfKnown(meta,"MID"){slot.myMidfield=it}
-        putIfKnown(meta,"ATT"){slot.myAttack=it}
-
+        putIfKnown(meta,"team"){slot.team=it};putIfKnown(meta,"competition"){slot.competition=it}
+        putIfKnown(meta,"competitionType"){slot.competitionType=it};putIfKnown(meta,"squadValue"){slot.myValue=it}
+        putIfKnown(meta,"strength"){slot.myStrength=it};putIfKnown(meta,"GK"){slot.myGoalkeeper=it}
+        putIfKnown(meta,"DEF"){slot.myDefense=it};putIfKnown(meta,"MID"){slot.myMidfield=it};putIfKnown(meta,"ATT"){slot.myAttack=it}
         val players=data.optJSONArray("players")?:JSONArray()
-        if(players.length()>0){
-            slot.squadCount=players.length()
-            var ata=0;var mei=0;var def=0;var gol=0;var training=0;var selling=0
-            for(i in 0 until players.length()){
-                val p=players.optJSONObject(i)?:continue
-                val pos=p.optString("position").uppercase(Locale.ROOT)
-                when{
-                    pos.contains("ATA")||pos.contains("ATT")||pos.contains("FOR")->ata++
-                    pos.contains("MEI")||pos.contains("MID")->mei++
-                    pos.contains("DEF")->def++
-                    pos.contains("GOL")||pos.contains("GK")->gol++
-                }
-                if(p.optString("training").equals("Sim",true)||p.optBoolean("training",false))training++
-                if(p.optString("forSale").equals("Sim",true)||p.optBoolean("forSale",false))selling++
-            }
-            slot.attackers=ata;slot.midfielders=mei;slot.defenders=def;slot.goalkeepers=gol
-            slot.trainingCount=training;slot.sellingCount=selling
-        }
+        if(players.length()>0)slot.squadCount=players.length()
     }
 
     private fun applyCalendar(slot:NativeSlotData,data:JSONObject){
         val meta=data.optJSONObject("meta")?:JSONObject()
-        putIfKnown(meta,"team"){slot.team=it}
-        putIfKnown(meta,"competition"){slot.competition=it}
-        putIfKnown(meta,"competitionType"){slot.competitionType=it}
-
+        putIfKnown(meta,"team"){slot.team=it};putIfKnown(meta,"competition"){slot.competition=it};putIfKnown(meta,"competitionType"){slot.competitionType=it}
         val rows=data.optJSONArray("calendar")?:JSONArray()
         if(rows.length()==0)return
         slot.calendarCount=rows.length()
-
         var chosen:JSONObject?=null
         for(i in 0 until rows.length()){
             val row=rows.optJSONObject(i)?:continue
@@ -324,9 +243,7 @@ class NativeSessionProcessor(
         }
         if(chosen==null)chosen=rows.optJSONObject(rows.length()-1)
         chosen?.let{row->
-            putIfKnown(row,"opponent"){slot.nextRival=it}
-            putIfKnown(row,"date"){slot.matchDate=it}
-            putIfKnown(row,"time"){slot.matchTime=it}
+            putIfKnown(row,"opponent"){slot.nextRival=it};putIfKnown(row,"date"){slot.matchDate=it};putIfKnown(row,"time"){slot.matchTime=it}
             if(row.has("home")&&!row.isNull("home"))slot.venue=if(row.optBoolean("home"))"Casa" else "Fora"
         }
     }
@@ -348,21 +265,12 @@ class NativeSessionProcessor(
         val targetWidth=minOf(900,original.width)
         val targetHeight=(original.height*(targetWidth.toFloat()/original.width)).toInt().coerceAtLeast(1)
         val scaled=if(original.width!=targetWidth)Bitmap.createScaledBitmap(original,targetWidth,targetHeight,true) else original
-        val width=scaled.width
-        val height=scaled.height
-
-        var quality=62
-        var bytes:ByteArray
+        val width=scaled.width;val height=scaled.height
+        var quality=60;var bytes:ByteArray
         do{
-            val out=ByteArrayOutputStream()
-            scaled.compress(Bitmap.CompressFormat.JPEG,quality,out)
-            bytes=out.toByteArray()
-            quality-=7
-        }while(bytes.size>450_000&&quality>=34)
-
-        if(scaled!==original)scaled.recycle()
-        original.recycle()
-
+            val out=ByteArrayOutputStream();scaled.compress(Bitmap.CompressFormat.JPEG,quality,out);bytes=out.toByteArray();quality-=7
+        }while(bytes.size>450_000&&quality>=32)
+        if(scaled!==original)scaled.recycle();original.recycle()
         return "data:image/jpeg;base64,"+Base64.encodeToString(bytes,Base64.NO_WRAP) to (width to height)
     }
 }
