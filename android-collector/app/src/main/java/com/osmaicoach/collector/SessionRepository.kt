@@ -120,9 +120,8 @@ class SessionRepository(private val context: Context) {
     }
 
     @Synchronized
-    fun updateLatestFrameAnalysis(updates: Map<Int, FrameAnalysisUpdate>) {
-        val id=prefs.getString("latest_session_id",null) ?: return
-        val file=File(File(root,id),"session.json")
+    fun updateFrameAnalysis(sessionId: String, updates: Map<Int, FrameAnalysisUpdate>) {
+        val file=File(File(root,sessionId),"session.json")
         if(!file.exists()) return
         runCatching {
             val json=JSONObject(file.readText())
@@ -143,9 +142,8 @@ class SessionRepository(private val context: Context) {
     }
 
     @Synchronized
-    fun markLatestFrames(indices: List<Int>, slotId:Int, state:String, extractedFields:Int) {
-        val id=prefs.getString("latest_session_id",null) ?: return
-        val file=File(File(root,id),"session.json")
+    fun markFrames(sessionId: String, indices: List<Int>, slotId:Int, state:String, extractedFields:Int) {
+        val file=File(File(root,sessionId),"session.json")
         if(!file.exists()) return
         runCatching {
             val json=JSONObject(file.readText())

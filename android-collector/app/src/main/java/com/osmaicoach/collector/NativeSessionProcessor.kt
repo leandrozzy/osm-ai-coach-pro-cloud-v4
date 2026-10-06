@@ -70,7 +70,7 @@ class NativeSessionProcessor(
             rows.forEach { frameToSlot[it]=slotIndex+1 }
         }
 
-        repository.updateLatestFrameAnalysis(
+        repository.updateFrameAnalysis(session.id,
             ocrByIndex.mapValues { (index,text) ->
                 val c=classifications[index] ?: ScreenClassifier.Result("other","Tela do OSM")
                 FrameAnalysisUpdate(
@@ -147,18 +147,18 @@ class NativeSessionProcessor(
                 failed++
                 val detail=cloudError.ifBlank{"sem resposta dentro do limite"}
                 lastError="S${slot.id} $friendly: $detail"
-                repository.markLatestFrames(job.third,slot.id,"IA falhou",0)
+                repository.markFrames(session.id,job.third,slot.id,"IA falhou",0)
             }else{
                 val before=knownCount(slot)
                 val changed=runCatching{applyResult(slot,result.first,result.second)}.getOrElse { 0 }
                 val after=knownCount(slot)
                 if(after>before || changed>0){
                     success++
-                    repository.markLatestFrames(job.third,slot.id,"Interpretada ✓",maxOf(changed,after-before))
+                    repository.markFrames(session.id,job.third,slot.id,"Interpretada ✓",maxOf(changed,after-before))
                 }else{
                     failed++
                     lastError="S${slot.id} $friendly: resposta recebida, mas sem dados úteis para este slot"
-                    repository.markLatestFrames(job.third,slot.id,"Sem dado útil",0)
+                    repository.markFrames(session.id,job.third,slot.id,"Sem dado útil",0)
                 }
             }
             current++
@@ -174,7 +174,7 @@ class NativeSessionProcessor(
     }
 
     private fun probeBackend():String?{
-        val candidates=listOf(BuildConfig.BACKEND_URL,BuildConfig.BACKEND_FALLBACK_URL)
+        val candidates=listOf(BuildConfig.BACKEND_FALLBACK_URL,BuildConfig.BACKEND_URL)
             .filter{it.isNotBlank()}.distinct()
         for(base in candidates){
             try{
@@ -201,10 +201,10 @@ class NativeSessionProcessor(
         for(i in 1 until frames.size) {
             gaps += i to (frames[i].capturedAt-frames[i-1].capturedAt).coerceAtLeast(0)
         }
-        // Pausas muito longas costumam ser propaganda/app externo e não troca de slot.
-        // Só usamos pausas moderadas como possível fronteira; caso contrário dividimos
-        // a navegação sequencial em quatro blocos estáveis.
-        val cuts=gaps.filter{it.second in 2500L..15000L}
+        // V17: separar os slots pelas maiores pausas reais da navegação.
+        // Propagandas não encerram a sessão. Ignoramos apenas micro-pausas e
+        // ausências muito longas, evitando o corte artificial em quatro quartos.
+        val cuts=gaps.filter{it.second in 1400L..90000L}
             .sortedByDescending{it.second}.take(3).map{it.first}.sorted()
 
         val result=mutableListOf<List<Int>>()

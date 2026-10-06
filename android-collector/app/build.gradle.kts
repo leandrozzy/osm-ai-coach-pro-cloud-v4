@@ -18,7 +18,7 @@ android {
         val runNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
         val epochMinutes = (System.currentTimeMillis() / 60000L).toInt()
         versionCode = epochMinutes
-        versionName = "2.2.$runNumber"
+        versionName = "2.5.$runNumber"
         buildConfigField("String", "BACKEND_URL", "\"https://osm-ai-coach-pro-cloud-v4.vercel.app\"")
         buildConfigField("String", "BACKEND_FALLBACK_URL", "\"https://osm-ai-coach-pro-cloud-v4-git-android-collector-v1-lro-design.vercel.app\"")
     }

@@ -14,12 +14,20 @@ class LocalOcrExtractor {
 
     suspend fun read(file: File): String {
         val bitmap = BitmapFactory.decodeFile(file.absolutePath) ?: return ""
+        var cropped: android.graphics.Bitmap? = null
         return try {
-            val image = InputImage.fromBitmap(bitmap, 0)
+            // V17: remove status bar e barra de navegação antes do OCR.
+            // Isso evita horário, bateria e temperatura virarem dados do jogo.
+            val top = (bitmap.height * 0.055f).toInt().coerceAtLeast(0)
+            val bottom = (bitmap.height * 0.075f).toInt().coerceAtLeast(0)
+            val usableHeight = (bitmap.height - top - bottom).coerceAtLeast(1)
+            cropped = android.graphics.Bitmap.createBitmap(bitmap, 0, top, bitmap.width, usableHeight)
+            val image = InputImage.fromBitmap(cropped!!, 0)
             recognizer.process(image).await().text.orEmpty()
         } catch (_: Throwable) {
             ""
         } finally {
+            cropped?.takeIf { it !== bitmap }?.recycle()
             bitmap.recycle()
         }
     }
@@ -160,6 +168,7 @@ class LocalOcrExtractor {
                 window.contains(Regex("\\b(?:GOL|GK)\\b",RegexOption.IGNORE_CASE))->"GOL"
                 else->"NI"
             }
+            if(value=="NI" && pos=="NI") continue
             if(slot.players.none{normalize(it.name)==normalize(line)}) {
                 slot.players += NativePlayerData(name=line,position=pos,age=age,strength=strength,value=value)
             }
@@ -193,6 +202,7 @@ class LocalOcrExtractor {
         val n=normalize(v)
         if(n.length !in 2..60) return false
         if(n in setOf("boa","ni","sim","nao","casa","fora","liga normal")) return false
+        if(listOf("proximo","dados completos","leitura automatica","sessao","osm ai coach").any { n.contains(it) }) return false
         return n.any { it.isLetter() }
     }
 
