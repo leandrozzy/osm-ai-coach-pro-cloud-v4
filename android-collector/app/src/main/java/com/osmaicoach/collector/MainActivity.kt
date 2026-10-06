@@ -704,6 +704,7 @@ class MainActivity : ComponentActivity() {
             item {
                 SettingsCard("IA e processamento",Icons.Default.AutoAwesome) {
                     DetailLine("Processamento","OCR local + IA Cloud")
+                                DetailLine("APIs","Configuradas no backend/Vercel")
                                 val ocrPrefs=this@MainActivity.getSharedPreferences("native_processor_v7",MODE_PRIVATE)
                                 DetailLine("Telas com texto OCR","${ocrPrefs.getInt("local_ocr_readable",0)}/${ocrPrefs.getInt("local_ocr_total",0)}")
                     DetailLine("Última sessão",latest?.let{"${it.frames.size} telas"}?:"Nenhuma")

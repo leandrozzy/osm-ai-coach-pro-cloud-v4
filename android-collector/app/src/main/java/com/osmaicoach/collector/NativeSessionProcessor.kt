@@ -169,7 +169,7 @@ class NativeSessionProcessor(
             val file=repository.frameFile(session,index)?:return@forEach
             val encoded=encodeImage(file.absolutePath)?:return@forEach
             images.put(JSONObject().apply{
-                put("url",encoded.first);put("width",encoded.second.first);put("height",encoded.second.second);put("frameIndex",index)
+                put("url",encoded.first);put("width",encoded.second.first);put("height",encoded.second.second);put("frameIndex",index);put("region","full")
             })
         }
         if(images.length()==0)return@withContext null
