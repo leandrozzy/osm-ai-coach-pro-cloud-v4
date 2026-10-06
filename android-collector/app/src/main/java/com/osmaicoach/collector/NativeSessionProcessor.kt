@@ -77,7 +77,7 @@ class NativeSessionProcessor(
                     slotId=frameToSlot[index] ?: 0,
                     screenType=c.type,
                     screenTitle=c.title,
-                    ocrText=text,
+                    ocrText=text.take(500),
                     analysisState=if(text.isBlank())"sem OCR" else "OCR ✓",
                     extractedFields=0
                 )
@@ -174,14 +174,14 @@ class NativeSessionProcessor(
     }
 
     private fun probeBackend():String?{
-        val candidates=listOf(BuildConfig.BACKEND_FALLBACK_URL,BuildConfig.BACKEND_URL)
+        val candidates=listOf(BuildConfig.BACKEND_URL,BuildConfig.BACKEND_FALLBACK_URL)
             .filter{it.isNotBlank()}.distinct()
         for(base in candidates){
             try{
                 val conn=(URL(base.trimEnd('/')+"/api/status").openConnection() as HttpURLConnection).apply{
                     requestMethod="GET";connectTimeout=6000;readTimeout=6000;instanceFollowRedirects=false
                     setRequestProperty("Accept","application/json")
-                    setRequestProperty("User-Agent","OSM-AI-Coach-Native/13")
+                    setRequestProperty("User-Agent","OSM-AI-Coach-Native/18")
                 }
                 val code=conn.responseCode
                 val contentType=conn.contentType.orEmpty().lowercase()
@@ -269,7 +269,7 @@ class NativeSessionProcessor(
             requestMethod="POST";connectTimeout=12000;readTimeout=56000;doOutput=true;instanceFollowRedirects=true
             setRequestProperty("Content-Type","application/json")
             setRequestProperty("Accept","application/json")
-            setRequestProperty("User-Agent","OSM-AI-Coach-Native/13")
+            setRequestProperty("User-Agent","OSM-AI-Coach-Native/18")
         }
 
         return@withContext try{

@@ -133,11 +133,18 @@ class SessionRepository(private val context: Context) {
                 frame.put("slotId",u.slotId)
                 frame.put("screenType",u.screenType)
                 frame.put("screenTitle",u.screenTitle.take(80))
-                frame.put("ocrText",u.ocrText.take(12000))
+                frame.put("ocrText",u.ocrText.take(500))
                 frame.put("analysisState",u.analysisState)
                 frame.put("extractedFields",u.extractedFields)
             }
-            file.writeText(json.toString(2))
+            file.writeText(json.toString())
+            context.getSharedPreferences("collector_runtime", Context.MODE_PRIVATE).edit()
+                .remove("session_metadata_error")
+                .apply()
+        }.onFailure {
+            context.getSharedPreferences("collector_runtime", Context.MODE_PRIVATE).edit()
+                .putString("session_metadata_error", "updateFrameAnalysis: " + (it.message ?: it.javaClass.simpleName))
+                .apply()
         }
     }
 
@@ -156,7 +163,11 @@ class SessionRepository(private val context: Context) {
                 frame.put("analysisState",state)
                 frame.put("extractedFields",maxOf(frame.optInt("extractedFields",0),extractedFields))
             }
-            file.writeText(json.toString(2))
+            file.writeText(json.toString())
+        }.onFailure {
+            context.getSharedPreferences("collector_runtime", Context.MODE_PRIVATE).edit()
+                .putString("session_metadata_error", "markFrames: " + (it.message ?: it.javaClass.simpleName))
+                .apply()
         }
     }
 
@@ -194,7 +205,7 @@ class SessionRepository(private val context: Context) {
             put("startedAt",session.startedAt);put("endedAt",session.endedAt?:JSONObject.NULL)
             put("state",session.state);put("frames",frames)
         }
-        File(sessionDir(session),"session.json").writeText(json.toString(2))
+        File(sessionDir(session),"session.json").writeText(json.toString())
     }
 
     private fun parseSession(raw:String):CaptureSession?=runCatching{

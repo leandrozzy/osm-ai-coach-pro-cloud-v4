@@ -200,7 +200,7 @@ class OsmCaptureAccessibilityService : AccessibilityService() {
     private fun scheduleCapture() {
         if (pendingCapture) return
         if (!shouldKeepCapturing()) return
-        val delay = maxOf(1500L - (System.currentTimeMillis() - lastCaptureAt), 120L)
+        val delay = maxOf(1900L - (System.currentTimeMillis() - lastCaptureAt), 120L)
         pendingCapture = true
         handler.postDelayed({
             pendingCapture = false
@@ -253,7 +253,7 @@ class OsmCaptureAccessibilityService : AccessibilityService() {
                 val old = lastFingerprint
                 val now = System.currentTimeMillis()
 
-                val forceSample = now - runtime.getLong("last_saved_frame_at", 0L) >= 8000L
+                val forceSample = now - runtime.getLong("last_saved_frame_at", 0L) >= 12000L
 
                 if (old == null || BitmapFingerprint.distance(old, fp) > 2 || forceSample) {
                     repository.saveFrame(bitmap, fp, hint)
