@@ -43,6 +43,7 @@ class MainActivity : ComponentActivity() {
         var tab by remember { mutableStateOf(0) }
         var selectedSlot by remember { mutableStateOf<Int?>(null) }
         var refresh by remember { mutableIntStateOf(0) }
+        var processing by remember { mutableStateOf(NativeSessionProcessor.Progress()) }
 
         DisposableEffect(Unit) {
             val listener: () -> Unit = { runOnUiThread { refresh++ } }
@@ -54,6 +55,19 @@ class MainActivity : ComponentActivity() {
             while (true) {
                 kotlinx.coroutines.delay(1200)
                 refresh++
+            }
+        }
+
+        LaunchedEffect(refresh) {
+            val latestNow = repo.latestSession()
+            if (latestNow?.state == "ready" && !processing.running) {
+                val processor = NativeSessionProcessor(this@MainActivity, repo, slotStore)
+                processor.processLatest { p ->
+                    runOnUiThread {
+                        processing = p
+                        refresh++
+                    }
+                }
             }
         }
 
@@ -135,7 +149,7 @@ class MainActivity : ComponentActivity() {
                     SlotDetailScreen(slots[selectedSlot!! - 1], onBack = { selectedSlot = null })
                 } else {
                     when (tab) {
-                        0 -> TodayScreen(serviceReady, recording, latest) { openOsm() }
+                        0 -> TodayScreen(serviceReady, recording, latest, processing) { openOsm() }
                         1 -> SessionsScreen(sessions)
                         2 -> SlotsScreen(slots, latest) { selectedSlot = it }
                         3 -> DirectorScreen(latest)
@@ -147,7 +161,7 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun TodayScreen(serviceReady:Boolean, recording:Boolean, latest:CaptureSession?, openOsm:()->Unit) {
+    private fun TodayScreen(serviceReady:Boolean, recording:Boolean, latest:CaptureSession?, processing:NativeSessionProcessor.Progress, openOsm:()->Unit) {
         LazyColumn(contentPadding=PaddingValues(20.dp), verticalArrangement=Arrangement.spacedBy(16.dp)) {
             item {
                 Text("Seu dia, organizado.", fontSize=30.sp, fontWeight=FontWeight.Bold, color=Color(0xFF17242B))
@@ -166,6 +180,28 @@ class MainActivity : ComponentActivity() {
                         Spacer(Modifier.height(14.dp))
                         Button(onClick=openOsm, enabled=serviceReady&&!recording, modifier=Modifier.fillMaxWidth()) {
                             Icon(Icons.Default.PlayArrow,null); Spacer(Modifier.width(8.dp)); Text("Abrir OSM")
+                        }
+                    }
+                }
+            }
+            if(processing.running || processing.total > 0) {
+                item {
+                    Card(colors=CardDefaults.cardColors(containerColor=Color(0xFFEFF5E5)),shape=RoundedCornerShape(20.dp)) {
+                        Column(Modifier.padding(18.dp)) {
+                            Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween) {
+                                Text("Processando sessão",fontWeight=FontWeight.Bold)
+                                Text("${processing.current}/${processing.total}",fontSize=12.sp)
+                            }
+                            Spacer(Modifier.height(10.dp))
+                            LinearProgressIndicator(
+                                progress={if(processing.total>0) processing.current.toFloat()/processing.total else 0f},
+                                modifier=Modifier.fillMaxWidth().height(8.dp),
+                                color=Color(0xFF7AA526),
+                                trackColor=Color(0xFFDDE5D1)
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Text(processing.label,fontSize=13.sp)
+                            Text("Aplicados: ${processing.success} • Falhas: ${processing.failed}",fontSize=12.sp,color=Color.Gray)
                         }
                     }
                 }
@@ -547,37 +583,23 @@ class MainActivity : ComponentActivity() {
     private fun isAccessibilityServiceEnabledRobust():Boolean {
         if (CollectorState.isServiceReady()) return true
 
-        val prefs = getSharedPreferences("collector_runtime", Context.MODE_PRIVATE)
-        val connectedOnce = prefs.getBoolean("accessibility_connected", false)
         val manager = getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
-        val expected = ComponentName(this, OsmCaptureAccessibilityService::class.java)
-
-        val enabledByManager = runCatching {
+        val byManager = runCatching {
             manager.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
-                .any { info ->
-                    val si = info.resolveInfo?.serviceInfo ?: return@any false
-                    si.packageName == expected.packageName &&
-                    (si.name == expected.className || si.name.endsWith(".${OsmCaptureAccessibilityService::class.java.simpleName}"))
-                }
+                .any { info -> info.resolveInfo?.serviceInfo?.packageName == packageName }
         }.getOrDefault(false)
+        if (byManager) return true
 
-        val secure = Settings.Secure.getString(
-            contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        val setting = Settings.Secure.getString(
+            contentResolver,
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
         ).orEmpty()
-        val enabledBySecure = secure.split(':').any { raw ->
-            raw.contains(packageName, true) &&
-            raw.contains(OsmCaptureAccessibilityService::class.java.simpleName, true)
-        }
+        if (setting.split(':').any { it.contains(packageName, ignoreCase=true) }) return true
 
-        if (enabledByManager || enabledBySecure) {
-            prefs.edit().putBoolean("accessibility_connected", true).apply()
-            return true
-        }
+        if (repo.listSessions(1).isNotEmpty()) return true
 
-        // Some Android builds keep the switch enabled but do not expose it
-        // reliably through Settings.Secure after the app process restarts.
-        // If this exact service successfully connected before, keep the UI ON.
-        return connectedOnce
+        return getSharedPreferences("collector_runtime",Context.MODE_PRIVATE)
+            .getBoolean("accessibility_connected",false)
     }
 
     private fun completion(s:NativeSlotData):Int {

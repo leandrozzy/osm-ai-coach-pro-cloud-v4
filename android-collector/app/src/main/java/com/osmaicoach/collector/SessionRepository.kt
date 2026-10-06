@@ -80,6 +80,13 @@ class SessionRepository(private val context: Context) {
             ?.mapNotNull { parseSession(File(it,"session.json").readText()) }
             ?: emptyList()
 
+
+    fun frameFile(session: CaptureSession, index: Int): File? {
+        val frame = session.frames.firstOrNull { it.index == index } ?: return null
+        val file = File(File(root, session.id), frame.fileName)
+        return file.takeIf { it.exists() }
+    }
+
     fun latestFrameBase64(index:Int):String?{
         val id=context.getSharedPreferences("collector",Context.MODE_PRIVATE)
             .getString("latest_session_id",null) ?: return null
