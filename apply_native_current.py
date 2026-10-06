@@ -1,132 +1,61 @@
 from pathlib import Path
 import re
-
 ROOT = Path(__file__).resolve().parent
 
 def load(rel):
     p = ROOT / rel
-    if not p.exists():
-        raise SystemExit(f"Arquivo ausente: {rel}")
-    return p, p.read_text(encoding="utf-8")
+    if not p.exists(): raise SystemExit(f'Arquivo ausente: {rel}')
+    return p, p.read_text(encoding='utf-8')
 
 def save(p, old, new):
     if old != new:
-        p.write_text(new, encoding="utf-8")
-        print("PATCHED:", p.relative_to(ROOT))
+        p.write_text(new, encoding='utf-8')
+        print('PATCHED:', p.relative_to(ROOT))
         return 1
-    print("UNCHANGED:", p.relative_to(ROOT))
+    print('UNCHANGED:', p.relative_to(ROOT))
     return 0
 
 changed = 0
+tracker = 'package com.osmaicoach.collector\n\nimport java.text.Normalizer\nimport java.util.Locale\n\nobject SlotNavigationTracker {\n    data class Result(\n        val slotRows: List<List<Int>>,\n        val frameToSlot: Map<Int, Int>,\n        val hubFrames: Set<Int>,\n        val summary: String\n    )\n\n    private data class Signature(\n        val slotId: Int,\n        val tokens: MutableSet<String> = linkedSetOf(),\n        var team: String = "NI",\n        var competition: String = "NI"\n    )\n\n    fun assign(session: CaptureSession, ocrByIndex: Map<Int, String>, slots: List<NativeSlotData>): Result {\n        val ordered = session.frames.sortedBy { it.capturedAt }\n        if (ordered.isEmpty()) return Result(List(4) { emptyList() }, emptyMap(), emptySet(), "sem telas")\n\n        val signatures = MutableList(4) { i ->\n            Signature(i + 1).apply {\n                slots.getOrNull(i)?.let { s ->\n                    team = s.team\n                    competition = s.competition\n                    addUsefulTokens(tokens, s.team)\n                    addUsefulTokens(tokens, s.competition)\n                }\n            }\n        }\n\n        val hubFrames = linkedSetOf<Int>()\n        ordered.forEach { frame ->\n            val text = ocrByIndex[frame.index].orEmpty()\n            if (isSlotsHub(text)) {\n                hubFrames += frame.index\n                learnHubSignatures(text, signatures, slots)\n            }\n        }\n\n        data class Visit(\n            val rows: MutableList<Int> = mutableListOf(),\n            val texts: MutableList<String> = mutableListOf()\n        )\n\n        val visits = mutableListOf<Visit>()\n        var current = Visit()\n\n        fun flush() {\n            if (current.rows.isNotEmpty()) visits += current\n            current = Visit()\n        }\n\n        ordered.forEach { frame ->\n            val text = ocrByIndex[frame.index].orEmpty()\n            if (frame.index in hubFrames) {\n                flush()\n                return@forEach\n            }\n            if (isNoise(text)) return@forEach\n            current.rows += frame.index\n            if (text.isNotBlank()) current.texts += text\n        }\n        flush()\n\n        val frameToSlot = linkedMapOf<Int, Int>()\n        val slotRows = MutableList(4) { mutableListOf<Int>() }\n        val used = mutableSetOf<Int>()\n        var unresolved = 0\n\n        visits.forEach { visit ->\n            val joined = visit.texts.joinToString("\\n").take(100000)\n            var bestSlot = 0\n            var bestScore = 0\n\n            signatures.forEach { sig ->\n                val score = score(joined, sig)\n                if (score > bestScore) {\n                    bestScore = score\n                    bestSlot = sig.slotId\n                }\n            }\n\n            if (bestScore < 3) {\n                val n = normalize(joined)\n                val direct = slots.mapIndexedNotNull { i, s ->\n                    val team = normalize(s.team)\n                    val comp = normalize(s.competition)\n                    val strong = when {\n                        team.length >= 4 && n.contains(team) -> 12\n                        comp.length >= 5 && n.contains(comp) -> 7\n                        else -> 0\n                    }\n                    if (strong > 0) (i + 1) to strong else null\n                }.maxByOrNull { it.second }\n                if (direct != null) {\n                    bestSlot = direct.first\n                    bestScore = direct.second\n                }\n            }\n\n            if (bestSlot == 0 || bestScore < 3) {\n                val remaining = (1..4).filter { it !in used }\n                if (remaining.size == 1) {\n                    bestSlot = remaining.first()\n                    bestScore = 3\n                }\n            }\n\n            if (bestSlot in 1..4 && bestScore >= 3) {\n                used += bestSlot\n                visit.rows.forEach { idx ->\n                    frameToSlot[idx] = bestSlot\n                    slotRows[bestSlot - 1] += idx\n                }\n                addUsefulTokens(signatures[bestSlot - 1].tokens, joined)\n            } else {\n                unresolved += visit.rows.size\n            }\n        }\n\n        hubFrames.forEach { frameToSlot[it] = 0 }\n\n        val c = slotRows.map { it.size }\n        val summary = "central=${hubFrames.size} • visitas=${visits.size} • S1=${c[0]} S2=${c[1]} S3=${c[2]} S4=${c[3]} • não atribuídas=$unresolved"\n        return Result(slotRows.map { it.toList() }, frameToSlot, hubFrames, summary)\n    }\n\n    private fun score(text: String, sig: Signature): Int {\n        val n = normalize(text)\n        if (n.isBlank()) return 0\n        var score = 0\n        val team = normalize(sig.team)\n        val comp = normalize(sig.competition)\n        if (team.length >= 4 && n.contains(team)) score += 14\n        if (comp.length >= 5 && n.contains(comp)) score += 8\n        val tokens = tokenize(n)\n        score += minOf(sig.tokens.count { it in tokens }, 12)\n        return score\n    }\n\n    private fun isSlotsHub(text: String): Boolean {\n        val n = normalize(text)\n        if (n.isBlank()) return false\n        val slotMentions = Regex("\\\\bslot\\\\s*[1-4]\\\\b").findAll(n).count()\n        if (slotMentions >= 3) return true\n        if (n.contains("calendario") || n.contains("fixtures")) return false\n\n        val rounds = Regex("\\\\b\\\\d{1,2}\\\\s*/\\\\s*\\\\d{1,2}\\\\b").findAll(n).count()\n        val leagueWords = listOf(\n            "liga","league","batalha","battle","divisao","division",\n            "rodada","jornada","manager","treinador"\n        ).count { n.contains(it) }\n\n        if (rounds in 3..6 && leagueWords >= 2) return true\n        if (rounds >= 3 && n.contains("leandrozzy")) return true\n        return false\n    }\n\n    private fun learnHubSignatures(text: String, signatures: MutableList<Signature>, slots: List<NativeSlotData>) {\n        val lines = text.replace("|", "\\n").lines()\n            .map { it.trim() }\n            .filter { it.length in 2..100 }\n\n        val roundIndices = lines.indices.filter { idx ->\n            Regex("\\\\b\\\\d{1,2}\\\\s*/\\\\s*\\\\d{1,2}\\\\b").containsMatchIn(normalize(lines[idx]))\n        }\n\n        if (roundIndices.size >= 3) {\n            roundIndices.take(4).forEachIndexed { slotIndex, lineIndex ->\n                val from = maxOf(0, lineIndex - 5)\n                val to = minOf(lines.size - 1, lineIndex + 4)\n                val chunk = lines.subList(from, to + 1).joinToString(" ")\n                addUsefulTokens(signatures[slotIndex].tokens, chunk)\n\n                if (signatures[slotIndex].team == "NI") {\n                    lines.subList(from, lineIndex + 1).asReversed()\n                        .firstOrNull { looksLikeName(it) && !looksLikeCompetition(it) }\n                        ?.let { signatures[slotIndex].team = it }\n                }\n\n                if (signatures[slotIndex].competition == "NI") {\n                    lines.subList(from, to + 1)\n                        .firstOrNull { looksLikeCompetition(it) }\n                        ?.let { signatures[slotIndex].competition = it }\n                }\n            }\n        }\n\n        signatures.forEachIndexed { i, sig ->\n            slots.getOrNull(i)?.let {\n                if (sig.team == "NI" && it.team != "NI") sig.team = it.team\n                if (sig.competition == "NI" && it.competition != "NI") sig.competition = it.competition\n                addUsefulTokens(sig.tokens, it.team)\n                addUsefulTokens(sig.tokens, it.competition)\n            }\n        }\n    }\n\n    private fun looksLikeCompetition(v: String): Boolean {\n        val n = normalize(v)\n        return listOf("liga","league","divisao","division","batalha","battle","copa","cup").any { n.contains(it) }\n    }\n\n    private fun looksLikeName(v: String): Boolean {\n        val n = normalize(v)\n        if (n.length !in 3..45 || !n.any { it.isLetter() }) return false\n        if (looksLikeCompetition(v)) return false\n        return listOf(\n            "proximo jogo","calendario","elenco","tatica","mercado",\n            "treino","perfil","comunicacoes","diamantes","classificacao"\n        ).none { n.contains(it) }\n    }\n\n    private fun isNoise(text: String): Boolean {\n        val n = normalize(text)\n        if (n.isBlank()) return false\n        return listOf(\n            "instalar agora","install now","anuncio","advertisement",\n            "patrocinado","sponsored","fechar anuncio"\n        ).any { n.contains(it) }\n    }\n\n    private fun addUsefulTokens(out: MutableSet<String>, raw: String) {\n        tokenize(normalize(raw))\n            .filter { it.length >= 4 && it !in STOP }\n            .take(48)\n            .forEach(out::add)\n    }\n\n    private fun tokenize(v: String): Set<String> = v.split(\' \').filter { it.length >= 3 }.toSet()\n\n    private fun normalize(v: String): String =\n        Normalizer.normalize(v.lowercase(Locale.ROOT), Normalizer.Form.NFD)\n            .replace(Regex("\\\\p{Mn}+"), "")\n            .replace(Regex("[^a-z0-9 /.-]+"), " ")\n            .replace(Regex("\\\\s+"), " ")\n            .trim()\n\n    private val STOP = setOf(\n        "jogo","jogar","clube","time","manager","treinador","proximo",\n        "rodada","jornada","casa","fora","valor","pontos","slot",\n        "liga","league","division","divisao","osm"\n    )\n}\n'
+tp = ROOT / 'android-collector/app/src/main/java/com/osmaicoach/collector/SlotNavigationTracker.kt'
+tp.parent.mkdir(parents=True, exist_ok=True)
+oldt = tp.read_text(encoding='utf-8') if tp.exists() else ''
+tp.write_text(tracker, encoding='utf-8')
+if oldt != tracker: print('PATCHED:', tp.relative_to(ROOT)); changed += 1
 
-# PROCESSOR
-rel = "android-collector/app/src/main/java/com/osmaicoach/collector/NativeSessionProcessor.kt"
-p, s = load(rel)
-old = s
+p, s = load('android-collector/app/src/main/java/com/osmaicoach/collector/NativeSessionProcessor.kt')
+old_file = s
+s = s.replace('        val segments=splitIntoSlots(session)\n        if(segments.isEmpty())return@withContext false\n\n        val slots=store.loadAll()\n        val total=session.frames.size + segments.size*3\n', '        val slots=store.loadAll()\n        var total=session.frames.size + 12\n')
+s = s.replace('        val classifications = ocrByIndex.mapValues { (_, text) -> ScreenClassifier.classify(text) }\n        val frameToSlot=mutableMapOf<Int,Int>()\n        segments.forEachIndexed { slotIndex, rows ->\n            rows.forEach { frameToSlot[it]=slotIndex+1 }\n        }\n', '        val classifications = ocrByIndex.mapValues { (_, text) -> ScreenClassifier.classify(text) }\n\n        val tracked = SlotNavigationTracker.assign(session, ocrByIndex, slots)\n        val segments = tracked.slotRows\n        val frameToSlot = tracked.frameToSlot.toMutableMap()\n        total = session.frames.size + segments.count { it.isNotEmpty() } * 3\n\n        prefs.edit()\n            .putString("slot_tracker_summary", tracked.summary)\n            .putInt("slot_hub_frames", tracked.hubFrames.size)\n            .putInt("slot_unassigned_frames", session.frames.size - frameToSlot.count { it.value in 1..4 })\n            .apply()\n')
+s = s.replace('                    analysisState=if(text.isBlank())"sem OCR" else "OCR ✓",', '                    analysisState=when {\n                        index in tracked.hubFrames -> "Central dos slots"\n                        text.isBlank() -> "sem OCR"\n                        (frameToSlot[index] ?: 0) == 0 -> "Aguardando identificação do slot"\n                        else -> "OCR ✓"\n                    },')
+s = s.replace('        val localApplied=localKnownAfter.indices.count { localKnownAfter[it] > localKnownBefore[it] }\n        prefs.edit().putInt("local_slots_applied",localApplied).apply()\n', '        val localApplied=localKnownAfter.indices.count { localKnownAfter[it] > localKnownBefore[it] }\n        success += localApplied\n        prefs.edit().putInt("local_slots_applied",localApplied).apply()\n')
+s = s.replace('            failed += segments.size*3', '            failed += segments.count { it.isNotEmpty() } * 3')
+s = s.replace('        segments.forEachIndexed{i,rows->\n            jobs+=Triple(i,"match",rowsForType(rows,"match"))\n', '        segments.forEachIndexed{i,rows->\n            if(rows.isEmpty()) return@forEachIndexed\n            jobs+=Triple(i,"match",rowsForType(rows,"match"))\n')
+s = s.replace('            val maxImages=if(job.second=="match")3 else 2', '            val maxImages=4')
+s = s.replace('                val root=JSONObject(raw)\n                val data=root.optJSONObject("data")\n                if(data==null){\n                    cloudError="Resposta sem campo data: "+raw.take(220).replace("\\n"," ")\n                    null\n                }else{\n                    cloudError=""\n                    type to data\n                }\n', '                val root=JSONObject(raw)\n                val data =\n                    root.optJSONObject("data")\n                        ?: root.optJSONObject("result")\n                        ?: if(\n                            root.has("match") || root.has("preGame") ||\n                            root.has("players") || root.has("squad") ||\n                            root.has("calendar") || root.has("meta")\n                        ) root else null\n                if(data==null){\n                    cloudError="Resposta sem dados reconhecíveis: "+raw.take(220).replace("\\n"," ")\n                    null\n                }else{\n                    cloudError=""\n                    type to data\n                }\n')
+s = s.replace('    private fun applyResult(slot:NativeSlotData,type:String,data:JSONObject):Int =\n        when(type){\n            "match"->applyMatch(slot,data.optJSONObject("match")?:JSONObject())\n            "squad"->applySquad(slot,data)\n            "calendar"->applyCalendar(slot,data)\n            else->0\n        }\n', '    private fun applyResult(slot:NativeSlotData,type:String,data:JSONObject):Int =\n        when(type){\n            "match" -> applyMatch(slot, data.optJSONObject("match") ?: data.optJSONObject("preGame") ?: data.optJSONObject("pregame") ?: data)\n            "squad" -> applySquad(slot, data.optJSONObject("squad") ?: data)\n            "calendar" -> applyCalendar(slot, data.optJSONObject("calendarData") ?: data)\n            else -> 0\n        }\n')
+s = re.sub(r'    private fun applyMatch\(slot:NativeSlotData,m:JSONObject\):Int\{.*?^    private fun applySquad', '    private fun applyMatch(slot:NativeSlotData,m:JSONObject):Int{\n        var changed=0\n        fun putAny(keys:List<String>,set:(String)->Unit){\n            val v=keys.firstNotNullOfOrNull { key -> knownString(m,key) } ?: return\n            set(v); changed++\n        }\n        putAny(listOf("myName","myTeam","team","club")){slot.team=it}\n        putAny(listOf("rivalName","opponent","rival","opponentName")){slot.nextRival=it}\n        putAny(listOf("date","matchDate")){slot.matchDate=it}\n        putAny(listOf("time","matchTime","kickoff")){slot.matchTime=it}\n        putAny(listOf("location","venue","homeAway")){slot.venue=it}\n        putAny(listOf("referee","refereeColor","refereeStrictness")){ if(validReferee(it)) slot.referee=it else changed-- }\n        putAny(listOf("myStrength","teamStrength","strength")){slot.myStrength=it}\n        putAny(listOf("rivalStrength","opponentStrength")){slot.rivalStrength=it}\n        putAny(listOf("mySquadValue","squadValue","teamValue")){slot.myValue=it}\n        putAny(listOf("rivalSquadValue","opponentValue","rivalValue")){slot.rivalValue=it}\n        putAny(listOf("myGK","myGoalkeeper","goalkeeper")){slot.myGoalkeeper=it}\n        putAny(listOf("myDEF","myDefense","defense")){slot.myDefense=it}\n        putAny(listOf("myMID","myMidfield","midfield")){slot.myMidfield=it}\n        putAny(listOf("myATT","myAttack","attack")){slot.myAttack=it}\n        putAny(listOf("rivalGK","opponentGK","rivalGoalkeeper")){slot.rivalGoalkeeper=it}\n        putAny(listOf("rivalDEF","opponentDEF","rivalDefense")){slot.rivalDefense=it}\n        putAny(listOf("rivalMID","opponentMID","rivalMidfield")){slot.rivalMidfield=it}\n        putAny(listOf("rivalATT","opponentATT","rivalAttack")){slot.rivalAttack=it}\n        putAny(listOf("rivalFormation","opponentFormation","formation")){slot.rivalFormation=it}\n        putAny(listOf("rivalPlan","opponentPlan","gamePlan","plan")){slot.rivalPlan=it}\n        putAny(listOf("rivalMarking","marking")){slot.marking=it}\n        putAny(listOf("rivalOffside","offside")){slot.offside=it}\n        putAny(listOf("secretTraining","secretTrainingOpponent")){slot.secretTraining=it}\n        putAny(listOf("trainingCamp","camp","opponentTrainingCamp")){slot.trainingCamp=it}\n        putAny(listOf("stadium","stadiumLevel")){slot.stadium=it}\n        putAny(listOf("myBonus","bonus","homeBonus")){slot.bonus=it}\n        return changed\n    }\n\n    private fun applySquad', s, flags=re.S | re.M)
+s = re.sub(r'    private fun splitIntoSlots\(session:CaptureSession\):List<List<Int>>\{.*?^    private suspend fun analyzeType', '    private suspend fun analyzeType', s, flags=re.S | re.M)
+changed += save(p, old_file, s)
 
-s = s.replace(
-    'val candidates=listOf(BuildConfig.BACKEND_FALLBACK_URL,BuildConfig.BACKEND_URL)',
-    'val candidates=listOf(BuildConfig.BACKEND_URL,BuildConfig.BACKEND_FALLBACK_URL)'
-)
-s = s.replace('ocrText=text,', 'ocrText=text.take(500),')
-s = s.replace('OSM-AI-Coach-Native/13', 'OSM-AI-Coach-Native/18')
-changed += save(p, old, s)
+p, s = load('android-collector/app/src/main/java/com/osmaicoach/collector/LocalOcrExtractor.kt')
+old_file = s
+s = s.replace('        val fullDate = Regex("\\\\b([0-3]?\\\\d/[01]?\\\\d/(?:20)?\\\\d{2})\\\\b").find(joined)?.value\n        if (fullDate != null && slot.matchDate=="NI") slot.matchDate=fullDate\n', '        val fullDate = Regex("\\\\b([0-3]?\\\\d/[01]?\\\\d/(?:20)?\\\\d{2})\\\\b").find(joined)?.value\n        val shortDate = Regex("\\\\b([0-3]?\\\\d/[01]?\\\\d)\\\\b").find(joined)?.value\n        val detectedDate = fullDate ?: shortDate\n        if (detectedDate != null && slot.matchDate=="NI") slot.matchDate=detectedDate\n')
+if '        if(slot.rivalGoalkeeper=="NI") labeledNumber("Rival GOL","Rival GK","Opponent GK")?.let{slot.rivalGoalkeeper=it}\n        if(slot.rivalDefense=="NI") labeledNumber("Rival DEF","Opponent DEF")?.let{slot.rivalDefense=it}\n        if(slot.rivalMidfield=="NI") labeledNumber("Rival MEI","Rival MID","Opponent MID")?.let{slot.rivalMidfield=it}\n        if(slot.rivalAttack=="NI") labeledNumber("Rival ATA","Rival ATT","Opponent ATT")?.let{slot.rivalAttack=it}\n' not in s: s = s.replace('        if(slot.myAttack=="NI") labeledNumber("ATA","ATT","ataque")?.let{slot.myAttack=it}\n', '        if(slot.myAttack=="NI") labeledNumber("ATA","ATT","ataque")?.let{slot.myAttack=it}\n' + '        if(slot.rivalGoalkeeper=="NI") labeledNumber("Rival GOL","Rival GK","Opponent GK")?.let{slot.rivalGoalkeeper=it}\n        if(slot.rivalDefense=="NI") labeledNumber("Rival DEF","Opponent DEF")?.let{slot.rivalDefense=it}\n        if(slot.rivalMidfield=="NI") labeledNumber("Rival MEI","Rival MID","Opponent MID")?.let{slot.rivalMidfield=it}\n        if(slot.rivalAttack=="NI") labeledNumber("Rival ATA","Rival ATT","Opponent ATT")?.let{slot.rivalAttack=it}\n')
+changed += save(p, old_file, s)
 
-# SESSION REPOSITORY
-rel = "android-collector/app/src/main/java/com/osmaicoach/collector/SessionRepository.kt"
-p, s = load(rel)
-old = s
+p, s = load('android-collector/app/src/main/java/com/osmaicoach/collector/MainActivity.kt')
+old_file = s
+s = re.sub(r'DetailLine\("Versão nativa","V\d+\s*·\s*\$\{BuildConfig\.VERSION_NAME\}"\)', 'DetailLine("Versão nativa","V19 · ${BuildConfig.VERSION_NAME}")', s)
+if '                                DetailLine("Telas com texto OCR","${ocrPrefs.getInt("local_ocr_readable",0)}/${ocrPrefs.getInt("local_ocr_total",0)}")\n                                DetailLine("Rastreamento de slots",ocrPrefs.getString("slot_tracker_summary","Ainda não processado") ?: "Ainda não processado")\n' not in s: s = s.replace('                                DetailLine("Telas com texto OCR","${ocrPrefs.getInt("local_ocr_readable",0)}/${ocrPrefs.getInt("local_ocr_total",0)}")\n', '                                DetailLine("Telas com texto OCR","${ocrPrefs.getInt("local_ocr_readable",0)}/${ocrPrefs.getInt("local_ocr_total",0)}")\n                                DetailLine("Rastreamento de slots",ocrPrefs.getString("slot_tracker_summary","Ainda não processado") ?: "Ainda não processado")\n', 1)
+changed += save(p, old_file, s)
 
-s = s.replace('frame.put("ocrText",u.ocrText.take(2500))',
-              'frame.put("ocrText",u.ocrText.take(500))')
-s = s.replace('frame.put("ocrText",u.ocrText.take(12000))',
-              'frame.put("ocrText",u.ocrText.take(500))')
-s = s.replace('file.writeText(json.toString(2))',
-              'file.writeText(json.toString())')
-s = s.replace('File(sessionDir(session),"session.json").writeText(json.toString(2))',
-              'File(sessionDir(session),"session.json").writeText(json.toString())')
-
-block1 = '''            file.writeText(json.toString())
-        }
-    }
-
-    @Synchronized
-    fun markFrames'''
-block1_new = '''            file.writeText(json.toString())
-            context.getSharedPreferences("collector_runtime", Context.MODE_PRIVATE).edit()
-                .remove("session_metadata_error")
-                .apply()
-        }.onFailure {
-            context.getSharedPreferences("collector_runtime", Context.MODE_PRIVATE).edit()
-                .putString("session_metadata_error", "updateFrameAnalysis: " + (it.message ?: it.javaClass.simpleName))
-                .apply()
-        }
-    }
-
-    @Synchronized
-    fun markFrames'''
-if block1 in s:
-    s = s.replace(block1, block1_new, 1)
-
-block2 = '''            file.writeText(json.toString())
-        }
-    }
-
-    fun latestFrameBase64'''
-block2_new = '''            file.writeText(json.toString())
-        }.onFailure {
-            context.getSharedPreferences("collector_runtime", Context.MODE_PRIVATE).edit()
-                .putString("session_metadata_error", "markFrames: " + (it.message ?: it.javaClass.simpleName))
-                .apply()
-        }
-    }
-
-    fun latestFrameBase64'''
-if block2 in s:
-    s = s.replace(block2, block2_new, 1)
-
-changed += save(p, old, s)
-
-# CAPTURE
-rel = "android-collector/app/src/main/java/com/osmaicoach/collector/OsmCaptureAccessibilityService.kt"
-p, s = load(rel)
-old = s
-s = s.replace('textHint=textHint.take(7000)', 'textHint=textHint.take(1800)')
-s = s.replace('>= 8000L', '>= 12000L')
-s = s.replace('1500L - (System.currentTimeMillis() - lastCaptureAt)',
-              '1900L - (System.currentTimeMillis() - lastCaptureAt)')
-changed += save(p, old, s)
-
-# UI
-rel = "android-collector/app/src/main/java/com/osmaicoach/collector/MainActivity.kt"
-p, s = load(rel)
-old = s
-s = s.replace('DetailLine("Versão nativa","V17 · ${BuildConfig.VERSION_NAME}")',
-              'DetailLine("Versão nativa","V18 · ${BuildConfig.VERSION_NAME}")')
-
-old_err = 'DetailLine("Último erro",processing.lastError.ifBlank{"Nenhum"})'
-new_err = '''DetailLine(
-                        "Último erro",
-                        processing.lastError.ifBlank {
-                            getSharedPreferences("collector_runtime",MODE_PRIVATE)
-                                .getString("session_metadata_error","Nenhum") ?: "Nenhum"
-                        }
-                    )'''
-s = s.replace(old_err, new_err)
-changed += save(p, old, s)
-
-# VERSION
-rel = "android-collector/app/build.gradle.kts"
-p, s = load(rel)
-old = s
-s = re.sub(r'versionName\s*=\s*"2\.[0-9]+\.\$runNumber"',
-           'versionName = "2.6.$runNumber"', s)
-changed += save(p, old, s)
+p, s = load('android-collector/app/build.gradle.kts')
+old_file = s
+s = re.sub(r'versionName\s*=\s*"[^"]*\$runNumber"', 'versionName = "3.0.$runNumber"', s)
+changed += save(p, old_file, s)
 
 print()
-print(f"V18 aplicada. Arquivos alterados: {changed}")
-print("Esperado:")
-print("- Ajustes e Sessões mostram o mesmo OCR.")
-print("- Sessões deixa de mostrar todas as telas como não atribuídas.")
-print("- Backend de produção usado primeiro.")
-print("- session.json menor e mais estável.")
+print(f'V19 aplicada. Arquivos alterados: {changed}')
+print('Central dos 4 slots = fonte de verdade.')
+print('Sem divisão por tempo e sem corte em quatro partes iguais.')
