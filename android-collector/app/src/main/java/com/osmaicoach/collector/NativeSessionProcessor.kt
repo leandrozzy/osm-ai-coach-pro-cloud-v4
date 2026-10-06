@@ -64,9 +64,19 @@ class NativeSessionProcessor(
             onProgress(Progress(true,current,total,"OCR local · tela ${frame.index+1}/${session.frames.size} · $readable com texto",success,failed,"ocr",lastError))
         }
 
+        val classifications = ocrByIndex.mapValues { (_, text) -> ScreenClassifier.classify(text) }
+        repository.updateLatestFrameClassification(classifications)
+
         segments.forEachIndexed{slotIndex,indices->
             val slot=slots[slotIndex.coerceIn(0,3)]
-            val texts=indices.mapNotNull{ocrByIndex[it]}.filter{it.isNotBlank()}
+            val relevant=indices.filter { idx ->
+                when(classifications[idx]?.type) {
+                    "match","squad","calendar","club","training","market","tactics","result" -> true
+                    else -> false
+                }
+            }
+            val source=if(relevant.isNotEmpty())relevant else indices
+            val texts=source.mapNotNull{ocrByIndex[it]}.filter{it.isNotBlank()}
             local.applyToSlot(slot,texts)
             slot.lastUpdated=System.currentTimeMillis()
         }
@@ -82,11 +92,24 @@ class NativeSessionProcessor(
             return@withContext true
         }
 
+        fun rowsForType(rows:List<Int>, type:String):List<Int>{
+            val direct=rows.filter { classifications[it]?.type==type }
+            if(direct.isNotEmpty()) return direct
+            val fallbackTypes=when(type){
+                "match" -> setOf("club","tactics","result")
+                "squad" -> setOf("training","market")
+                "calendar" -> setOf("ranking")
+                else -> emptySet()
+            }
+            val related=rows.filter { classifications[it]?.type in fallbackTypes }
+            return if(related.isNotEmpty()) related else rows
+        }
+
         val jobs=mutableListOf<Triple<Int,String,List<Int>>>()
         segments.forEachIndexed{i,rows->
-            jobs+=Triple(i,"match",rows)
-            jobs+=Triple(i,"squad",rows)
-            jobs+=Triple(i,"calendar",rows)
+            jobs+=Triple(i,"match",rowsForType(rows,"match"))
+            jobs+=Triple(i,"squad",rowsForType(rows,"squad"))
+            jobs+=Triple(i,"calendar",rowsForType(rows,"calendar"))
         }
 
         jobs.forEach{job->
@@ -100,8 +123,17 @@ class NativeSessionProcessor(
                 val detail=cloudError.ifBlank{"sem resposta dentro do limite"}
                 lastError="S${slot.id} $friendly: $detail"
             }else{
+                val before=knownCount(slot)
                 runCatching{applyResult(slot,result.first,result.second)}
-                    .onSuccess{success++}
+                    .onSuccess{
+                        val after=knownCount(slot)
+                        if(after>before){
+                            success++
+                        }else{
+                            failed++
+                            lastError="S${slot.id} $friendly: resposta recebida, mas sem dados úteis para este slot"
+                        }
+                    }
                     .onFailure{failed++;lastError="S${slot.id} $friendly: ${it.message?:"falha ao aplicar"}"}
             }
             current++
@@ -169,7 +201,7 @@ class NativeSessionProcessor(
             val file=repository.frameFile(session,index)?:return@forEach
             val encoded=encodeImage(file.absolutePath)?:return@forEach
             images.put(JSONObject().apply{
-                put("url",encoded.first);put("width",encoded.second.first);put("height",encoded.second.second);put("frameIndex",index);put("region","full")
+                put("url",encoded.first);put("width",encoded.second.first);put("height",encoded.second.second);put("frameIndex",index);put("region","full");put("region","full")
             })
         }
         if(images.length()==0)return@withContext null
@@ -272,6 +304,20 @@ class NativeSessionProcessor(
         if(!o.has(key)||o.isNull(key))return
         val value=o.opt(key)?.toString()?.trim().orEmpty()
         if(value.isNotBlank()&&value!="NI"&&value!="null")block(value)
+    }
+
+    private fun knownCount(slot:NativeSlotData):Int {
+        val values=listOf(
+            slot.team,slot.competition,slot.nextRival,slot.matchDate,slot.matchTime,slot.venue,slot.referee,
+            slot.myStrength,slot.rivalStrength,slot.myValue,slot.rivalValue,
+            slot.myGoalkeeper,slot.myDefense,slot.myMidfield,slot.myAttack,
+            slot.rivalGoalkeeper,slot.rivalDefense,slot.rivalMidfield,slot.rivalAttack,
+            slot.rivalFormation,slot.rivalPlan,slot.marking,slot.offside,
+            slot.secretTraining,slot.trainingCamp,slot.stadium,slot.bonus
+        )
+        return values.count { it.isNotBlank() && it!="NI" && it!="null" } +
+            (if(slot.squadCount>0)1 else 0) +
+            (if(slot.calendarCount>0)1 else 0)
     }
 
     private fun sample(rows:List<Int>,max:Int):List<Int>{

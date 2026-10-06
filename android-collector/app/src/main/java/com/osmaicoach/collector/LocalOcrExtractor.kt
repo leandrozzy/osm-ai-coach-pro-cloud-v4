@@ -32,7 +32,12 @@ class LocalOcrExtractor {
         extractLabeled(lines, listOf("meu time","my team","clube","club"))?.let { if (slot.team=="NI") slot.team=it }
         extractLabeled(lines, listOf("competição","competicao","competition","liga","league"))?.let { if (slot.competition=="NI") slot.competition=it }
         extractLabeled(lines, listOf("adversário","adversario","opponent","rival","próximo rival","proximo rival"))?.let { if (slot.nextRival=="NI") slot.nextRival=it }
-        extractLabeled(lines, listOf("árbitro","arbitro","referee"))?.let { if (slot.referee=="NI") slot.referee=it }
+        extractLabeled(lines, listOf("árbitro","arbitro","referee"))?.let { candidate ->
+            val r = normalize(candidate)
+            val valid = listOf("verde","azul","amarelo","laranja","vermelho","green","blue","yellow","orange","red",
+                "muito rigoroso","rigoroso","medio","médio","tolerante","leniente").any { r.contains(normalize(it)) }
+            if (slot.referee=="NI" && valid) slot.referee=candidate
+        }
         extractLabeled(lines, listOf("estádio","estadio","stadium"))?.let { if (slot.stadium=="NI") slot.stadium=it }
 
         Regex("\\b[3-5]\\s*[-–]\\s*[1-5]\\s*[-–]\\s*[1-5]\\s*[AB]?\\b", RegexOption.IGNORE_CASE)

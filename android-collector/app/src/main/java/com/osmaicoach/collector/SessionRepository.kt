@@ -87,6 +87,26 @@ class SessionRepository(private val context: Context) {
         return file.takeIf { it.exists() }
     }
 
+    @Synchronized
+    fun updateLatestFrameClassification(classifications: Map<Int, ScreenClassifier.Result>) {
+        val id=context.getSharedPreferences("collector",Context.MODE_PRIVATE)
+            .getString("latest_session_id",null) ?: return
+        val file=File(File(root,id),"session.json")
+        if(!file.exists()) return
+        runCatching {
+            val json=JSONObject(file.readText())
+            val frames=json.optJSONArray("frames") ?: return@runCatching
+            for(i in 0 until frames.length()){
+                val frame=frames.getJSONObject(i)
+                val index=frame.optInt("index",i)
+                val c=classifications[index] ?: continue
+                frame.put("screenType",c.type)
+                frame.put("screenTitle",c.title.take(80))
+            }
+            file.writeText(json.toString(2))
+        }
+    }
+
     fun latestFrameBase64(index:Int):String?{
         val id=context.getSharedPreferences("collector",Context.MODE_PRIVATE)
             .getString("latest_session_id",null) ?: return null
