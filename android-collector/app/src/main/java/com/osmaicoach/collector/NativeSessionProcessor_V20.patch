@@ -1,0 +1,78 @@
+*** NativeSessionProcessor.kt — V20
+--- current/NativeSessionProcessor.kt
++++ V20/NativeSessionProcessor.kt
+@@
+-            val maxImages=4
++            // Backend atual aceita no máximo 2 telas JPEG/PNG por chamada.
++            val maxImages=2
+@@
+-            if(parsed.isNotEmpty()){
+-                slot.players = parsed.distinctBy{it.name.lowercase()+"|"+it.position.lowercase()}.toMutableList()
+-                slot.squadCount=slot.players.size
++            if(parsed.isNotEmpty()){
++                // V20: leitura parcial nunca apaga elenco já conhecido.
++                // Atualiza jogadores lidos agora e preserva os demais.
++                val old = slot.players.associateBy {
++                    it.name.trim().lowercase() + "|" + it.position.trim().lowercase()
++                }.toMutableMap()
++
++                parsed.forEach { fresh ->
++                    val key = fresh.name.trim().lowercase() + "|" + fresh.position.trim().lowercase()
++                    val previous = old[key]
++                    if(previous == null) {
++                        old[key] = fresh
++                    } else {
++                        if(fresh.age != "NI") previous.age = fresh.age
++                        if(fresh.strength != "NI") previous.strength = fresh.strength
++                        if(fresh.value != "NI") previous.value = fresh.value
++                        if(fresh.training != "NI") previous.training = fresh.training
++                        if(fresh.selling != "NI") previous.selling = fresh.selling
++                        if(fresh.position != "NI") previous.position = fresh.position
++                    }
++                }
++
++                slot.players = old.values.toMutableList()
++                slot.squadCount=slot.players.size
+                 slot.attackers=slot.players.count{normPos(it.position)=="ATA"}
+                 slot.midfielders=slot.players.count{normPos(it.position)=="MEI"}
+                 slot.defenders=slot.players.count{normPos(it.position)=="DEF"}
+                 slot.goalkeepers=slot.players.count{normPos(it.position)=="GOL"}
+                 slot.trainingCount=slot.players.count{truthy(it.training)}
+                 slot.sellingCount=slot.players.count{truthy(it.selling)}
+-                changed += slot.players.size
++                changed += parsed.size
+             }
+@@
+-        if(parsed.isNotEmpty()){
+-            slot.calendar=parsed.distinctBy{
+-                listOf(it.round,it.opponent,it.date,it.time).joinToString("|").lowercase()
+-            }.toMutableList()
++        if(parsed.isNotEmpty()){
++            // V20: calendário parcial também é incremental.
++            // Jogos antigos permanecem; partidas relidas são atualizadas.
++            fun key(g:NativeCalendarGame)=
++                listOf(g.round,g.opponent,g.date,g.time).joinToString("|").lowercase()
++
++            val merged = slot.calendar.associateBy(::key).toMutableMap()
++
++            parsed.forEach { fresh ->
++                val k = key(fresh)
++                val previous = merged[k]
++                if(previous == null) {
++                    merged[k] = fresh
++                } else {
++                    if(fresh.round != "NI") previous.round = fresh.round
++                    if(fresh.opponent != "NI") previous.opponent = fresh.opponent
++                    if(fresh.date != "NI") previous.date = fresh.date
++                    if(fresh.time != "NI") previous.time = fresh.time
++                    if(fresh.venue != "NI") previous.venue = fresh.venue
++                    if(fresh.score != "NI") previous.score = fresh.score
++                    if(fresh.competition != "NI") previous.competition = fresh.competition
++                    previous.cup = fresh.cup || previous.cup
++                }
++            }
++
++            slot.calendar = merged.values.toMutableList()
+             slot.calendarCount=slot.calendar.size
+-            changed += slot.calendar.size
++            changed += parsed.size

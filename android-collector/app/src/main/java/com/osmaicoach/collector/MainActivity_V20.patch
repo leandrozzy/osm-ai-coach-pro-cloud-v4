@@ -1,0 +1,122 @@
+*** MainActivity.kt — V20
+--- current/MainActivity.kt
++++ V20/MainActivity.kt
+@@
+-    override fun onResume() {
+-        super.onResume()
+-        // Fallback: alguns aparelhos não emitem imediatamente um evento de
+-        // acessibilidade ao voltar para o Coach. Se o OSM foi visto depois do
+-        // último lançamento, finalizamos a sessão aqui também.
+-        android.os.Handler(mainLooper).postDelayed({
+-            val runtime=getSharedPreferences("collector_runtime",Context.MODE_PRIVATE)
+-            val launchAt=runtime.getLong("coach_launch_at",0L)
+-            val lastOsm=runtime.getLong("last_osm_seen_at",0L)
+-            if(launchAt>0L && lastOsm>=launchAt && runtime.getBoolean("osm_seen_in_session",false)){
+-                repo.finish()
+-                runtime.edit()
+-                    .putBoolean("osm_seen_in_session",false)
+-                    .putLong("coach_launch_at",0L)
+-                    .apply()
+-                CollectorState.setRecording(false)
+-                CollectorState.signalSessionReady()
+-            }
+-        },900L)
+-    }
++    override fun onResume() {
++        super.onResume()
++        // V20:
++        // voltar ao Coach NÃO encerra a captura.
++        // O usuário encerra manualmente pelo botão "Encerrar captura e atualizar".
++        // Isso evita perder sessão por propaganda, SystemUI ou troca rápida de app.
++    }
+@@
+-                        0 -> TodayScreen(serviceReady, recording, latest, processing, slots, onReprocess={ forceProcessToken++ }) { openOsm() }
++                        0 -> TodayScreen(
++                            serviceReady = serviceReady,
++                            recording = recording,
++                            latest = latest,
++                            processing = processing,
++                            slots = slots,
++                            onReprocess = { forceProcessToken++ },
++                            openOsm = { openOsm() },
++                            stopCapture = { finishCaptureManually() }
++                        )
+@@
+     private fun TodayScreen(
+         serviceReady:Boolean,
+         recording:Boolean,
+         latest:CaptureSession?,
+         processing:NativeSessionProcessor.Progress,
+         slots:List<NativeSlotData>,
+         onReprocess:()->Unit,
+-        openOsm:()->Unit
++        openOsm:()->Unit,
++        stopCapture:()->Unit
+     ) {
+@@
+-                        Button(
+-                            onClick=openOsm,
+-                            enabled=serviceReady&&!recording&&!processing.running,
+-                            modifier=Modifier.fillMaxWidth().height(52.dp),
+-                            colors=ButtonDefaults.buttonColors(containerColor=Color(0xFFB8E34D),contentColor=Color(0xFF122630))
+-                        ){
+-                            Icon(Icons.Default.PlayArrow,null);Spacer(Modifier.width(8.dp));Text("Abrir OSM",fontWeight=FontWeight.Bold)
+-                        }
++                        if(recording) {
++                            Button(
++                                onClick = stopCapture,
++                                modifier = Modifier.fillMaxWidth().height(52.dp),
++                                colors = ButtonDefaults.buttonColors(
++                                    containerColor = Color(0xFFFFC857),
++                                    contentColor = Color(0xFF122630)
++                                )
++                            ){
++                                Icon(Icons.Default.Stop,null)
++                                Spacer(Modifier.width(8.dp))
++                                Text("Encerrar captura e atualizar",fontWeight=FontWeight.Bold)
++                            }
++                            Spacer(Modifier.height(8.dp))
++                            Text(
++                                "Jogue normalmente. Não precisa esperar entre telas. Volte aqui somente quando quiser encerrar.",
++                                color=Color(0xFFB6C6CE),
++                                fontSize=11.sp
++                            )
++                        } else {
++                            Button(
++                                onClick=openOsm,
++                                enabled=serviceReady&&!processing.running,
++                                modifier=Modifier.fillMaxWidth().height(52.dp),
++                                colors=ButtonDefaults.buttonColors(
++                                    containerColor=Color(0xFFB8E34D),
++                                    contentColor=Color(0xFF122630)
++                                )
++                            ){
++                                Icon(Icons.Default.PlayArrow,null)
++                                Spacer(Modifier.width(8.dp))
++                                Text("Abrir OSM e iniciar captura",fontWeight=FontWeight.Bold)
++                            }
++                        }
+@@
+-                    DetailLine("Versão nativa","V19 · ${BuildConfig.VERSION_NAME}")
++                    DetailLine("Versão nativa","V20 · ${BuildConfig.VERSION_NAME}")
+@@
++    private fun finishCaptureManually() {
++        val runtime = getSharedPreferences("collector_runtime", Context.MODE_PRIVATE)
++
++        // Fecha SOMENTE a sessão atual.
++        // Não limpa slots nem dados anteriores.
++        repo.finish()
++
++        runtime.edit()
++            .putBoolean("osm_seen_in_session", false)
++            .putBoolean("start_new_session_pending", false)
++            .putLong("coach_launch_at", 0L)
++            .putLong("requested_session_at", 0L)
++            .putLong("session_finished_at", System.currentTimeMillis())
++            .apply()
++
++        CollectorState.setRecording(false)
++        CollectorState.signalSessionReady()
++    }
++
+     private fun openOsm() {
