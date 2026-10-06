@@ -117,6 +117,21 @@ export default async function handler(req,res){
  };
  if(body.forceOCR===true){const results=await Promise.allSettled([visual(),readOCR()]);for(const result of results)if(result.status==='fulfilled'&&result.value)output=fuseExtraction(output,result.value);}
  else{const data=await visual();if(data)output=fuseExtraction(output,data);if(!usefulRead(type,output)){const read=await readOCR();if(read)output=fuseExtraction(output,read);}}
+ const nativeOcrText=typeof body.nativeOcrText==='string'?body.nativeOcrText.trim().slice(0,30000):'';
+ if(nativeOcrText&&coverage(type,output).percent<70&&Date.now()-started<30000){
+  const textReaders=[];
+  if(google)textReaders.push(['google',()=>googleRead({key:google,type,text:nativeOcrText,images:[],context,model:body.models?.google,budgetMs:Math.max(1500,30000-(Date.now()-started))})]);
+  if(groq)textReaders.push(['groq',()=>groqRead({key:groq,type,text:nativeOcrText,images:[],context,model:body.models?.groqText,budgetMs:Math.max(1500,30000-(Date.now()-started))})]);
+  for(const [provider,reader] of textReaders){
+   if(Date.now()-started>=30000)break;
+   attempts.push(provider+'-native-ocr');
+   try{
+    const interpreted=checkedRead(await reader(),'native-ocr');
+    output=fuseExtraction(output,interpreted);
+    if(usefulRead(type,output)){preferredProvider=preferredProvider||provider;break;}
+   }catch(e){failures.push({...errorInfo(provider,e),stage:'native-ocr'});}
+  }
+ }
  const usefulOcr=ocrResults.filter(r=>r.text?.trim().length>=40);
  if(body.useText!==false&&groq&&usefulOcr.length&&coverage(type,output).percent<35&&Date.now()-started<30000&&!body.disabled?.includes('groq-text')&&!failures.some(f=>f.provider==='groq'&&[401,403,429,503].includes(f.status))){
  try{
