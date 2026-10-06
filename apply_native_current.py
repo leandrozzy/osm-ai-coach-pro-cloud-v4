@@ -5,52 +5,437 @@ ROOT = Path(__file__).resolve().parent
 
 def read(rel):
     p = ROOT / rel
-    if not p.exists(): raise SystemExit(f'Arquivo não encontrado: {rel}')
-    return p, p.read_text(encoding='utf-8')
+    if not p.exists():
+        raise SystemExit(f"Arquivo não encontrado: {rel}")
+    return p, p.read_text(encoding="utf-8")
 
-def write(p, content):
-    old = p.read_text(encoding='utf-8') if p.exists() else ''
-    if old != content:
-        p.write_text(content, encoding='utf-8')
-        print('PATCHED:', p.relative_to(ROOT))
-        return 1
-    print('UNCHANGED:', p.relative_to(ROOT))
-    return 0
+def replace_once(text, old, new, label):
+    if old in text:
+        return text.replace(old, new, 1)
+    if new in text:
+        return text
+    raise SystemExit(f"PATCH ABORTADO: trecho não encontrado em {label}")
 
-changed = 0
+def write_if_changed(p, new):
+    old = p.read_text(encoding="utf-8")
+    if old == new:
+        print("UNCHANGED:", p.relative_to(ROOT))
+        return 0
+    p.write_text(new, encoding="utf-8")
+    print("PATCHED:", p.relative_to(ROOT))
+    return 1
 
-local_path = ROOT / 'android-collector/app/src/main/java/com/osmaicoach/collector/LocalOcrExtractor.kt'
-local_path.parent.mkdir(parents=True, exist_ok=True)
-LOCAL = 'package com.osmaicoach.collector\n\nimport android.graphics.BitmapFactory\nimport com.google.mlkit.vision.common.InputImage\nimport com.google.mlkit.vision.text.TextRecognition\nimport com.google.mlkit.vision.text.latin.TextRecognizerOptions\nimport kotlinx.coroutines.tasks.await\nimport java.io.File\nimport java.text.Normalizer\nimport java.util.Locale\n\n/**\n * V20 SAFE OCR\n * Só grava valores quando existe evidência forte.\n * Dado duvidoso fica NI. Não cria jogadores a partir de linhas soltas.\n */\nclass LocalOcrExtractor {\n    private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)\n\n    suspend fun read(file: File): String {\n        val bitmap = BitmapFactory.decodeFile(file.absolutePath) ?: return ""\n        var cropped: android.graphics.Bitmap? = null\n        return try {\n            val top = (bitmap.height * 0.060f).toInt().coerceAtLeast(0)\n            val bottom = (bitmap.height * 0.080f).toInt().coerceAtLeast(0)\n            val h = (bitmap.height - top - bottom).coerceAtLeast(1)\n            cropped = android.graphics.Bitmap.createBitmap(bitmap, 0, top, bitmap.width, h)\n            recognizer.process(InputImage.fromBitmap(cropped!!, 0)).await().text.orEmpty()\n        } catch (_: Throwable) {\n            ""\n        } finally {\n            cropped?.takeIf { it !== bitmap }?.recycle()\n            bitmap.recycle()\n        }\n    }\n\n    fun applyToSlot(slot: NativeSlotData, texts: List<String>) {\n        if (texts.isEmpty()) return\n        val joined = texts.joinToString("\\n")\n        val lines = joined.lines().map { cleanValue(it) }.filter { it.length in 2..100 }\n        val n = normalize(joined)\n\n        extractLabeled(lines, listOf("adversário","adversario","opponent","rival"))?.let {\n            if (slot.nextRival=="NI" && validEntityName(it)) slot.nextRival=it\n        }\n\n        extractLabeled(lines, listOf("árbitro","arbitro","referee"))?.let {\n            if (slot.referee=="NI" && validReferee(it)) slot.referee=it\n        }\n\n        Regex("\\\\b[3-5]\\\\s*[-–]\\\\s*[1-5]\\\\s*[-–]\\\\s*[1-5]\\\\s*[AB]?\\\\b", RegexOption.IGNORE_CASE)\n            .find(joined)?.value?.replace(" ","")?.let {\n                if (slot.rivalFormation=="NI") slot.rivalFormation=it\n            }\n\n        Regex("\\\\b(\\\\d{2,3})\\\\s*(?:x|×|vs\\\\.?)\\\\s*(\\\\d{2,3})\\\\b", RegexOption.IGNORE_CASE)\n            .find(joined)?.let {\n                val a=it.groupValues[1].toIntOrNull()\n                val b=it.groupValues[2].toIntOrNull()\n                if(a in 40..200 && b in 40..200){\n                    if(slot.myStrength=="NI") slot.myStrength=a.toString()\n                    if(slot.rivalStrength=="NI") slot.rivalStrength=b.toString()\n                }\n            }\n\n        Regex("\\\\b([0-3]?\\\\d/[01]?\\\\d/(?:20)?\\\\d{2})\\\\b").find(joined)?.value?.let {\n            if(slot.matchDate=="NI") slot.matchDate=it\n        }\n\n        if(slot.venue=="NI"){\n            slot.venue = when {\n                Regex("(?i)\\\\b(?:joga|jogo|partida)\\\\s+(?:em\\\\s+)?casa\\\\b").containsMatchIn(joined) -> "Casa"\n                Regex("(?i)\\\\b(?:joga|jogo|partida)\\\\s+(?:fora|away)\\\\b").containsMatchIn(joined) -> "Fora"\n                else -> "NI"\n            }\n        }\n\n        if(slot.marking=="NI"){\n            slot.marking = when {\n                n.contains("marcacao a zona") || n.contains("zonal marking") -> "Marcação à zona"\n                n.contains("marcacao individual") || n.contains("man marking") -> "Marcação individual"\n                else -> "NI"\n            }\n        }\n\n        if(slot.rivalPlan=="NI"){\n            slot.rivalPlan = when {\n                n.contains("jogo de passes") || n.contains("passing game") -> "Jogo de passes"\n                n.contains("pelas alas") || n.contains("wing play") -> "Pelas alas"\n                n.contains("contra ataque") || n.contains("counter attack") -> "Contra-ataque"\n                n.contains("bola longa") || n.contains("long ball") -> "Bola longa"\n                n.contains("chutar de longe") || n.contains("shoot on sight") -> "Chutar de longe"\n                else -> "NI"\n            }\n        }\n\n        if(slot.offside=="NI"){\n            slot.offside = when {\n                Regex("(?i)impedimento\\\\s*[:|-]?\\\\s*n[aã]o").containsMatchIn(joined) ||\n                    Regex("(?i)offside\\\\s*[:|-]?\\\\s*no").containsMatchIn(joined) -> "Não"\n                Regex("(?i)impedimento\\\\s*[:|-]?\\\\s*sim").containsMatchIn(joined) ||\n                    Regex("(?i)offside\\\\s*[:|-]?\\\\s*yes").containsMatchIn(joined) -> "Sim"\n                else -> "NI"\n            }\n        }\n\n        if(slot.secretTraining=="NI"){\n            slot.secretTraining = when {\n                Regex("(?i)treino secreto\\\\s*[:|-]?\\\\s*sim").containsMatchIn(joined) -> "Sim"\n                Regex("(?i)treino secreto\\\\s*[:|-]?\\\\s*n[aã]o").containsMatchIn(joined) -> "Não"\n                else -> "NI"\n            }\n        }\n\n        if(slot.trainingCamp=="NI"){\n            slot.trainingCamp = when {\n                Regex("(?i)campo de treinamento\\\\s*[:|-]?\\\\s*sim").containsMatchIn(joined) -> "Sim"\n                Regex("(?i)campo de treinamento\\\\s*[:|-]?\\\\s*n[aã]o").containsMatchIn(joined) -> "Não"\n                else -> "NI"\n            }\n        }\n\n        Regex("\\\\b([1-3])\\\\s*%\\\\b").find(joined)?.groupValues?.getOrNull(1)?.let {\n            if(slot.bonus=="NI") slot.bonus="$it%"\n        }\n\n        fun labeledNumber(vararg labels:String):String?{\n            for(label in labels){\n                val m=Regex("(?i)\\\\b"+Regex.escape(label)+"\\\\b\\\\s*[:|-]?\\\\s*(\\\\d{2,3})\\\\b")\n                    .find(joined) ?: continue\n                val v=m.groupValues[1].toIntOrNull()\n                if(v in 40..200) return v.toString()\n            }\n            return null\n        }\n\n        if(slot.myGoalkeeper=="NI") labeledNumber("Meu GOL","Meu GK")?.let{slot.myGoalkeeper=it}\n        if(slot.myDefense=="NI") labeledNumber("Minha DEF","Meu DEF")?.let{slot.myDefense=it}\n        if(slot.myMidfield=="NI") labeledNumber("Meu MEI","Meu MID")?.let{slot.myMidfield=it}\n        if(slot.myAttack=="NI") labeledNumber("Meu ATA","Meu ATT")?.let{slot.myAttack=it}\n        if(slot.rivalGoalkeeper=="NI") labeledNumber("Rival GOL","Rival GK")?.let{slot.rivalGoalkeeper=it}\n        if(slot.rivalDefense=="NI") labeledNumber("Rival DEF")?.let{slot.rivalDefense=it}\n        if(slot.rivalMidfield=="NI") labeledNumber("Rival MEI","Rival MID")?.let{slot.rivalMidfield=it}\n        if(slot.rivalAttack=="NI") labeledNumber("Rival ATA","Rival ATT")?.let{slot.rivalAttack=it}\n\n        if(n.contains("mercado") || n.contains("transfer")) slot.marketSeen=true\n        if(n.contains("treino") || n.contains("training")) slot.trainingSeen=true\n\n        // Jogadores individuais não são inferidos de OCR solto.\n    }\n\n    private fun validReferee(v:String):Boolean{\n        val n=normalize(v)\n        return listOf(\n            "verde","azul","amarelo","laranja","vermelho",\n            "muito rigoroso","rigoroso","medio","tolerante",\n            "green","blue","yellow","orange","red"\n        ).any { n.contains(normalize(it)) }\n    }\n\n    private fun validEntityName(v:String):Boolean{\n        val n=normalize(v)\n        if(n.length !in 3..45 || !n.any{it.isLetter()}) return false\n        val blocked=listOf(\n            "analista de dados","calendario","elenco","tatica","mercado","treino",\n            "classificacao","proximo jogo","dados completos","leitura automatica",\n            "sessao","osm ai coach","perfil","comunicacoes","diamantes"\n        )\n        return blocked.none { n.contains(it) }\n    }\n\n    private fun extractLabeled(lines: List<String>, labels: List<String>): String? {\n        for(i in lines.indices){\n            val line=lines[i]\n            val n=normalize(line)\n            for(label in labels){\n                val nl=normalize(label)\n                if(n==nl){\n                    val next=lines.getOrNull(i+1) ?: continue\n                    if(validEntityName(next) || validReferee(next)) return next\n                }\n                if(n.startsWith("$nl:") || n.startsWith("$nl -")){\n                    val afterColon=line.substringAfter(":", "")\n                    val afterDash=line.substringAfter("-", "")\n                    val v=(if(afterColon.isNotBlank()) afterColon else afterDash).trim()\n                    if(v.isNotBlank()) return cleanValue(v)\n                }\n            }\n        }\n        return null\n    }\n\n    private fun cleanValue(v:String)=v.replace("|"," ").replace(Regex("\\\\s+")," ").trim().take(80)\n\n    private fun normalize(v:String):String =\n        Normalizer.normalize(v.lowercase(Locale.ROOT),Normalizer.Form.NFD)\n            .replace(Regex("\\\\p{Mn}+"),"")\n            .replace(Regex("[^a-z0-9 :/.-]+")," ")\n            .replace(Regex("\\\\s+")," ")\n            .trim()\n}\n'
-changed += write(local_path, LOCAL)
+main_p, main = read("android-collector/app/src/main/java/com/osmaicoach/collector/MainActivity.kt")
+svc_p, svc = read("android-collector/app/src/main/java/com/osmaicoach/collector/OsmCaptureAccessibilityService.kt")
+proc_p, proc = read("android-collector/app/src/main/java/com/osmaicoach/collector/NativeSessionProcessor.kt")
+tracker_p, tracker = read("android-collector/app/src/main/java/com/osmaicoach/collector/SlotNavigationTracker.kt")
+gradle_p, gradle = read("android-collector/app/build.gradle.kts")
 
-p, s = read('android-collector/app/src/main/java/com/osmaicoach/collector/NativeSessionProcessor.kt')
-s = s.replace('val text=listOf(frame.textHint,visualText).filter{it.isNotBlank()}.distinct().joinToString("\\n")', 'val text=visualText.trim()')
-s = re.sub(r'val maxImages\\s*=\\s*\\d+', 'val maxImages=2', s)
-needle = '        val slots=store.loadAll()\\n'
-if needle in s and 'sanitizeCorruptedSlot(it)' not in s:
-    s = s.replace(needle, '        val slots=store.loadAll()\\n        slots.forEach { sanitizeCorruptedSlot(it) }\\n        store.saveAll(slots)\\n', 1)
+old_resume = '''    override fun onResume() {
+        super.onResume()
+        // Fallback: alguns aparelhos não emitem imediatamente um evento de
+        // acessibilidade ao voltar para o Coach. Se o OSM foi visto depois do
+        // último lançamento, finalizamos a sessão aqui também.
+        android.os.Handler(mainLooper).postDelayed({
+            val runtime=getSharedPreferences("collector_runtime",Context.MODE_PRIVATE)
+            val launchAt=runtime.getLong("coach_launch_at",0L)
+            val lastOsm=runtime.getLong("last_osm_seen_at",0L)
+            if(launchAt>0L && lastOsm>=launchAt && runtime.getBoolean("osm_seen_in_session",false)){
+                repo.finish()
+                runtime.edit()
+                    .putBoolean("osm_seen_in_session",false)
+                    .putLong("coach_launch_at",0L)
+                    .apply()
+                CollectorState.setRecording(false)
+                CollectorState.signalSessionReady()
+            }
+        },900L)
+    }'''
+new_resume = '''    override fun onResume() {
+        super.onResume()
+        // V22: voltar ao Coach NÃO encerra a sessão.
+        // O usuário pode entrar e sair do OSM normalmente e só encerra quando
+        // tocar em "Encerrar captura e atualizar".
+        if (repo.current()?.state == "recording") {
+            CollectorState.setRecording(true)
+        }
+    }'''
+main = replace_once(main, old_resume, new_resume, "MainActivity.onResume")
 
-start = s.find('    private fun applySquad(slot:NativeSlotData,data:JSONObject):Int{')
-end = s.find('    private fun applyCalendar(', start)
-if start != -1 and end != -1:
-    SQUAD = '    private fun applySquad(slot:NativeSlotData,data:JSONObject):Int{\n        var changed=0\n        val meta=data.optJSONObject("meta")?:JSONObject()\n\n        knownString(meta,"team")?.takeIf(::validEntityName)?.let{slot.team=it;changed++}\n        knownString(meta,"competition")?.takeIf(::validCompetition)?.let{slot.competition=it;changed++}\n        knownString(meta,"competitionType")?.takeIf{ it.length in 3..40 }?.let{slot.competitionType=it;changed++}\n        knownString(meta,"squadValue")?.takeIf(::validMoney)?.let{slot.myValue=it;changed++}\n        knownString(meta,"strength")?.takeIf(::validStrength)?.let{slot.myStrength=it;changed++}\n        knownString(meta,"GK")?.takeIf(::validStrength)?.let{slot.myGoalkeeper=it;changed++}\n        knownString(meta,"DEF")?.takeIf(::validStrength)?.let{slot.myDefense=it;changed++}\n        knownString(meta,"MID")?.takeIf(::validStrength)?.let{slot.myMidfield=it;changed++}\n        knownString(meta,"ATT")?.takeIf(::validStrength)?.let{slot.myAttack=it;changed++}\n\n        val arr=data.optJSONArray("players")?:JSONArray()\n        if(arr.length() in 1..40){\n            val parsed=mutableListOf<NativePlayerData>()\n            for(i in 0 until arr.length()){\n                val obj=arr.optJSONObject(i)?:continue\n                val name=firstKnown(obj,"name","player","playerName")?.takeIf(::validPlayerName) ?: continue\n                val pos=firstKnown(obj,"position","pos","role")?.let(::normPos) ?: "NI"\n                if(pos=="NI") continue\n\n                val age=firstKnown(obj,"age")?.takeIf(::validAge) ?: "NI"\n                val strength=firstKnown(obj,"strength","rating","overall")?.takeIf(::validStrength) ?: "NI"\n                val value=firstKnown(obj,"value","marketValue")?.takeIf(::validMoney) ?: "NI"\n\n                parsed += NativePlayerData(\n                    name=name,\n                    position=pos,\n                    age=age,\n                    strength=strength,\n                    value=value,\n                    training=firstKnown(obj,"training","inTraining") ?: "NI",\n                    selling=firstKnown(obj,"selling","forSale","listed") ?: "NI"\n                )\n            }\n\n            if(parsed.isNotEmpty()){\n                val merged=slot.players\n                    .filter{ validPlayerName(it.name) && normPos(it.position)!="NI" }\n                    .associateBy{ it.name.trim().lowercase()+"|"+normPos(it.position) }\n                    .toMutableMap()\n\n                parsed.forEach{ fresh ->\n                    val key=fresh.name.trim().lowercase()+"|"+fresh.position\n                    merged[key]=fresh\n                }\n\n                slot.players=merged.values.take(40).toMutableList()\n                slot.squadCount=slot.players.size\n                slot.attackers=slot.players.count{normPos(it.position)=="ATA"}\n                slot.midfielders=slot.players.count{normPos(it.position)=="MEI"}\n                slot.defenders=slot.players.count{normPos(it.position)=="DEF"}\n                slot.goalkeepers=slot.players.count{normPos(it.position)=="GOL"}\n                slot.trainingCount=slot.players.count{truthy(it.training)}\n                slot.sellingCount=slot.players.count{truthy(it.selling)}\n                changed += parsed.size\n            }\n        }\n        return changed\n    }\n\n'
-    s = s[:start] + SQUAD + s[end:]
+main = replace_once(main,
+'''        val latestForProcessing = repo.latestSession()
+        val latestSessionId = latestForProcessing?.id ?: ""
 
-marker = '    private fun knownCount(slot:NativeSlotData):Int {'
-if marker in s and 'private fun sanitizeCorruptedSlot' not in s:
-    HELPERS = '    private fun sanitizeCorruptedSlot(slot:NativeSlotData){\n        if(slot.players.size>40 || slot.squadCount>40){\n            slot.players.clear()\n            slot.squadCount=0\n            slot.attackers=0\n            slot.midfielders=0\n            slot.defenders=0\n            slot.goalkeepers=0\n            slot.trainingCount=0\n            slot.sellingCount=0\n        }\n        if(!validStadium(slot.stadium)) slot.stadium="NI"\n        if(slot.competition.startsWith("Próximo:",true) || slot.competition.startsWith("Proximo:",true))\n            slot.competition="NI"\n        if(!validEntityNameOrNI(slot.team)) slot.team="NI"\n        if(!validEntityNameOrNI(slot.nextRival)) slot.nextRival="NI"\n        if(slot.matchTime!="NI" && !Regex("^([01]?\\\\d|2[0-3]):[0-5]\\\\d$").matches(slot.matchTime))\n            slot.matchTime="NI"\n    }\n\n    private fun validEntityNameOrNI(v:String)=v=="NI" || validEntityName(v)\n\n    private fun validEntityName(v:String):Boolean{\n        val n=v.trim().lowercase()\n        if(v.length !in 3..50 || !v.any{it.isLetter()}) return false\n        return listOf(\n            "analista de dados","calendário","calendario","elenco","tática","tatica",\n            "mercado","treino","classificação","classificacao","próximo jogo","proximo jogo",\n            "dados completos","leitura automática","leitura automatica","sessão","sessao",\n            "osm ai coach","perfil","comunicações","comunicacoes"\n        ).none{n.contains(it)}\n    }\n\n    private fun validPlayerName(v:String):Boolean{\n        if(!validEntityName(v)) return false\n        val n=v.lowercase()\n        if(Regex("^\\\\d+$").matches(v.trim())) return false\n        return listOf("goleiro","defensor","meio campo","atacante","idade","força","forca","valor").none{n==it}\n    }\n\n    private fun validCompetition(v:String):Boolean =\n        v.length in 3..70 && !v.startsWith("Próximo:",true) && !v.startsWith("Proximo:",true)\n\n    private fun validAge(v:String):Boolean = v.filter{it.isDigit()}.toIntOrNull() in 15..45\n\n    private fun validStrength(v:String):Boolean = v.filter{it.isDigit()}.toIntOrNull() in 40..200\n\n    private fun validMoney(v:String):Boolean =\n        Regex("(?i)^\\\\s*\\\\d{1,4}(?:[.,]\\\\d+)?\\\\s*(?:K|M|MM|B)\\\\s*$").matches(v)\n\n    private fun validStadium(v:String):Boolean{\n        if(v=="NI") return true\n        val n=v.trim().lowercase()\n        if(Regex("^[0-9]$").matches(n)) return n.toInt() in 0..3\n        return Regex("(?i)^(?:nível|nivel|level)\\\\s*[0-3]$").matches(v.trim())\n    }\n\n'
-    s = s.replace(marker, HELPERS + marker, 1)
+        LaunchedEffect(latestSessionId, forceProcessToken) {''',
+'''        val latestForProcessing = repo.latestSession()
+        val latestSessionId = latestForProcessing?.id ?: ""
+        val latestSessionState = latestForProcessing?.state ?: ""
 
-s = s.replace('OSM-AI-Coach-Native/18', 'OSM-AI-Coach-Native/20')
-changed += write(p, s)
+        LaunchedEffect(latestSessionId, latestSessionState, forceProcessToken) {''',
+"MainActivity processing key")
 
-p, s = read('android-collector/app/src/main/java/com/osmaicoach/collector/MainActivity.kt')
-s = re.sub(r'DetailLine\\("Versão nativa","V\\d+\\s*·\\s*\\$\\{BuildConfig\\.VERSION_NAME\\}"\\)', 'DetailLine("Versão nativa","V20 · ${BuildConfig.VERSION_NAME}")', s)
-changed += write(p, s)
+main = replace_once(main,
+'        val serviceReady = servicePermission && serviceConnected\n        val recording = CollectorState.isRecording()',
+'        val serviceReady = servicePermission\n        val recording = CollectorState.isRecording() || repo.current()?.state == "recording"',
+"MainActivity service/recording state")
 
-p, s = read('android-collector/app/build.gradle.kts')
-s = s.replace('versionName = "3.0.$runNumber"', 'versionName = "3.1.$runNumber"')
-changed += write(p, s)
+main = replace_once(main,
+'''                            when {
+                                recording -> "Lendo o OSM agora • você pode navegar normalmente"
+                                serviceReady -> "Leitura automática pronta"
+                                servicePermission -> "Leitura autorizada • reconectando serviço"
+                                else -> "Ative a leitura automática uma única vez"
+                            },''',
+'''                            when {
+                                recording -> "Sessão ativa • você pode voltar ao OSM quando quiser"
+                                servicePermission && !serviceConnected -> "Leitura autorizada • Android reconectando o serviço"
+                                serviceReady -> "Leitura automática pronta"
+                                else -> "Ative a leitura automática uma única vez"
+                            },''',
+"MainActivity header status")
 
-print(f'V20 SAFE READER pronto. Arquivos alterados: {changed}')
+main = replace_once(main,
+'''                        0 -> TodayScreen(serviceReady, recording, latest, processing, slots, onReprocess={ forceProcessToken++ }) { openOsm() }''',
+'''                        0 -> TodayScreen(
+                            serviceReady = serviceReady,
+                            recording = recording,
+                            latest = latest,
+                            processing = processing,
+                            slots = slots,
+                            onReprocess = { forceProcessToken++ },
+                            openOsm = { openOsm() },
+                            stopCapture = {
+                                finishCaptureSession()
+                                forceProcessToken++
+                            }
+                        )''',
+"MainActivity TodayScreen call")
+
+main = replace_once(main,
+'''        onReprocess:()->Unit,
+        openOsm:()->Unit
+    ) {''',
+'''        onReprocess:()->Unit,
+        openOsm:()->Unit,
+        stopCapture:()->Unit
+    ) {''',
+"TodayScreen signature")
+
+old_button = '''                        Spacer(Modifier.height(16.dp))
+                        Button(
+                            onClick=openOsm,
+                            enabled=serviceReady&&!recording&&!processing.running,
+                            modifier=Modifier.fillMaxWidth().height(52.dp),
+                            colors=ButtonDefaults.buttonColors(containerColor=Color(0xFFB8E34D),contentColor=Color(0xFF122630))
+                        ){
+                            Icon(Icons.Default.PlayArrow,null);Spacer(Modifier.width(8.dp));Text("Abrir OSM",fontWeight=FontWeight.Bold)
+                        }'''
+new_button = '''                        Spacer(Modifier.height(16.dp))
+                        if(recording) {
+                            Button(
+                                onClick=openOsm,
+                                enabled=serviceReady&&!processing.running,
+                                modifier=Modifier.fillMaxWidth().height(52.dp),
+                                colors=ButtonDefaults.buttonColors(containerColor=Color(0xFFB8E34D),contentColor=Color(0xFF122630))
+                            ){
+                                Icon(Icons.Default.PlayArrow,null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Voltar ao OSM",fontWeight=FontWeight.Bold)
+                            }
+                            Spacer(Modifier.height(9.dp))
+                            OutlinedButton(
+                                onClick=stopCapture,
+                                enabled=!processing.running,
+                                modifier=Modifier.fillMaxWidth().height(48.dp)
+                            ){
+                                Icon(Icons.Default.StopCircle,null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Encerrar captura e atualizar",fontWeight=FontWeight.Bold)
+                            }
+                            Spacer(Modifier.height(7.dp))
+                            Text(
+                                "Jogue normalmente. Não espere entre telas. O app só encerra quando você tocar no botão acima.",
+                                color=Color(0xFFB6C6CE),
+                                fontSize=11.sp
+                            )
+                        } else {
+                            Button(
+                                onClick=openOsm,
+                                enabled=serviceReady&&!processing.running,
+                                modifier=Modifier.fillMaxWidth().height(52.dp),
+                                colors=ButtonDefaults.buttonColors(containerColor=Color(0xFFB8E34D),contentColor=Color(0xFF122630))
+                            ){
+                                Icon(Icons.Default.PlayArrow,null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Abrir OSM e iniciar captura",fontWeight=FontWeight.Bold)
+                            }
+                        }'''
+main = replace_once(main, old_button, new_button, "TodayScreen open/stop buttons")
+
+old_open = '''    private fun openOsm() {
+        // Registra a intenção de iniciar uma sessão ANTES de abrir o OSM.
+        // Activity e AccessibilityService usam o mesmo marcador; assim não há
+        // perda da sessão mesmo quando o Android recria uma das duas.
+        val now=System.currentTimeMillis()
+        val session=repo.beginNewSession()
+        getSharedPreferences("collector_runtime",Context.MODE_PRIVATE).edit()
+            .putBoolean("osm_seen_in_session", false)
+            .putBoolean("start_new_session_pending", true)
+            .putLong("requested_session_at", now)
+            .putLong("coach_launch_at", now)
+            .putString("requested_session_id", session.id)
+            .apply()
+        packageManager.getLaunchIntentForPackage(OSM_PACKAGE)?.let {
+            it.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+            startActivity(it)
+        }
+    }'''
+new_open = '''    private fun openOsm() {
+        val now=System.currentTimeMillis()
+        val current=repo.current()
+        val session=current ?: repo.beginNewSession()
+        getSharedPreferences("collector_runtime",Context.MODE_PRIVATE).edit()
+            .putBoolean("osm_seen_in_session", current != null)
+            .putBoolean("start_new_session_pending", current == null)
+            .putLong("requested_session_at", if(current==null) now else session.startedAt)
+            .putLong("coach_launch_at", now)
+            .putString("requested_session_id", session.id)
+            .apply()
+        CollectorState.setRecording(true)
+        OsmLauncher.open(this)
+    }
+
+    private fun finishCaptureSession() {
+        val finished=repo.finish()
+        getSharedPreferences("collector_runtime",Context.MODE_PRIVATE).edit()
+            .putBoolean("osm_seen_in_session",false)
+            .putBoolean("start_new_session_pending",false)
+            .putLong("requested_session_at",0L)
+            .putLong("coach_launch_at",0L)
+            .remove("requested_session_id")
+            .putLong("session_finished_at",System.currentTimeMillis())
+            .apply()
+        CollectorState.setRecording(false)
+        if(finished!=null) CollectorState.signalSessionReady()
+    }'''
+main = replace_once(main, old_open, new_open, "MainActivity openOsm/finishCaptureSession")
+main = re.sub(r'DetailLine\("Versão nativa","V\d+\s*·\s*\$\{BuildConfig\.VERSION_NAME\}"\)', 'DetailLine("Versão nativa","V22 · ${BuildConfig.VERSION_NAME}")', main, count=1)
+
+svc = replace_once(svc,
+'''    private fun shouldKeepCapturing(): Boolean {
+        if (isExplicitSessionArmed()) return true
+        val pkg = detectForegroundPackage() ?: CollectorState.currentForegroundPackage
+        return pkg == OSM_PACKAGE
+    }''',
+'''    private fun shouldKeepCapturing(): Boolean {
+        val pkg = detectForegroundPackage() ?: CollectorState.currentForegroundPackage
+        return pkg == OSM_PACKAGE
+    }''',
+"Accessibility shouldKeepCapturing")
+svc = replace_once(svc,
+'        val delay = maxOf(1900L - (System.currentTimeMillis() - lastCaptureAt), 120L)',
+'        val delay = maxOf(900L - (System.currentTimeMillis() - lastCaptureAt), 90L)',
+"Accessibility capture interval")
+svc = replace_once(svc,
+'                val forceSample = now - runtime.getLong("last_saved_frame_at", 0L) >= 12000L',
+'                val forceSample = now - runtime.getLong("last_saved_frame_at", 0L) >= 7000L',
+"Accessibility force sample")
+svc = replace_once(svc,
+'''    override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
+        if (::repository.isInitialized) repository.finish()
+        osmWasForeground = false''',
+'''    override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
+        osmWasForeground = false''',
+"Accessibility onDestroy")
+
+proc = re.sub(r'            val maxImages\s*=\s*\d+', '            val maxImages=2', proc, count=1)
+proc = replace_once(proc,
+'''            val texts=indices.mapNotNull{ocrByIndex[it]}.filter{it.isNotBlank()}
+            local.applyToSlot(slot,texts)
+            localKnownAfter[slotIndex]=knownCount(slot)''',
+'''            val texts=indices
+                .filter { idx ->
+                    classifications[idx]?.type in setOf("match","calendar","club","tactics","result")
+                }
+                .mapNotNull{ocrByIndex[it]}
+                .filter{it.isNotBlank()}
+            local.applyToSlot(slot,texts)
+            sanitizeCorruptedSlot(slot)
+            localKnownAfter[slotIndex]=knownCount(slot)''',
+"Processor local OCR scope")
+
+old_rows = '''        fun rowsForType(rows:List<Int>, type:String):List<Int>{
+            val fallbackTypes=when(type){
+                "match" -> setOf("club","tactics","result")
+                "squad" -> setOf("training","market")
+                "calendar" -> setOf("ranking")
+                else -> emptySet()
+            }
+            // Não descarte telas classificadas como "Outra". Em páginas de jogador,
+            // calendário e scout o Accessibility muitas vezes expõe apenas o nome/valor.
+            // Enviamos TODO o OCR textual do slot, priorizando as telas do tipo pedido.
+            return rows.sortedWith(compareBy<Int> { idx ->
+                when {
+                    classifications[idx]?.type==type -> 0
+                    classifications[idx]?.type in fallbackTypes -> 1
+                    classifications[idx]?.type=="other" -> 2
+                    else -> 3
+                }
+            }.thenBy { it })
+        }
+
+        val jobs=mutableListOf<Triple<Int,String,List<Int>>>()
+        segments.forEachIndexed{i,rows->
+            if(rows.isEmpty()) return@forEachIndexed
+            jobs+=Triple(i,"match",rowsForType(rows,"match"))
+            jobs+=Triple(i,"squad",rowsForType(rows,"squad"))
+            jobs+=Triple(i,"calendar",rowsForType(rows,"calendar"))
+        }'''
+new_rows = '''        fun rowsForType(rows:List<Int>, type:String):List<Int>{
+            val accepted=when(type){
+                "match" -> setOf("match","club","tactics","result")
+                "squad" -> setOf("squad","training","market")
+                "calendar" -> setOf("calendar","ranking")
+                else -> emptySet()
+            }
+            val exact=rows.filter { classifications[it]?.type==type }
+            val related=rows.filter { classifications[it]?.type in accepted && it !in exact }
+            return (exact+related).distinct()
+        }
+
+        val jobs=mutableListOf<Triple<Int,String,List<Int>>>()
+        segments.forEachIndexed{i,rows->
+            if(rows.isEmpty()) return@forEachIndexed
+            listOf("match","squad","calendar").forEach { type ->
+                val relevant=rowsForType(rows,type)
+                if(relevant.isNotEmpty()) jobs+=Triple(i,type,relevant)
+            }
+        }'''
+proc = replace_once(proc, old_rows, new_rows, "Processor relevant screen selection")
+proc = replace_once(proc,
+'''            val nativeOcrText=job.third.mapNotNull{ocrByIndex[it]}.filter{it.isNotBlank()}.joinToString("\\n\\n").take(30000)''',
+'''            val nativeOcrText=job.third
+                .mapNotNull{ocrByIndex[it]?.trim()}
+                .filter{it.isNotBlank()}
+                .distinct()
+                .take(24)
+                .joinToString("\\n\\n")
+                .take(24000)''',
+"Processor cloud OCR text")
+proc = replace_once(proc,
+'''                val changed=runCatching{applyResult(slot,result.first,result.second)}.getOrElse { 0 }
+                val after=knownCount(slot)''',
+'''                val changed=runCatching{applyResult(slot,result.first,result.second)}.getOrElse { 0 }
+                sanitizeCorruptedSlot(slot)
+                val after=knownCount(slot)''',
+"Processor sanitize after cloud")
+
+old_squad = '''            if(parsed.isNotEmpty()){
+                val merged=slot.players
+                    .filter{ validPlayerName(it.name) && normPos(it.position)!="NI" }
+                    .associateBy{ it.name.trim().lowercase()+"|"+normPos(it.position) }
+                    .toMutableMap()
+
+                parsed.forEach{ fresh ->
+                    val key=fresh.name.trim().lowercase()+"|"+fresh.position
+                    merged[key]=fresh
+                }
+
+                slot.players=merged.values.take(40).toMutableList()
+                slot.squadCount=slot.players.size'''
+new_squad = '''            if(parsed.isNotEmpty()){
+                val merged=slot.players
+                    .filter{ validPlayerName(it.name) }
+                    .associateBy{ it.name.trim().lowercase() }
+                    .toMutableMap()
+
+                parsed.forEach{ fresh ->
+                    val key=fresh.name.trim().lowercase()
+                    val old=merged[key]
+                    merged[key]=if(old==null) fresh else NativePlayerData(
+                        name=fresh.name,
+                        position=if(fresh.position!="NI")fresh.position else old.position,
+                        age=if(fresh.age!="NI")fresh.age else old.age,
+                        strength=if(fresh.strength!="NI")fresh.strength else old.strength,
+                        value=if(fresh.value!="NI")fresh.value else old.value,
+                        training=if(fresh.training!="NI")fresh.training else old.training,
+                        selling=if(fresh.selling!="NI")fresh.selling else old.selling
+                    )
+                }
+
+                slot.players=merged.values.take(40).toMutableList()
+                slot.squadCount=slot.players.size'''
+proc = replace_once(proc, old_squad, new_squad, "Processor incremental squad")
+
+old_cal = '''        if(parsed.isNotEmpty()){
+            slot.calendar=parsed.distinctBy{
+                listOf(it.round,it.opponent,it.date,it.time).joinToString("|").lowercase()
+            }.toMutableList()
+            slot.calendarCount=slot.calendar.size
+            changed += slot.calendar.size
+
+            val future=slot.calendar.firstOrNull {'''
+new_cal = '''        if(parsed.isNotEmpty()){
+            fun keyOf(g:NativeCalendarGame):String =
+                listOf(g.round,g.date,g.time,g.opponent).joinToString("|").lowercase()
+            val merged=linkedMapOf<String,NativeCalendarGame>()
+            slot.calendar.forEach { old -> merged[keyOf(old)]=old }
+            parsed.forEach { fresh ->
+                val key=keyOf(fresh)
+                val old=merged[key]
+                merged[key]=if(old==null) fresh else NativeCalendarGame(
+                    round=if(fresh.round!="NI")fresh.round else old.round,
+                    opponent=if(fresh.opponent!="NI")fresh.opponent else old.opponent,
+                    date=if(fresh.date!="NI")fresh.date else old.date,
+                    time=if(fresh.time!="NI")fresh.time else old.time,
+                    venue=if(fresh.venue!="NI")fresh.venue else old.venue,
+                    score=if(fresh.score!="NI")fresh.score else old.score,
+                    competition=if(fresh.competition!="NI")fresh.competition else old.competition,
+                    cup=fresh.cup || old.cup
+                )
+            }
+            slot.calendar=merged.values.take(80).toMutableList()
+            slot.calendarCount=slot.calendar.size
+            changed += parsed.size
+
+            val future=slot.calendar.firstOrNull {'''
+proc = replace_once(proc, old_cal, new_cal, "Processor incremental calendar")
+
+tracker = re.sub(r'''            if \(bestSlot == 0 \|\| bestScore < 3\) \{\n                val remaining = \(1\.\.4\)\.filter \{ it !in used \}\n                if \(remaining\.size == 1\) \{\n                    bestSlot = remaining\.first\(\)\n                    bestScore = 3\n                \}\n            \}\n\n''', '', tracker, count=1)
+tracker = replace_once(tracker,
+'''            if (bestSlot in 1..4 && bestScore >= 3) {
+                used += bestSlot''',
+'''            val ranked = signatures.map { it.slotId to score(joined,it) }.sortedByDescending { it.second }
+            val secondScore = ranked.getOrNull(1)?.second ?: 0
+            val confident = bestSlot in 1..4 && bestScore >= 5 && (bestScore-secondScore >= 2 || bestScore >= 14)
+
+            if (confident) {
+                used += bestSlot''',
+"Tracker confidence")
+tracker = replace_once(tracker,
+'        score += minOf(sig.tokens.count { it in tokens }, 12)',
+'        score += minOf(sig.tokens.count { it in tokens }, 12) * 2',
+"Tracker token score")
+tracker = replace_once(tracker,
+'''        if (rounds in 3..6 && leagueWords >= 2) return true
+        if (rounds >= 3 && n.contains("leandrozzy")) return true''',
+'''        if (rounds in 3..8 && leagueWords >= 1) return true
+        if (rounds >= 3 && n.contains("leandrozzy")) return true
+        if (rounds >= 3 && listOf("slot","manager","treinador","liga","batalha").any { n.contains(it) }) return true''',
+"Tracker hub detection")
+
+gradle = re.sub(r'versionName\s*=\s*"[^"]*\$runNumber"', 'versionName = "4.0.$runNumber"', gradle, count=1)
+gradle = gradle.replace("// V15: versionCode monotônico por minuto.", "// V22: versionCode monotônico por minuto.")
+
+changed=0
+changed += write_if_changed(main_p, main)
+changed += write_if_changed(svc_p, svc)
+changed += write_if_changed(proc_p, proc)
+changed += write_if_changed(tracker_p, tracker)
+changed += write_if_changed(gradle_p, gradle)
+
+print()
+print("V22 aplicada com sucesso.")
+print("Arquivos alterados:", changed)
