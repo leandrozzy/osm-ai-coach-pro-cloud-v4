@@ -7,6 +7,7 @@ on:
       - android-collector-v1
     paths:
       - 'android-collector/**'
+      - 'apply_native_current.py'
       - 'api/analyze.js'
       - 'lib/providers.js'
       - '.github/workflows/android-build.yml'
@@ -26,6 +27,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Apply V24 fixes
+        run: python apply_native_current.py
+
+      - name: Validate patched source
+        run: |
+          grep -q 'ENCERRAR CAPTURA E ATUALIZAR' android-collector/app/src/main/java/com/osmaicoach/collector/MainActivity.kt
+          grep -q 'V24.0' android-collector/app/src/main/java/com/osmaicoach/collector/MainActivity.kt
+          grep -q 'SESSÃO ATIVA' android-collector/app/src/main/java/com/osmaicoach/collector/MainActivity.kt
 
       - name: Java 17
         uses: actions/setup-java@v5
