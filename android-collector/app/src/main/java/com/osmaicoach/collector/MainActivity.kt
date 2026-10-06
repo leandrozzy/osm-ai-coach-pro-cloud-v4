@@ -38,6 +38,27 @@ class MainActivity : ComponentActivity() {
         setContent { CoachTheme { NativeCoachApp() } }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Fallback: alguns aparelhos não emitem imediatamente um evento de
+        // acessibilidade ao voltar para o Coach. Se o OSM foi visto depois do
+        // último lançamento, finalizamos a sessão aqui também.
+        android.os.Handler(mainLooper).postDelayed({
+            val runtime=getSharedPreferences("collector_runtime",Context.MODE_PRIVATE)
+            val launchAt=runtime.getLong("coach_launch_at",0L)
+            val lastOsm=runtime.getLong("last_osm_seen_at",0L)
+            if(launchAt>0L && lastOsm>=launchAt && runtime.getBoolean("osm_seen_in_session",false)){
+                repo.finish()
+                runtime.edit()
+                    .putBoolean("osm_seen_in_session",false)
+                    .putLong("coach_launch_at",0L)
+                    .apply()
+                CollectorState.setRecording(false)
+                CollectorState.signalSessionReady()
+            }
+        },900L)
+    }
+
     @Composable
     private fun NativeCoachApp() {
         var tab by remember { mutableStateOf(0) }
@@ -782,7 +803,8 @@ class MainActivity : ComponentActivity() {
                                 DetailLine("APIs","Configuradas no backend/Vercel")
                                 val ocrPrefs=this@MainActivity.getSharedPreferences("native_processor_v12",MODE_PRIVATE)
                                 DetailLine("Telas com texto OCR","${ocrPrefs.getInt("local_ocr_readable",0)}/${ocrPrefs.getInt("local_ocr_total",0)}")
-                    DetailLine("Última sessão",latest?.let{"${it.frames.size} telas"}?:"Nenhuma")
+                    DetailLine("Versão nativa","V13 · ${BuildConfig.VERSION_NAME}")
+                    DetailLine("Última sessão",latest?.let{"${formatTime(it.startedAt)} · ${it.frames.size} telas"}?:"Nenhuma")
                     DetailLine("Resultado","${processing.success} aplicados · ${processing.failed} falhas")
                     Spacer(Modifier.height(10.dp))
                     OutlinedButton(onClick=onReprocess,enabled=latest!=null&&!processing.running,modifier=Modifier.fillMaxWidth()) {
@@ -845,12 +867,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openOsm() {
-        // Cada toque inicia uma sessão nova e persistida ANTES de abrir o jogo.
-        // Assim a sessão aparece imediatamente em Sessões e sobrevive a Activity/Service distintos.
-        repo.beginNewSession()
+        // Registra a intenção de iniciar uma sessão ANTES de abrir o OSM.
+        // Activity e AccessibilityService usam o mesmo marcador; assim não há
+        // perda da sessão mesmo quando o Android recria uma das duas.
+        val now=System.currentTimeMillis()
+        val session=repo.beginNewSession()
         getSharedPreferences("collector_runtime",Context.MODE_PRIVATE).edit()
             .putBoolean("osm_seen_in_session", false)
-            .putLong("coach_launch_at", System.currentTimeMillis())
+            .putBoolean("start_new_session_pending", true)
+            .putLong("requested_session_at", now)
+            .putLong("coach_launch_at", now)
+            .putString("requested_session_id", session.id)
             .apply()
         packageManager.getLaunchIntentForPackage(OSM_PACKAGE)?.let {
             it.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)

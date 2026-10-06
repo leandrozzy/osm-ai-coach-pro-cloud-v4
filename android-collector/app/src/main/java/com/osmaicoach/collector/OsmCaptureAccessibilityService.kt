@@ -35,8 +35,22 @@ class OsmCaptureAccessibilityService : AccessibilityService() {
         if(isOsm){
             finishRunnable?.let(handler::removeCallbacks); finishRunnable=null
             osmWasForeground=true
-            repository.startIfNeeded()
-            getSharedPreferences("collector_runtime", MODE_PRIVATE).edit()
+            val runtime=getSharedPreferences("collector_runtime", MODE_PRIVATE)
+            val requestedAt=runtime.getLong("requested_session_at",0L)
+            val pending=runtime.getBoolean("start_new_session_pending",false)
+            val current=repository.current()
+            if(pending){
+                if(current==null || current.startedAt + 500L < requestedAt){
+                    repository.beginNewSession()
+                }
+                // A primeira tela de uma nova sessão precisa ser capturada mesmo se
+                // visualmente for igual à última tela da sessão anterior.
+                lastFingerprint=null
+                runtime.edit().putBoolean("start_new_session_pending",false).apply()
+            }else{
+                repository.startIfNeeded()
+            }
+            runtime.edit()
                 .putBoolean("osm_seen_in_session", true)
                 .putLong("last_osm_seen_at", System.currentTimeMillis())
                 .apply()
@@ -111,12 +125,18 @@ class OsmCaptureAccessibilityService : AccessibilityService() {
                 lastCaptureAt=System.currentTimeMillis()
                 CollectorState.lastError=null
                 bitmap.recycle()
+                // Continue capturando enquanto o OSM estiver em primeiro plano.
+                // Não dependemos de um novo evento de acessibilidade para cada tela.
+                if(CollectorState.currentForegroundPackage==OSM_PACKAGE) scheduleCapture()
             }
             override fun onFailure(errorCode:Int){
                 if(errorCode==ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT){
                     lastCaptureAt=System.currentTimeMillis()
                     scheduleCapture()
-                }else CollectorState.lastError="Falha de captura: $errorCode"
+                }else{
+                    CollectorState.lastError="Falha de captura: $errorCode"
+                    if(CollectorState.currentForegroundPackage==OSM_PACKAGE) scheduleCapture()
+                }
             }
         })
     }

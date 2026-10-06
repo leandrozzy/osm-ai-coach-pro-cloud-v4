@@ -108,9 +108,9 @@ class SessionRepository(private val context: Context) {
     fun listSessions(limit: Int = 20): List<CaptureSession> =
         root.listFiles()
             ?.filter { it.isDirectory && File(it,"session.json").exists() }
-            ?.sortedByDescending { File(it,"session.json").lastModified() }
-            ?.take(limit)
             ?.mapNotNull { parseSession(File(it,"session.json").readText()) }
+            ?.sortedByDescending { it.startedAt }
+            ?.take(limit)
             ?: emptyList()
 
     fun frameFile(session: CaptureSession, index: Int): File? {

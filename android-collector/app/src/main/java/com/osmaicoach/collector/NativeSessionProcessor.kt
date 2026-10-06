@@ -29,7 +29,7 @@ class NativeSessionProcessor(
         val lastError:String=""
     )
 
-    private val prefs=context.getSharedPreferences("native_processor_v12",Context.MODE_PRIVATE)
+    private val prefs=context.getSharedPreferences("native_processor_v13",Context.MODE_PRIVATE)
     private val local=LocalOcrExtractor()
     @Volatile private var cloudError:String=""
 
@@ -95,6 +95,8 @@ class NativeSessionProcessor(
             slot.lastUpdated=System.currentTimeMillis()
         }
         store.saveAll(slots)
+        val localApplied=localKnownAfter.indices.count { localKnownAfter[it] > localKnownBefore[it] }
+        prefs.edit().putInt("local_slots_applied",localApplied).apply()
 
         val endpoint=probeBackend()
         if(endpoint==null){
@@ -179,7 +181,7 @@ class NativeSessionProcessor(
                 val conn=(URL(base.trimEnd('/')+"/api/status").openConnection() as HttpURLConnection).apply{
                     requestMethod="GET";connectTimeout=6000;readTimeout=6000;instanceFollowRedirects=false
                     setRequestProperty("Accept","application/json")
-                    setRequestProperty("User-Agent","OSM-AI-Coach-Native/12")
+                    setRequestProperty("User-Agent","OSM-AI-Coach-Native/13")
                 }
                 val code=conn.responseCode
                 val contentType=conn.contentType.orEmpty().lowercase()
@@ -267,7 +269,7 @@ class NativeSessionProcessor(
             requestMethod="POST";connectTimeout=12000;readTimeout=56000;doOutput=true;instanceFollowRedirects=true
             setRequestProperty("Content-Type","application/json")
             setRequestProperty("Accept","application/json")
-            setRequestProperty("User-Agent","OSM-AI-Coach-Native/12")
+            setRequestProperty("User-Agent","OSM-AI-Coach-Native/13")
         }
 
         return@withContext try{
@@ -469,8 +471,10 @@ class NativeSessionProcessor(
 
     private fun sample(rows:List<Int>,max:Int):List<Int>{
         if(rows.size<=max)return rows
-        if(max<=1)return listOf(rows[rows.size/2])
-        return (0 until max).map{i->rows[((i.toDouble()*(rows.size-1))/(max-1)).toInt()]}.distinct()
+        // rowsForType já ordena as telas mais relevantes primeiro. Espalhar a
+        // amostra pelo bloco fazia o app enviar telas "Outra" e perder justamente
+        // calendário/elenco/pré-jogo.
+        return rows.take(max)
     }
 
     private fun encodeImage(path:String):Pair<String,Pair<Int,Int>>?{
