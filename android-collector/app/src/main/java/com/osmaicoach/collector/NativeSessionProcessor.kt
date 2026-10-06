@@ -53,7 +53,7 @@ class NativeSessionProcessor(
         session.frames.sortedBy{it.index}.forEach{frame->
             val file=repository.frameFile(session,frame.index)
             val visualText=if(file!=null) withTimeoutOrNull(12000L){local.read(file)} ?: "" else ""
-            val text=listOf(frame.textHint,visualText).filter{it.isNotBlank()}.distinct().joinToString("\n")
+            val text=visualText.trim()
             ocrByIndex[frame.index]=text
             current++
             val readable=ocrByIndex.values.count{it.isNotBlank()}
@@ -192,7 +192,7 @@ class NativeSessionProcessor(
                 val conn=(URL(base.trimEnd('/')+"/api/status").openConnection() as HttpURLConnection).apply{
                     requestMethod="GET";connectTimeout=6000;readTimeout=6000;instanceFollowRedirects=false
                     setRequestProperty("Accept","application/json")
-                    setRequestProperty("User-Agent","OSM-AI-Coach-Native/18")
+                    setRequestProperty("User-Agent","OSM-AI-Coach-Native/20")
                 }
                 val code=conn.responseCode
                 val contentType=conn.contentType.orEmpty().lowercase()
@@ -243,7 +243,7 @@ class NativeSessionProcessor(
             requestMethod="POST";connectTimeout=12000;readTimeout=56000;doOutput=true;instanceFollowRedirects=true
             setRequestProperty("Content-Type","application/json")
             setRequestProperty("Accept","application/json")
-            setRequestProperty("User-Agent","OSM-AI-Coach-Native/18")
+            setRequestProperty("User-Agent","OSM-AI-Coach-Native/20")
         }
 
         return@withContext try{
@@ -327,33 +327,52 @@ class NativeSessionProcessor(
         var changed=0
         val meta=data.optJSONObject("meta")?:JSONObject()
 
-        fun putMeta(key:String,set:(String)->Unit){
-            val v=knownString(meta,key) ?: return
-            set(v); changed++
-        }
-        putMeta("team"){slot.team=it};putMeta("competition"){slot.competition=it}
-        putMeta("competitionType"){slot.competitionType=it};putMeta("squadValue"){slot.myValue=it}
-        putMeta("strength"){slot.myStrength=it};putMeta("GK"){slot.myGoalkeeper=it}
-        putMeta("DEF"){slot.myDefense=it};putMeta("MID"){slot.myMidfield=it};putMeta("ATT"){slot.myAttack=it}
+        knownString(meta,"team")?.takeIf(::validEntityName)?.let{slot.team=it;changed++}
+        knownString(meta,"competition")?.takeIf(::validCompetition)?.let{slot.competition=it;changed++}
+        knownString(meta,"competitionType")?.takeIf{ it.length in 3..40 }?.let{slot.competitionType=it;changed++}
+        knownString(meta,"squadValue")?.takeIf(::validMoney)?.let{slot.myValue=it;changed++}
+        knownString(meta,"strength")?.takeIf(::validStrength)?.let{slot.myStrength=it;changed++}
+        knownString(meta,"GK")?.takeIf(::validStrength)?.let{slot.myGoalkeeper=it;changed++}
+        knownString(meta,"DEF")?.takeIf(::validStrength)?.let{slot.myDefense=it;changed++}
+        knownString(meta,"MID")?.takeIf(::validStrength)?.let{slot.myMidfield=it;changed++}
+        knownString(meta,"ATT")?.takeIf(::validStrength)?.let{slot.myAttack=it;changed++}
 
         val arr=data.optJSONArray("players")?:JSONArray()
-        if(arr.length()>0){
+        if(arr.length() in 1..40){
             val parsed=mutableListOf<NativePlayerData>()
             for(i in 0 until arr.length()){
-                val p=arr.optJSONObject(i)?:continue
-                val name=firstKnown(p,"name","player","playerName") ?: continue
+                val obj=arr.optJSONObject(i)?:continue
+                val name=firstKnown(obj,"name","player","playerName")?.takeIf(::validPlayerName) ?: continue
+                val pos=firstKnown(obj,"position","pos","role")?.let(::normPos) ?: "NI"
+                if(pos=="NI") continue
+
+                val age=firstKnown(obj,"age")?.takeIf(::validAge) ?: "NI"
+                val strength=firstKnown(obj,"strength","rating","overall")?.takeIf(::validStrength) ?: "NI"
+                val value=firstKnown(obj,"value","marketValue")?.takeIf(::validMoney) ?: "NI"
+
                 parsed += NativePlayerData(
                     name=name,
-                    position=firstKnown(p,"position","pos","role") ?: "NI",
-                    age=firstKnown(p,"age") ?: "NI",
-                    strength=firstKnown(p,"strength","rating","overall") ?: "NI",
-                    value=firstKnown(p,"value","marketValue") ?: "NI",
-                    training=firstKnown(p,"training","inTraining") ?: "NI",
-                    selling=firstKnown(p,"selling","forSale","listed") ?: "NI"
+                    position=pos,
+                    age=age,
+                    strength=strength,
+                    value=value,
+                    training=firstKnown(obj,"training","inTraining") ?: "NI",
+                    selling=firstKnown(obj,"selling","forSale","listed") ?: "NI"
                 )
             }
+
             if(parsed.isNotEmpty()){
-                slot.players = parsed.distinctBy{it.name.lowercase()+"|"+it.position.lowercase()}.toMutableList()
+                val merged=slot.players
+                    .filter{ validPlayerName(it.name) && normPos(it.position)!="NI" }
+                    .associateBy{ it.name.trim().lowercase()+"|"+normPos(it.position) }
+                    .toMutableMap()
+
+                parsed.forEach{ fresh ->
+                    val key=fresh.name.trim().lowercase()+"|"+fresh.position
+                    merged[key]=fresh
+                }
+
+                slot.players=merged.values.take(40).toMutableList()
                 slot.squadCount=slot.players.size
                 slot.attackers=slot.players.count{normPos(it.position)=="ATA"}
                 slot.midfielders=slot.players.count{normPos(it.position)=="MEI"}
@@ -361,7 +380,7 @@ class NativeSessionProcessor(
                 slot.goalkeepers=slot.players.count{normPos(it.position)=="GOL"}
                 slot.trainingCount=slot.players.count{truthy(it.training)}
                 slot.sellingCount=slot.players.count{truthy(it.selling)}
-                changed += slot.players.size
+                changed += parsed.size
             }
         }
         return changed
@@ -447,6 +466,63 @@ class NativeSessionProcessor(
     private fun truthy(v:String):Boolean{
         val n=v.lowercase()
         return n=="sim"||n=="yes"||n=="true"||n=="1"||n.contains("trein")||n.contains("venda")
+    }
+
+    private fun sanitizeCorruptedSlot(slot:NativeSlotData){
+        if(slot.players.size>40 || slot.squadCount>40){
+            slot.players.clear()
+            slot.squadCount=0
+            slot.attackers=0
+            slot.midfielders=0
+            slot.defenders=0
+            slot.goalkeepers=0
+            slot.trainingCount=0
+            slot.sellingCount=0
+        }
+        if(!validStadium(slot.stadium)) slot.stadium="NI"
+        if(slot.competition.startsWith("Próximo:",true) || slot.competition.startsWith("Proximo:",true))
+            slot.competition="NI"
+        if(!validEntityNameOrNI(slot.team)) slot.team="NI"
+        if(!validEntityNameOrNI(slot.nextRival)) slot.nextRival="NI"
+        if(slot.matchTime!="NI" && !Regex("^([01]?\\d|2[0-3]):[0-5]\\d$").matches(slot.matchTime))
+            slot.matchTime="NI"
+    }
+
+    private fun validEntityNameOrNI(v:String)=v=="NI" || validEntityName(v)
+
+    private fun validEntityName(v:String):Boolean{
+        val n=v.trim().lowercase()
+        if(v.length !in 3..50 || !v.any{it.isLetter()}) return false
+        return listOf(
+            "analista de dados","calendário","calendario","elenco","tática","tatica",
+            "mercado","treino","classificação","classificacao","próximo jogo","proximo jogo",
+            "dados completos","leitura automática","leitura automatica","sessão","sessao",
+            "osm ai coach","perfil","comunicações","comunicacoes"
+        ).none{n.contains(it)}
+    }
+
+    private fun validPlayerName(v:String):Boolean{
+        if(!validEntityName(v)) return false
+        val n=v.lowercase()
+        if(Regex("^\\d+$").matches(v.trim())) return false
+        return listOf("goleiro","defensor","meio campo","atacante","idade","força","forca","valor").none{n==it}
+    }
+
+    private fun validCompetition(v:String):Boolean =
+        v.length in 3..70 && !v.startsWith("Próximo:",true) && !v.startsWith("Proximo:",true)
+
+    private fun validAge(v:String):Boolean = v.filter{it.isDigit()}.toIntOrNull() in 15..45
+
+    private fun validStrength(v:String):Boolean = v.filter{it.isDigit()}.toIntOrNull() in 40..200
+
+    private fun validMoney(v:String):Boolean =
+        Regex("(?i)^\\s*\\d{1,4}(?:[.,]\\d+)?\\s*(?:K|M|MM|B)\\s*$").matches(v)
+
+    private fun validStadium(v:String):Boolean{
+        if(v=="NI") return true
+        val n=v.trim().lowercase()
+        if(Regex("^[0-9]$").matches(n)) return n.toInt() in 0..3
+        return Regex("(?i)^(?:nível|nivel|level)\\s*[0-3]$").matches(v.trim())
     }
 
     private fun knownCount(slot:NativeSlotData):Int {
