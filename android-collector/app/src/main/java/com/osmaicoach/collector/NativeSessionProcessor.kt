@@ -31,6 +31,7 @@ class NativeSessionProcessor(
 
     private val prefs=context.getSharedPreferences("native_processor_v7",Context.MODE_PRIVATE)
     private val local=LocalOcrExtractor()
+    @Volatile private var cloudError:String=""
 
     fun isProcessed(sessionId:String)=prefs.getString("processed_session",null)==sessionId
 
@@ -54,10 +55,13 @@ class NativeSessionProcessor(
         val ocrByIndex=linkedMapOf<Int,String>()
         session.frames.sortedBy{it.index}.forEach{frame->
             val file=repository.frameFile(session,frame.index)
-            val text=if(file!=null) withTimeoutOrNull(12000L){local.read(file)} ?: "" else ""
+            val visualText=if(file!=null) withTimeoutOrNull(12000L){local.read(file)} ?: "" else ""
+            val text=listOf(frame.textHint,visualText).filter{it.isNotBlank()}.distinct().joinToString("\n")
             ocrByIndex[frame.index]=text
             current++
-            onProgress(Progress(true,current,total,"OCR local · tela ${frame.index+1}/${session.frames.size}",success,failed,"ocr",lastError))
+            val readable=ocrByIndex.values.count{it.isNotBlank()}
+            prefs.edit().putInt("local_ocr_readable",readable).putInt("local_ocr_total",session.frames.size).apply()
+            onProgress(Progress(true,current,total,"OCR local · tela ${frame.index+1}/${session.frames.size} · $readable com texto",success,failed,"ocr",lastError))
         }
 
         segments.forEachIndexed{slotIndex,indices->
@@ -90,10 +94,11 @@ class NativeSessionProcessor(
             val friendly=when(job.second){"match"->"Pré-jogo";"squad"->"Elenco";else->"Calendário"}
             onProgress(Progress(true,current,total,"S${slot.id} · $friendly · IA",success,failed,"cloud",lastError))
 
-            val result=withTimeoutOrNull(30000L){analyzeType(endpoint,session,job.third,job.second,2,slot)}
+            val result=withTimeoutOrNull(60000L){analyzeType(endpoint,session,job.third,job.second,2,slot)}
             if(result==null){
                 failed++
-                lastError="S${slot.id} $friendly: IA Cloud sem resposta"
+                val detail=cloudError.ifBlank{"sem resposta dentro do limite"}
+                lastError="S${slot.id} $friendly: $detail"
             }else{
                 runCatching{applyResult(slot,result.first,result.second)}
                     .onSuccess{success++}
@@ -106,7 +111,8 @@ class NativeSessionProcessor(
         }
 
         prefs.edit().putString("processed_session",session.id).apply()
-        onProgress(Progress(false,total,total,"Sessão finalizada",success,failed,"done",lastError))
+        val readable=prefs.getInt("local_ocr_readable",0)
+        onProgress(Progress(false,total,total,"Sessão finalizada · OCR $readable/${session.frames.size}",success,failed,"done",lastError))
         true
     }
 
@@ -179,7 +185,7 @@ class NativeSessionProcessor(
         }
 
         val conn=(URL(endpointBase.trimEnd('/')+"/api/analyze").openConnection() as HttpURLConnection).apply{
-            requestMethod="POST";connectTimeout=10000;readTimeout=22000;doOutput=true;instanceFollowRedirects=true
+            requestMethod="POST";connectTimeout=10000;readTimeout=52000;doOutput=true;instanceFollowRedirects=true
             setRequestProperty("Content-Type","application/json");setRequestProperty("Accept","application/json")
             setRequestProperty("User-Agent","OSM-AI-Coach-Native/7")
         }
@@ -187,13 +193,27 @@ class NativeSessionProcessor(
             conn.outputStream.use{it.write(body.toString().toByteArray(Charsets.UTF_8));it.flush()}
             val code=conn.responseCode
             val raw=(if(code in 200..299)conn.inputStream else conn.errorStream)?.bufferedReader()?.use{it.readText()}.orEmpty()
-            if(code !in 200..299||raw.isBlank())null
-            else{
+            if(code !in 200..299){
+                cloudError="HTTP $code: "+raw.take(180).replace("\n"," ")
+                null
+            }else if(raw.isBlank()){
+                cloudError="HTTP $code sem conteúdo"
+                null
+            }else{
                 val root=JSONObject(raw)
-                val data=root.optJSONObject("data")?:return@withContext null
-                type to data
+                val data=root.optJSONObject("data")
+                if(data==null){
+                    cloudError="Resposta sem campo data: "+raw.take(180).replace("\n"," ")
+                    null
+                }else{
+                    cloudError=""
+                    type to data
+                }
             }
-        }catch(_:Throwable){null}finally{conn.disconnect()}
+        }catch(e:Throwable){
+            cloudError=(e.javaClass.simpleName+": "+(e.message?:"erro de rede")).take(220)
+            null
+        }finally{conn.disconnect()}
     }
 
     private fun applyResult(slot:NativeSlotData,type:String,data:JSONObject){
