@@ -44,6 +44,7 @@ class MainActivity : ComponentActivity() {
         var selectedSlot by remember { mutableStateOf<Int?>(null) }
         var refresh by remember { mutableIntStateOf(0) }
         var processing by remember { mutableStateOf(NativeSessionProcessor.Progress()) }
+        var forceProcessToken by remember { mutableIntStateOf(0) }
 
         DisposableEffect(Unit) {
             val listener: () -> Unit = { runOnUiThread { refresh++ } }
@@ -58,11 +59,11 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        LaunchedEffect(refresh) {
+        LaunchedEffect(refresh, forceProcessToken) {
             val latestNow = repo.latestSession()
             if (latestNow?.state == "ready" && !processing.running) {
                 val processor = NativeSessionProcessor(this@MainActivity, repo, slotStore)
-                processor.processLatest { p ->
+                processor.processLatest(force=forceProcessToken > 0) { p ->
                     runOnUiThread {
                         processing = p
                         refresh++
@@ -149,11 +150,11 @@ class MainActivity : ComponentActivity() {
                     SlotDetailScreen(slots[selectedSlot!! - 1], onBack = { selectedSlot = null })
                 } else {
                     when (tab) {
-                        0 -> TodayScreen(serviceReady, recording, latest, processing) { openOsm() }
+                        0 -> TodayScreen(serviceReady, recording, latest, processing, slots, onReprocess={ forceProcessToken++ }) { openOsm() }
                         1 -> SessionsScreen(sessions)
                         2 -> SlotsScreen(slots, latest) { selectedSlot = it }
                         3 -> DirectorScreen(latest)
-                        else -> SettingsScreen(serviceReady)
+                        else -> SettingsScreen(serviceReady, latest, processing, onReprocess={ forceProcessToken++ })
                     }
                 }
             }
@@ -161,58 +162,113 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun TodayScreen(serviceReady:Boolean, recording:Boolean, latest:CaptureSession?, processing:NativeSessionProcessor.Progress, openOsm:()->Unit) {
-        LazyColumn(contentPadding=PaddingValues(20.dp), verticalArrangement=Arrangement.spacedBy(16.dp)) {
+    private fun TodayScreen(
+        serviceReady:Boolean,
+        recording:Boolean,
+        latest:CaptureSession?,
+        processing:NativeSessionProcessor.Progress,
+        slots:List<NativeSlotData>,
+        onReprocess:()->Unit,
+        openOsm:()->Unit
+    ) {
+        LazyColumn(contentPadding=PaddingValues(18.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
             item {
-                Text("Seu dia, organizado.", fontSize=30.sp, fontWeight=FontWeight.Bold, color=Color(0xFF17242B))
-                Text("O Coach acompanha tudo que você visita no OSM.", color=Color(0xFF68777E))
+                Text("CENTRO DE COMANDO",fontSize=11.sp,color=Color(0xFF718078),fontWeight=FontWeight.Bold)
+                Text("Seu OSM, em um só lugar.",fontSize=30.sp,fontWeight=FontWeight.Bold,color=Color(0xFF17242B))
+                Text("Jogue normalmente. O Coach registra a sessão e atualiza seus quatro slots.",color=Color(0xFF68777E))
             }
+
             item {
-                Card(colors=CardDefaults.cardColors(containerColor=Color.White), shape=RoundedCornerShape(20.dp)) {
+                Card(colors=CardDefaults.cardColors(containerColor=Color(0xFF122630)),shape=RoundedCornerShape(22.dp)) {
                     Column(Modifier.padding(18.dp)) {
-                        Text("Leitura automática", fontWeight=FontWeight.Bold, fontSize=18.sp)
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            if(recording) "Capturando sua navegação agora."
-                            else if(serviceReady) "Ativa. Não precisa autorizar de novo."
-                            else "Aguardando autorização do Android."
-                        )
-                        Spacer(Modifier.height(14.dp))
-                        Button(onClick=openOsm, enabled=serviceReady&&!recording, modifier=Modifier.fillMaxWidth()) {
-                            Icon(Icons.Default.PlayArrow,null); Spacer(Modifier.width(8.dp)); Text("Abrir OSM")
+                        Row(verticalAlignment=Alignment.CenterVertically) {
+                            Icon(if(recording)Icons.Default.FiberManualRecord else Icons.Default.Verified,null,
+                                tint=if(recording)Color(0xFFFFC857) else Color(0xFFB8E34D))
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(if(recording)"Sessão sendo capturada" else "Leitura automática pronta",
+                                    color=Color.White,fontWeight=FontWeight.Bold,fontSize=17.sp)
+                                Text(if(recording)"Navegue livremente pelo OSM."
+                                    else "Permissão ativa e pronta para nova sessão.",
+                                    color=Color(0xFFB6C6CE),fontSize=12.sp)
+                            }
+                        }
+                        Spacer(Modifier.height(16.dp))
+                        Button(
+                            onClick=openOsm,
+                            enabled=serviceReady&&!recording&&!processing.running,
+                            modifier=Modifier.fillMaxWidth().height(52.dp),
+                            colors=ButtonDefaults.buttonColors(containerColor=Color(0xFFB8E34D),contentColor=Color(0xFF122630))
+                        ){
+                            Icon(Icons.Default.PlayArrow,null);Spacer(Modifier.width(8.dp));Text("Abrir OSM",fontWeight=FontWeight.Bold)
                         }
                     }
                 }
             }
-            if(processing.running || processing.total > 0) {
+
+            if(processing.running || processing.total>0) {
                 item {
                     Card(colors=CardDefaults.cardColors(containerColor=Color(0xFFEFF5E5)),shape=RoundedCornerShape(20.dp)) {
                         Column(Modifier.padding(18.dp)) {
                             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween) {
-                                Text("Processando sessão",fontWeight=FontWeight.Bold)
-                                Text("${processing.current}/${processing.total}",fontSize=12.sp)
+                                Column {
+                                    Text(if(processing.running)"Atualizando seus slots" else "Último processamento",fontWeight=FontWeight.Bold)
+                                    Text(processing.label,fontSize=12.sp,color=Color.Gray)
+                                }
+                                Text("${processing.current}/${processing.total}",fontWeight=FontWeight.Bold)
                             }
                             Spacer(Modifier.height(10.dp))
                             LinearProgressIndicator(
-                                progress={if(processing.total>0) processing.current.toFloat()/processing.total else 0f},
-                                modifier=Modifier.fillMaxWidth().height(8.dp),
-                                color=Color(0xFF7AA526),
-                                trackColor=Color(0xFFDDE5D1)
+                                progress={if(processing.total>0)processing.current.toFloat()/processing.total else 0f},
+                                modifier=Modifier.fillMaxWidth().height(9.dp),
+                                color=Color(0xFF7AA526),trackColor=Color(0xFFDDE5D1)
                             )
                             Spacer(Modifier.height(8.dp))
-                            Text(processing.label,fontSize=13.sp)
-                            Text("Aplicados: ${processing.success} • Falhas: ${processing.failed}",fontSize=12.sp,color=Color.Gray)
+                            Text("Aplicados ${processing.success} • Falhas ${processing.failed}",fontSize=12.sp)
+                            if(processing.lastError.isNotBlank()) {
+                                Spacer(Modifier.height(5.dp))
+                                Text(processing.lastError,fontSize=11.sp,color=Color(0xFF9C4D36))
+                            }
+                            if(!processing.running) {
+                                Spacer(Modifier.height(12.dp))
+                                OutlinedButton(onClick=onReprocess,modifier=Modifier.fillMaxWidth()) {
+                                    Icon(Icons.Default.Refresh,null);Spacer(Modifier.width(7.dp));Text("Reprocessar última sessão")
+                                }
+                            }
                         }
                     }
                 }
             }
-            item { SessionSummaryCard(latest) }
-            item {
-                Row(horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-                    Metric("Telas", latest?.frames?.size?.toString()?:"0", Modifier.weight(1f))
-                    Metric("Tipos", latest?.frames?.map{it.screenType}?.distinct()?.size?.toString()?:"0", Modifier.weight(1f))
+
+            item { Text("Seus slots",fontWeight=FontWeight.Bold,fontSize=20.sp) }
+
+            items(slots) { slot ->
+                val pct=completion(slot)
+                Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(18.dp)) {
+                    Column(Modifier.padding(15.dp)) {
+                        Row(verticalAlignment=Alignment.CenterVertically) {
+                            Surface(shape=RoundedCornerShape(10.dp),color=Color(0xFF122630)) {
+                                Text("S${slot.id}",Modifier.padding(horizontal=10.dp,vertical=8.dp),color=Color(0xFFB8E34D),fontWeight=FontWeight.Bold)
+                            }
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(if(slot.team!="NI")slot.team else "Slot ${slot.id}",fontWeight=FontWeight.Bold)
+                                Text(if(slot.competition!="NI")slot.competition else "Liga aguardando leitura",fontSize=11.sp,color=Color.Gray)
+                            }
+                            Text("$pct%",fontWeight=FontWeight.Bold)
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        LinearProgressIndicator(
+                            progress={pct/100f},modifier=Modifier.fillMaxWidth().height(6.dp),
+                            color=Color(0xFF7AA526),trackColor=Color(0xFFE8ECDF)
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text("Próximo: ${slot.nextRival} • ${slot.matchDate} • ${slot.venue}",fontSize=12.sp,color=Color(0xFF56656B))
+                    }
                 }
             }
+
+            item { SessionSummaryCard(latest) }
         }
     }
 
@@ -347,29 +403,86 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun SlotOverview(slot:NativeSlotData) {
-        LazyColumn(contentPadding=PaddingValues(18.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
-            item { DetailSection("Liga e clube", listOf(
-                "Meu time" to slot.team,
-                "Competição" to slot.competition,
-                "Tipo" to slot.competitionType,
-                "Estádio" to slot.stadium,
-                "Bônus" to slot.bonus
-            ))}
-            item { DetailSection("Próxima partida", listOf(
-                "Rival" to slot.nextRival,"Data" to slot.matchDate,"Horário" to slot.matchTime,
-                "Local" to slot.venue,"Árbitro" to slot.referee,
-                "Minha força" to slot.myStrength,"Força rival" to slot.rivalStrength
-            ))}
+        LazyColumn(contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
             item {
-                Card(colors=CardDefaults.cardColors(containerColor=Color(0xFFFFF4D9)),shape=RoundedCornerShape(18.dp)) {
+                Card(colors=CardDefaults.cardColors(containerColor=Color(0xFF122630)),shape=RoundedCornerShape(22.dp)) {
                     Column(Modifier.padding(18.dp)) {
-                        Text("Campos ainda NI",fontWeight=FontWeight.Bold)
+                        Text("PRÓXIMO JOGO",fontSize=11.sp,color=Color(0xFFB8E34D),fontWeight=FontWeight.Bold)
                         Spacer(Modifier.height(6.dp))
-                        Text(missingFields(slot).ifEmpty{"Nenhum campo principal pendente."})
+                        Text(if(slot.nextRival!="NI")slot.nextRival else "Rival ainda não identificado",
+                            color=Color.White,fontSize=24.sp,fontWeight=FontWeight.Bold)
+                        Text("${slot.matchDate} · ${slot.matchTime} · ${slot.venue}",color=Color(0xFFB7C8CF),fontSize=13.sp)
+                        Spacer(Modifier.height(14.dp))
+                        Row(horizontalArrangement=Arrangement.spacedBy(10.dp)) {
+                            QuickStat("Minha força",slot.myStrength,Modifier.weight(1f))
+                            QuickStat("Rival",slot.rivalStrength,Modifier.weight(1f))
+                            QuickStat("Árbitro",slot.referee,Modifier.weight(1f))
+                        }
+                    }
+                }
+            }
+            item {
+                Row(horizontalArrangement=Arrangement.spacedBy(10.dp)) {
+                    Metric("${completion(slot)}%","Dados completos",Modifier.weight(1f))
+                    Metric(slot.squadCount.toString(),"Jogadores",Modifier.weight(1f))
+                }
+            }
+            item {
+                Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(18.dp)) {
+                    Column(Modifier.padding(18.dp)) {
+                        Text("Clube e competição",fontWeight=FontWeight.Bold,fontSize=17.sp)
+                        Spacer(Modifier.height(10.dp))
+                        DetailLine("Time",slot.team)
+                        DetailLine("Competição",slot.competition)
+                        DetailLine("Tipo",slot.competitionType)
+                        DetailLine("Estádio",slot.stadium)
+                        DetailLine("Bônus",slot.bonus)
+                    }
+                }
+            }
+            item {
+                Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(18.dp)) {
+                    Column(Modifier.padding(18.dp)) {
+                        Text("Ações rápidas",fontWeight=FontWeight.Bold,fontSize=17.sp)
+                        Spacer(Modifier.height(12.dp))
+                        Row(horizontalArrangement=Arrangement.spacedBy(10.dp)) {
+                            Button(onClick={},enabled=false,modifier=Modifier.weight(1f)){Text("Gerar tática")}
+                            OutlinedButton(onClick={},enabled=false,modifier=Modifier.weight(1f)){Text("433 forte")}
+                        }
+                    }
+                }
+            }
+            if(missingFields(slot).isNotBlank()) {
+                item {
+                    Card(colors=CardDefaults.cardColors(containerColor=Color(0xFFFFF4D9)),shape=RoundedCornerShape(18.dp)) {
+                        Column(Modifier.padding(18.dp)) {
+                            Text("O que ainda falta",fontWeight=FontWeight.Bold)
+                            Spacer(Modifier.height(6.dp))
+                            Text(missingFields(slot),fontSize=13.sp)
+                        }
                     }
                 }
             }
         }
+    }
+
+    @Composable
+    private fun QuickStat(label:String,value:String,modifier:Modifier=Modifier) {
+        Surface(modifier,shape=RoundedCornerShape(13.dp),color=Color(0xFF1E3440)) {
+            Column(Modifier.padding(10.dp)) {
+                Text(label,fontSize=10.sp,color=Color(0xFFAFC1C9))
+                Text(value,fontWeight=FontWeight.Bold,color=Color.White,fontSize=14.sp,maxLines=1)
+            }
+        }
+    }
+
+    @Composable
+    private fun DetailLine(label:String,value:String) {
+        Row(Modifier.fillMaxWidth().padding(vertical=7.dp)) {
+            Text(label,Modifier.weight(1f),fontSize=13.sp,color=Color.Gray)
+            Text(value,fontSize=13.sp,fontWeight=FontWeight.SemiBold)
+        }
+        HorizontalDivider(color=Color(0xFFEEF0EA))
     }
 
     @Composable
@@ -548,20 +661,87 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun SettingsScreen(serviceReady:Boolean) {
-        LazyColumn(contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
-            item { Text("Configurações",fontSize=28.sp,fontWeight=FontWeight.Bold) }
+    private fun SettingsScreen(
+        serviceReady:Boolean,
+        latest:CaptureSession?,
+        processing:NativeSessionProcessor.Progress,
+        onReprocess:()->Unit
+    ) {
+        LazyColumn(contentPadding=PaddingValues(18.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
             item {
-                Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(18.dp)) {
-                    Column(Modifier.padding(18.dp)) {
-                        Text("Leitura automática",fontWeight=FontWeight.Bold)
-                        Text(if(serviceReady)"Ativa. O botão não deve mais aparecer ao reabrir." else "Desativada no Android.")
-                        if(!serviceReady) {
-                            Spacer(Modifier.height(10.dp))
-                            Button(onClick={startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))}) { Text("Ativar") }
+                Text("Configurações",fontSize=28.sp,fontWeight=FontWeight.Bold)
+                Text("Leitura, IA, dados e diagnóstico do Coach.",color=Color.Gray)
+            }
+            item {
+                SettingsCard("Leitura automática",Icons.Default.Visibility) {
+                    SettingStatus("Serviço de acessibilidade",if(serviceReady)"Ativo" else "Desativado",serviceReady)
+                    SettingStatus("Captura do OSM",if(CollectorState.isRecording())"Gravando" else "Pronta",true)
+                    if(!serviceReady) {
+                        Spacer(Modifier.height(10.dp))
+                        Button(onClick={startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))},modifier=Modifier.fillMaxWidth()) {
+                            Text("Abrir acessibilidade")
                         }
                     }
                 }
+            }
+            item {
+                SettingsCard("Conta e slots",Icons.Default.AccountCircle) {
+                    DetailLine("Usuário OSM","leandrozzy")
+                    DetailLine("Slots","4")
+                    DetailLine("Armazenamento","Local no aparelho")
+                }
+            }
+            item {
+                SettingsCard("IA e processamento",Icons.Default.AutoAwesome) {
+                    DetailLine("Backend","OSM AI Coach Cloud")
+                    DetailLine("Última sessão",latest?.let{"${it.frames.size} telas"}?:"Nenhuma")
+                    DetailLine("Resultado","${processing.success} aplicados · ${processing.failed} falhas")
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedButton(onClick=onReprocess,enabled=latest!=null&&!processing.running,modifier=Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.Refresh,null);Spacer(Modifier.width(7.dp));Text("Reprocessar última sessão")
+                    }
+                }
+            }
+            item {
+                SettingsCard("Diagnóstico",Icons.Default.BugReport) {
+                    DetailLine("Sessão preservada",if(latest!=null)"Sim" else "Não")
+                    DetailLine("Estado",latest?.state?:"NI")
+                    DetailLine("Último erro",processing.lastError.ifBlank{"Nenhum"})
+                }
+            }
+            item {
+                SettingsCard("Notificações e automação",Icons.Default.Notifications) {
+                    Text("Alertas de jogo, pendências, resultado e mercado ficarão concentrados aqui.",fontSize=13.sp)
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun SettingsCard(
+        title:String,
+        icon:androidx.compose.ui.graphics.vector.ImageVector,
+        content:@Composable ColumnScope.()->Unit
+    ) {
+        Card(colors=CardDefaults.cardColors(containerColor=Color.White),shape=RoundedCornerShape(18.dp)) {
+            Column(Modifier.padding(18.dp)) {
+                Row(verticalAlignment=Alignment.CenterVertically) {
+                    Icon(icon,null,tint=Color(0xFF6E942D))
+                    Spacer(Modifier.width(9.dp))
+                    Text(title,fontWeight=FontWeight.Bold,fontSize=17.sp)
+                }
+                Spacer(Modifier.height(12.dp))
+                content()
+            }
+        }
+    }
+
+    @Composable
+    private fun SettingStatus(label:String,value:String,good:Boolean) {
+        Row(Modifier.fillMaxWidth().padding(vertical=6.dp),verticalAlignment=Alignment.CenterVertically) {
+            Text(label,Modifier.weight(1f),fontSize=13.sp,color=Color.Gray)
+            Surface(shape=RoundedCornerShape(999.dp),color=if(good)Color(0xFFEAF4DD) else Color(0xFFFFE9D8)) {
+                Text(value,Modifier.padding(horizontal=9.dp,vertical=5.dp),fontSize=11.sp,fontWeight=FontWeight.Bold)
             }
         }
     }
