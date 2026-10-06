@@ -29,7 +29,7 @@ class NativeSessionProcessor(
         val lastError:String=""
     )
 
-    private val prefs=context.getSharedPreferences("native_processor_v9",Context.MODE_PRIVATE)
+    private val prefs=context.getSharedPreferences("native_processor_v10",Context.MODE_PRIVATE)
     private val local=LocalOcrExtractor()
     @Volatile private var cloudError:String=""
 
@@ -130,7 +130,8 @@ class NativeSessionProcessor(
             onProgress(Progress(true,current,total,"S${slot.id} · $friendly · IA",success,failed,"cloud",lastError))
 
             val maxImages=if(job.second=="match")3 else 2
-            val result=withTimeoutOrNull(65000L){analyzeType(endpoint,session,job.third,job.second,maxImages,slot)}
+            val nativeOcrText=job.third.mapNotNull{ocrByIndex[it]}.filter{it.isNotBlank()}.joinToString("\n\n").take(30000)
+            val result=withTimeoutOrNull(65000L){analyzeType(endpoint,session,job.third,job.second,maxImages,slot,nativeOcrText)}
             if(result==null){
                 failed++
                 val detail=cloudError.ifBlank{"sem resposta dentro do limite"}
@@ -213,7 +214,7 @@ class NativeSessionProcessor(
     }
 
     private suspend fun analyzeType(
-        endpointBase:String,session:CaptureSession,indices:List<Int>,type:String,maxImages:Int,slot:NativeSlotData
+        endpointBase:String,session:CaptureSession,indices:List<Int>,type:String,maxImages:Int,slot:NativeSlotData,nativeOcrText:String
     ):Pair<String,JSONObject>?=withContext(Dispatchers.IO){
         val selected=sample(indices,maxImages)
         if(selected.isEmpty())return@withContext null
@@ -238,6 +239,7 @@ class NativeSessionProcessor(
             put("forceOCR",true)
             put("useVisual",true)
             put("useText",true)
+            put("nativeOcrText",nativeOcrText)
             put("context",JSONObject().apply{
                 put("username","leandrozzy")
                 if(slot.team!="NI")put("myTeam",slot.team)
