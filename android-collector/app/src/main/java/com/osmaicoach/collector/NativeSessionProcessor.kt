@@ -75,7 +75,7 @@ class NativeSessionProcessor(
                 .putInt("slot_unassigned_frames", session.frames.size)
                 .apply()
 
-            val message = "Nenhuma visita pôde ser ligada a S1-S4. Reprocesse com a V23 ou faça uma nova sessão iniciada pelo botão Abrir OSM."
+            val message = "Sessão preservada: nenhuma visita foi ligada com segurança a S1-S4. Os dados anteriores foram mantidos."
             onProgress(
                 Progress(
                     false,

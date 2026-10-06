@@ -870,7 +870,7 @@ class MainActivity : ComponentActivity() {
                                 val ocrPrefs=this@MainActivity.getSharedPreferences("native_processor_v13",MODE_PRIVATE)
                                 DetailLine("Telas com texto OCR","${ocrPrefs.getInt("local_ocr_readable",0)}/${ocrPrefs.getInt("local_ocr_total",0)}")
                                 DetailLine("Rastreamento de slots",ocrPrefs.getString("slot_tracker_summary","Ainda não processado") ?: "Ainda não processado")
-                    DetailLine("Versão nativa","V23 · ${BuildConfig.VERSION_NAME}")
+                    DetailLine("Versão nativa","V23.2 · ${BuildConfig.VERSION_NAME}")
                     val rt=getSharedPreferences("collector_runtime",Context.MODE_PRIVATE)
                     DetailLine("Serviço criado",formatDiagnosticTime(rt.getLong("service_created_at",0L)))
                     DetailLine("Serviço conectado em",formatDiagnosticTime(rt.getLong("service_connected_at",0L)))

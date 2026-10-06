@@ -91,8 +91,8 @@ object SlotNavigationTracker {
                     val team = normalize(s.team)
                     val comp = normalize(s.competition)
                     val strong = when {
-                        team.length >= 4 && n.contains(team) -> 12
-                        comp.length >= 5 && n.contains(comp) -> 7
+                        team.length >= 3 && n.contains(team) -> 16
+                        comp.length >= 4 && n.contains(comp) -> 10
                         else -> 0
                     }
                     if (strong > 0) (i + 1) to strong else null
@@ -105,7 +105,7 @@ object SlotNavigationTracker {
 
             val ranked = signatures.map { it.slotId to score(joined,it) }.sortedByDescending { it.second }
             val secondScore = ranked.getOrNull(1)?.second ?: 0
-            val confident = bestSlot in 1..4 && bestScore >= 5 && (bestScore-secondScore >= 2 || bestScore >= 14)
+            val confident = bestSlot in 1..4 && bestScore >= 2 && (bestScore-secondScore >= 1 || bestScore >= 10)
 
             if (confident) {
                 used += bestSlot
@@ -154,6 +154,7 @@ object SlotNavigationTracker {
 
         if (rounds in 3..8 && leagueWords >= 1) return true
         if (rounds >= 3 && n.contains("leandrozzy")) return true
+        if (rounds >= 3 && listOf("slot","manager","treinador","liga","batalha").any { n.contains(it) }) return true
         if (rounds >= 3 && listOf("slot","manager","treinador","liga","batalha").any { n.contains(it) }) return true
         return false
     }
