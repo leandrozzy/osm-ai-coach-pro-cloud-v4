@@ -20,9 +20,13 @@ class OsmCaptureAccessibilityService : AccessibilityService() {
     private var finishRunnable: Runnable? = null
 
     /*
-     * V14: não dependemos mais apenas de eventos de acessibilidade.
-     * Alguns aparelhos/ROMs não entregam TYPE_WINDOW_* de forma confiável para
-     * jogos. O heartbeat consulta a janela ativa e mantém a captura viva.
+     * V16
+     * Em alguns aparelhos/ROMs, jogos não aparecem como rootInActiveWindow e o
+     * Android reporta com.android.systemui mesmo com o OSM visível. Portanto a
+     * captura NÃO pode depender do nome do pacote para uma sessão iniciada pelo
+     * botão "Abrir OSM". Enquanto a sessão explícita estiver armada, capturamos
+     * a tela do display; anúncios também podem ser capturados e depois ignorados
+     * pelo classificador, sem interromper a sessão.
      */
     private val heartbeat = object : Runnable {
         override fun run() {
@@ -59,13 +63,22 @@ class OsmCaptureAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val pkg = event?.packageName?.toString().orEmpty()
+        val runtime = getSharedPreferences("collector_runtime", MODE_PRIVATE)
+        runtime.edit()
+            .putLong("last_accessibility_event_at", System.currentTimeMillis())
+            .apply()
+
         if (pkg.isNotBlank()) {
             CollectorState.currentForegroundPackage = pkg
-            getSharedPreferences("collector_runtime", MODE_PRIVATE).edit()
-                .putString("last_foreground_package", pkg)
-                .putLong("last_accessibility_event_at", System.currentTimeMillis())
-                .apply()
+            runtime.edit().putString("last_foreground_package", pkg).apply()
             handleForeground(pkg)
+        }
+
+        // Sessão iniciada pelo Coach: evento de qualquer pacote serve apenas
+        // como gatilho adicional. Não usamos o pacote como trava de captura.
+        if (isExplicitSessionArmed()) {
+            ensureOsmSession()
+            scheduleCapture()
         }
     }
 
@@ -84,6 +97,13 @@ class OsmCaptureAccessibilityService : AccessibilityService() {
             runtime.edit().putString("last_foreground_package", pkg).apply()
             handleForeground(pkg)
         }
+
+        // Caminho principal no seu aparelho: o sistema pode informar SystemUI
+        // enquanto o OSM está na tela. A sessão explícita é a fonte de verdade.
+        if (isExplicitSessionArmed()) {
+            ensureOsmSession()
+            scheduleCapture()
+        }
     }
 
     private fun detectForegroundPackage(): String? {
@@ -97,6 +117,20 @@ class OsmCaptureAccessibilityService : AccessibilityService() {
         }.getOrNull()
     }
 
+    private fun isExplicitSessionArmed(): Boolean {
+        val runtime = getSharedPreferences("collector_runtime", MODE_PRIVATE)
+        val requestedAt = runtime.getLong("requested_session_at", 0L)
+        val launchAt = runtime.getLong("coach_launch_at", 0L)
+        val current = repository.current()
+        return requestedAt > 0L && launchAt > 0L && current != null && current.state == "recording"
+    }
+
+    private fun shouldKeepCapturing(): Boolean {
+        if (isExplicitSessionArmed()) return true
+        val pkg = detectForegroundPackage() ?: CollectorState.currentForegroundPackage
+        return pkg == OSM_PACKAGE
+    }
+
     private fun handleForeground(pkg: String) {
         when (pkg) {
             OSM_PACKAGE -> {
@@ -106,12 +140,13 @@ class OsmCaptureAccessibilityService : AccessibilityService() {
                 scheduleCapture()
             }
             packageName -> {
-                if (osmWasForeground) scheduleFinish()
+                // Para sessão explícita, MainActivity finaliza ao voltar ao Coach.
+                // Não finalizamos aqui porque alguns aparelhos reportam o pacote
+                // incorreto e anúncios podem abrir janelas externas.
+                if (osmWasForeground && !isExplicitSessionArmed()) scheduleFinish()
             }
             else -> {
-                // Propaganda, navegador, Play Store, seletor de arquivos etc.
-                // NÃO encerram a sessão. Quando o OSM voltar ao primeiro plano,
-                // a captura continua na mesma sessão.
+                // Propaganda / SystemUI / navegador não encerram a sessão.
             }
         }
     }
@@ -129,8 +164,6 @@ class OsmCaptureAccessibilityService : AccessibilityService() {
             lastFingerprint = null
             runtime.edit().putBoolean("start_new_session_pending", false).apply()
         } else if (current == null) {
-            // Também funciona se o usuário abrir o OSM diretamente pelo ícone,
-            // sem passar pelo botão "Abrir OSM" do Coach.
             repository.beginNewSession()
             lastFingerprint = null
         }
@@ -148,7 +181,7 @@ class OsmCaptureAccessibilityService : AccessibilityService() {
         finishRunnable?.let(handler::removeCallbacks)
         val task = Runnable {
             val pkg = detectForegroundPackage() ?: CollectorState.currentForegroundPackage
-            if (pkg == packageName && osmWasForeground) {
+            if (pkg == packageName && osmWasForeground && !isExplicitSessionArmed()) {
                 repository.finish()
                 getSharedPreferences("collector_runtime", MODE_PRIVATE).edit()
                     .putBoolean("osm_seen_in_session", false)
@@ -166,6 +199,7 @@ class OsmCaptureAccessibilityService : AccessibilityService() {
 
     private fun scheduleCapture() {
         if (pendingCapture) return
+        if (!shouldKeepCapturing()) return
         val delay = maxOf(1500L - (System.currentTimeMillis() - lastCaptureAt), 120L)
         pendingCapture = true
         handler.postDelayed({
@@ -188,11 +222,16 @@ class OsmCaptureAccessibilityService : AccessibilityService() {
     }
 
     private fun captureNow() {
-        val pkg = detectForegroundPackage() ?: CollectorState.currentForegroundPackage
-        if (pkg != OSM_PACKAGE) return
+        if (!shouldKeepCapturing()) return
 
         ensureOsmSession()
         val hint = visibleText()
+        val runtime = getSharedPreferences("collector_runtime", MODE_PRIVATE)
+        runtime.edit()
+            .putLong("last_capture_attempt_at", System.currentTimeMillis())
+            .putString("last_capture_attempt_package", detectForegroundPackage() ?: "NI")
+            .apply()
+
         takeScreenshot(Display.DEFAULT_DISPLAY, executor, object : TakeScreenshotCallback {
             override fun onSuccess(result: ScreenshotResult) {
                 val buffer = result.hardwareBuffer
@@ -200,6 +239,10 @@ class OsmCaptureAccessibilityService : AccessibilityService() {
                 buffer.close()
                 if (hardware == null) {
                     CollectorState.lastError = "Falha de captura: bitmap"
+                    runtime.edit()
+                        .putString("last_capture_error", "bitmap-null")
+                        .putLong("last_capture_error_at", System.currentTimeMillis())
+                        .apply()
                     scheduleCapture()
                     return
                 }
@@ -210,17 +253,15 @@ class OsmCaptureAccessibilityService : AccessibilityService() {
                 val old = lastFingerprint
                 val now = System.currentTimeMillis()
 
-                // Em jogos há animações pequenas. Para não gerar centenas de frames,
-                // salva quando a tela muda OU a cada 8s como amostra de segurança.
-                val forceSample = now - getSharedPreferences("collector_runtime", MODE_PRIVATE)
-                    .getLong("last_saved_frame_at", 0L) >= 8000L
+                val forceSample = now - runtime.getLong("last_saved_frame_at", 0L) >= 8000L
 
                 if (old == null || BitmapFingerprint.distance(old, fp) > 2 || forceSample) {
                     repository.saveFrame(bitmap, fp, hint)
                     lastFingerprint = fp
-                    getSharedPreferences("collector_runtime", MODE_PRIVATE).edit()
+                    runtime.edit()
                         .putLong("last_saved_frame_at", now)
                         .putString("last_capture_title", ScreenClassifier.classify(hint).title.take(80))
+                        .remove("last_capture_error")
                         .apply()
                     CollectorState.signalFrameCaptured()
                 }
@@ -228,27 +269,22 @@ class OsmCaptureAccessibilityService : AccessibilityService() {
                 lastCaptureAt = now
                 CollectorState.lastError = null
                 bitmap.recycle()
-                if ((detectForegroundPackage() ?: CollectorState.currentForegroundPackage) == OSM_PACKAGE) {
-                    scheduleCapture()
-                }
+                if (shouldKeepCapturing()) scheduleCapture()
             }
 
             override fun onFailure(errorCode: Int) {
                 lastCaptureAt = System.currentTimeMillis()
                 CollectorState.lastError = "Falha de captura: $errorCode"
-                getSharedPreferences("collector_runtime", MODE_PRIVATE).edit()
+                runtime.edit()
                     .putString("last_capture_error", "screenshot:$errorCode")
                     .putLong("last_capture_error_at", lastCaptureAt)
                     .apply()
-                if ((detectForegroundPackage() ?: CollectorState.currentForegroundPackage) == OSM_PACKAGE) {
-                    scheduleCapture()
-                }
+                if (shouldKeepCapturing()) scheduleCapture()
             }
         })
     }
 
     override fun onInterrupt() {
-        // Não finalizamos sessão apenas por interrupção temporária do serviço.
         CollectorState.setRecording(false)
     }
 
