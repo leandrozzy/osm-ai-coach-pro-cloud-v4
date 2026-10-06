@@ -59,7 +59,13 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        LaunchedEffect(refresh, forceProcessToken) {
+        // Do not key processing by refresh.
+        // refresh changes every 1.2s for UI redraws. When it was a key,
+        // Compose cancelled the active request and restarted it at 0/12.
+        val latestForProcessing = repo.latestSession()
+        val latestSessionId = latestForProcessing?.id ?: ""
+
+        LaunchedEffect(latestSessionId, forceProcessToken) {
             val latestNow = repo.latestSession()
             if (latestNow?.state == "ready" && !processing.running) {
                 val processor = NativeSessionProcessor(this@MainActivity, repo, slotStore)
@@ -214,6 +220,10 @@ class MainActivity : ComponentActivity() {
                                 Column {
                                     Text(if(processing.running)"Atualizando seus slots" else "Último processamento",fontWeight=FontWeight.Bold)
                                     Text(processing.label,fontSize=12.sp,color=Color.Gray)
+                                    if(processing.running) {
+                                        Spacer(Modifier.height(4.dp))
+                                        Text("Processamento ativo — a tela pode atualizar sem reiniciar a análise.",fontSize=10.sp,color=Color(0xFF6B7B72))
+                                    }
                                 }
                                 Text("${processing.current}/${processing.total}",fontWeight=FontWeight.Bold)
                             }
