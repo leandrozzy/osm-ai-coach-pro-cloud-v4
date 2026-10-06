@@ -40,11 +40,8 @@ class NativeSessionProcessor(
         if(session.state!="ready"||session.frames.isEmpty())return@withContext false
         if(!force&&isProcessed(session.id))return@withContext false
 
-        val segments=splitIntoSlots(session)
-        if(segments.isEmpty())return@withContext false
-
         val slots=store.loadAll()
-        val total=session.frames.size + segments.size*3
+        var total=session.frames.size + 12
         var current=0
         var success=0
         var failed=0
@@ -65,10 +62,17 @@ class NativeSessionProcessor(
         }
 
         val classifications = ocrByIndex.mapValues { (_, text) -> ScreenClassifier.classify(text) }
-        val frameToSlot=mutableMapOf<Int,Int>()
-        segments.forEachIndexed { slotIndex, rows ->
-            rows.forEach { frameToSlot[it]=slotIndex+1 }
-        }
+
+        val tracked = SlotNavigationTracker.assign(session, ocrByIndex, slots)
+        val segments = tracked.slotRows
+        val frameToSlot = tracked.frameToSlot.toMutableMap()
+        total = session.frames.size + segments.count { it.isNotEmpty() } * 3
+
+        prefs.edit()
+            .putString("slot_tracker_summary", tracked.summary)
+            .putInt("slot_hub_frames", tracked.hubFrames.size)
+            .putInt("slot_unassigned_frames", session.frames.size - frameToSlot.count { it.value in 1..4 })
+            .apply()
 
         repository.updateFrameAnalysis(session.id,
             ocrByIndex.mapValues { (index,text) ->
@@ -78,7 +82,12 @@ class NativeSessionProcessor(
                     screenType=c.type,
                     screenTitle=c.title,
                     ocrText=text.take(500),
-                    analysisState=if(text.isBlank())"sem OCR" else "OCR ✓",
+                    analysisState=when {
+                        index in tracked.hubFrames -> "Central dos slots"
+                        text.isBlank() -> "sem OCR"
+                        (frameToSlot[index] ?: 0) == 0 -> "Aguardando identificação do slot"
+                        else -> "OCR ✓"
+                    },
                     extractedFields=0
                 )
             }
@@ -96,12 +105,13 @@ class NativeSessionProcessor(
         }
         store.saveAll(slots)
         val localApplied=localKnownAfter.indices.count { localKnownAfter[it] > localKnownBefore[it] }
+        success += localApplied
         prefs.edit().putInt("local_slots_applied",localApplied).apply()
 
         val endpoint=probeBackend()
         if(endpoint==null){
             lastError="IA Cloud indisponível. OCR local foi mantido."
-            failed += segments.size*3
+            failed += segments.count { it.isNotEmpty() } * 3
             current=total
             prefs.edit().putString("processed_session",session.id).apply()
             onProgress(Progress(false,current,total,"Sessão concluída com OCR local",success,failed,"done",lastError))
@@ -130,6 +140,7 @@ class NativeSessionProcessor(
 
         val jobs=mutableListOf<Triple<Int,String,List<Int>>>()
         segments.forEachIndexed{i,rows->
+            if(rows.isEmpty()) return@forEachIndexed
             jobs+=Triple(i,"match",rowsForType(rows,"match"))
             jobs+=Triple(i,"squad",rowsForType(rows,"squad"))
             jobs+=Triple(i,"calendar",rowsForType(rows,"calendar"))
@@ -140,7 +151,7 @@ class NativeSessionProcessor(
             val friendly=when(job.second){"match"->"Pré-jogo";"squad"->"Elenco";else->"Calendário"}
             onProgress(Progress(true,current,total,"S${slot.id} · $friendly · IA",success,failed,"cloud",lastError))
 
-            val maxImages=if(job.second=="match")3 else 2
+            val maxImages=4
             val nativeOcrText=job.third.mapNotNull{ocrByIndex[it]}.filter{it.isNotBlank()}.joinToString("\n\n").take(30000)
             val result=withTimeoutOrNull(65000L){analyzeType(endpoint,session,job.third,job.second,maxImages,slot,nativeOcrText)}
             if(result==null){
@@ -191,43 +202,6 @@ class NativeSessionProcessor(
             }catch(_:Throwable){}
         }
         return null
-    }
-
-    private fun splitIntoSlots(session:CaptureSession):List<List<Int>>{
-        val frames=session.frames.sortedBy{it.capturedAt}
-        if(frames.isEmpty())return emptyList()
-
-        val gaps=mutableListOf<Pair<Int,Long>>()
-        for(i in 1 until frames.size) {
-            gaps += i to (frames[i].capturedAt-frames[i-1].capturedAt).coerceAtLeast(0)
-        }
-        // V17: separar os slots pelas maiores pausas reais da navegação.
-        // Propagandas não encerram a sessão. Ignoramos apenas micro-pausas e
-        // ausências muito longas, evitando o corte artificial em quatro quartos.
-        val cuts=gaps.filter{it.second in 1400L..90000L}
-            .sortedByDescending{it.second}.take(3).map{it.first}.sorted()
-
-        val result=mutableListOf<List<Int>>()
-        if(cuts.size==3){
-            var from=0
-            for(cut in cuts+frames.size){
-                if(cut>from)result+=frames.subList(from,cut).map{it.index}
-                from=cut
-            }
-        }
-
-        if(result.size!=4 && frames.size>=8){
-            result.clear()
-            var from=0
-            for(i in 0 until 4){
-                val to=if(i==3)frames.size else ((i+1)*frames.size/4)
-                if(to>from) result+=frames.subList(from,to).map{it.index}
-                from=to
-            }
-        }
-
-        if(result.isEmpty())result+=frames.map{it.index}
-        return result.take(4)
     }
 
     private suspend fun analyzeType(
@@ -284,9 +258,16 @@ class NativeSessionProcessor(
                 null
             }else{
                 val root=JSONObject(raw)
-                val data=root.optJSONObject("data")
+                val data =
+                    root.optJSONObject("data")
+                        ?: root.optJSONObject("result")
+                        ?: if(
+                            root.has("match") || root.has("preGame") ||
+                            root.has("players") || root.has("squad") ||
+                            root.has("calendar") || root.has("meta")
+                        ) root else null
                 if(data==null){
-                    cloudError="Resposta sem campo data: "+raw.take(220).replace("\n"," ")
+                    cloudError="Resposta sem dados reconhecíveis: "+raw.take(220).replace("\n"," ")
                     null
                 }else{
                     cloudError=""
@@ -301,32 +282,44 @@ class NativeSessionProcessor(
 
     private fun applyResult(slot:NativeSlotData,type:String,data:JSONObject):Int =
         when(type){
-            "match"->applyMatch(slot,data.optJSONObject("match")?:JSONObject())
-            "squad"->applySquad(slot,data)
-            "calendar"->applyCalendar(slot,data)
-            else->0
+            "match" -> applyMatch(slot, data.optJSONObject("match") ?: data.optJSONObject("preGame") ?: data.optJSONObject("pregame") ?: data)
+            "squad" -> applySquad(slot, data.optJSONObject("squad") ?: data)
+            "calendar" -> applyCalendar(slot, data.optJSONObject("calendarData") ?: data)
+            else -> 0
         }
 
     private fun applyMatch(slot:NativeSlotData,m:JSONObject):Int{
         var changed=0
-        fun put(key:String,set:(String)->Unit){
-            val v=knownString(m,key) ?: return
+        fun putAny(keys:List<String>,set:(String)->Unit){
+            val v=keys.firstNotNullOfOrNull { key -> knownString(m,key) } ?: return
             set(v); changed++
         }
-
-        put("myName"){slot.team=it};put("rivalName"){slot.nextRival=it}
-        put("location"){slot.venue=it}
-        put("referee"){ if(validReferee(it)) slot.referee=it else changed-- }
-        put("myStrength"){slot.myStrength=it};put("rivalStrength"){slot.rivalStrength=it}
-        put("mySquadValue"){slot.myValue=it};put("rivalSquadValue"){slot.rivalValue=it}
-        put("myGK"){slot.myGoalkeeper=it};put("myDEF"){slot.myDefense=it}
-        put("myMID"){slot.myMidfield=it};put("myATT"){slot.myAttack=it}
-        put("rivalGK"){slot.rivalGoalkeeper=it};put("rivalDEF"){slot.rivalDefense=it}
-        put("rivalMID"){slot.rivalMidfield=it};put("rivalATT"){slot.rivalAttack=it}
-        put("rivalFormation"){slot.rivalFormation=it};put("rivalPlan"){slot.rivalPlan=it}
-        put("rivalMarking"){slot.marking=it};put("rivalOffside"){slot.offside=it}
-        put("secretTraining"){slot.secretTraining=it};put("trainingCamp"){slot.trainingCamp=it}
-        put("stadium"){slot.stadium=it};put("myBonus"){slot.bonus=it}
+        putAny(listOf("myName","myTeam","team","club")){slot.team=it}
+        putAny(listOf("rivalName","opponent","rival","opponentName")){slot.nextRival=it}
+        putAny(listOf("date","matchDate")){slot.matchDate=it}
+        putAny(listOf("time","matchTime","kickoff")){slot.matchTime=it}
+        putAny(listOf("location","venue","homeAway")){slot.venue=it}
+        putAny(listOf("referee","refereeColor","refereeStrictness")){ if(validReferee(it)) slot.referee=it else changed-- }
+        putAny(listOf("myStrength","teamStrength","strength")){slot.myStrength=it}
+        putAny(listOf("rivalStrength","opponentStrength")){slot.rivalStrength=it}
+        putAny(listOf("mySquadValue","squadValue","teamValue")){slot.myValue=it}
+        putAny(listOf("rivalSquadValue","opponentValue","rivalValue")){slot.rivalValue=it}
+        putAny(listOf("myGK","myGoalkeeper","goalkeeper")){slot.myGoalkeeper=it}
+        putAny(listOf("myDEF","myDefense","defense")){slot.myDefense=it}
+        putAny(listOf("myMID","myMidfield","midfield")){slot.myMidfield=it}
+        putAny(listOf("myATT","myAttack","attack")){slot.myAttack=it}
+        putAny(listOf("rivalGK","opponentGK","rivalGoalkeeper")){slot.rivalGoalkeeper=it}
+        putAny(listOf("rivalDEF","opponentDEF","rivalDefense")){slot.rivalDefense=it}
+        putAny(listOf("rivalMID","opponentMID","rivalMidfield")){slot.rivalMidfield=it}
+        putAny(listOf("rivalATT","opponentATT","rivalAttack")){slot.rivalAttack=it}
+        putAny(listOf("rivalFormation","opponentFormation","formation")){slot.rivalFormation=it}
+        putAny(listOf("rivalPlan","opponentPlan","gamePlan","plan")){slot.rivalPlan=it}
+        putAny(listOf("rivalMarking","marking")){slot.marking=it}
+        putAny(listOf("rivalOffside","offside")){slot.offside=it}
+        putAny(listOf("secretTraining","secretTrainingOpponent")){slot.secretTraining=it}
+        putAny(listOf("trainingCamp","camp","opponentTrainingCamp")){slot.trainingCamp=it}
+        putAny(listOf("stadium","stadiumLevel")){slot.stadium=it}
+        putAny(listOf("myBonus","bonus","homeBonus")){slot.bonus=it}
         return changed
     }
 

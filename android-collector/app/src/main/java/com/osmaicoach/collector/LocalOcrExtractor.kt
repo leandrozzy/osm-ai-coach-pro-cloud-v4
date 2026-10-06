@@ -72,7 +72,9 @@ class LocalOcrExtractor {
             }
 
         val fullDate = Regex("\\b([0-3]?\\d/[01]?\\d/(?:20)?\\d{2})\\b").find(joined)?.value
-        if (fullDate != null && slot.matchDate=="NI") slot.matchDate=fullDate
+        val shortDate = Regex("\\b([0-3]?\\d/[01]?\\d)\\b").find(joined)?.value
+        val detectedDate = fullDate ?: shortDate
+        if (detectedDate != null && slot.matchDate=="NI") slot.matchDate=detectedDate
 
         Regex("\\b([01]?\\d|2[0-3]):[0-5]\\d\\b").find(joined)?.value
             ?.let { if (slot.matchTime=="NI") slot.matchTime=it }
@@ -133,6 +135,10 @@ class LocalOcrExtractor {
         if(slot.myDefense=="NI") labeledNumber("DEF","defesa")?.let{slot.myDefense=it}
         if(slot.myMidfield=="NI") labeledNumber("MEI","MID","meio-campo","meio campo")?.let{slot.myMidfield=it}
         if(slot.myAttack=="NI") labeledNumber("ATA","ATT","ataque")?.let{slot.myAttack=it}
+        if(slot.rivalGoalkeeper=="NI") labeledNumber("Rival GOL","Rival GK","Opponent GK")?.let{slot.rivalGoalkeeper=it}
+        if(slot.rivalDefense=="NI") labeledNumber("Rival DEF","Opponent DEF")?.let{slot.rivalDefense=it}
+        if(slot.rivalMidfield=="NI") labeledNumber("Rival MEI","Rival MID","Opponent MID")?.let{slot.rivalMidfield=it}
+        if(slot.rivalAttack=="NI") labeledNumber("Rival ATA","Rival ATT","Opponent ATT")?.let{slot.rivalAttack=it}
 
         if(slot.secretTraining=="NI") {
             slot.secretTraining = when {
