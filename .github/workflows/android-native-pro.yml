@@ -1,16 +1,7 @@
-name: Build Native Pro APK
+name: Build Native Pro APK (manual only)
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - android-collector-v1
-    paths:
-      - 'android-collector/**'
-      - 'api/**'
-      - 'lib/**'
-      - 'src/**'
-      - '.github/workflows/android-native-pro.yml'
 
 permissions:
   contents: read
@@ -18,7 +9,8 @@ permissions:
 jobs:
   native-pro:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -46,11 +38,12 @@ jobs:
           ANDROID_SIGNING_PASSWORD: ${{ secrets.ANDROID_SIGNING_PASSWORD }}
           ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/osm-release.p12
         working-directory: android-collector
-        run: gradle --no-daemon :app:assembleRelease
+        run: gradle --no-daemon --stacktrace :app:assembleRelease
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: osm-ai-coach-native-pro
+          name: osm-ai-coach-native-pro-${{ github.run_number }}
           path: android-collector/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
+          retention-days: 14

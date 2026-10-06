@@ -9,30 +9,23 @@ on:
       - 'android-collector/**'
       - 'api/analyze.js'
       - 'lib/providers.js'
-      - 'apply_native_current.py'
       - '.github/workflows/android-build.yml'
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: android-build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Apply current fixes
-        run: python apply_native_current.py
-
-      - name: Save generated implementation
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add android-collector api/analyze.js lib/providers.js
-          git diff --cached --quiet || git commit -m "Apply native OCR backend integration"
-          git push
 
       - name: Java 17
         uses: actions/setup-java@v5
@@ -44,6 +37,14 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
+
+      - name: Validate native sources
+        run: |
+          test -f android-collector/app/src/main/java/com/osmaicoach/collector/SlotNavigationTracker.kt
+          test -f android-collector/app/src/main/java/com/osmaicoach/collector/MainActivity.kt
+          test -f android-collector/app/src/main/java/com/osmaicoach/collector/OsmCaptureAccessibilityService.kt
+          test -f android-collector/app/src/main/java/com/osmaicoach/collector/NativeSessionProcessor.kt
+          test -f android-collector/app/build.gradle.kts
 
       - name: Restore signing key
         env:
@@ -57,11 +58,12 @@ jobs:
           ANDROID_SIGNING_PASSWORD: ${{ secrets.ANDROID_SIGNING_PASSWORD }}
           ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/osm-release.p12
         working-directory: android-collector
-        run: gradle :app:assembleRelease
+        run: gradle --no-daemon --stacktrace :app:assembleRelease
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: osm-ai-coach-pro
+          name: osm-ai-coach-pro-${{ github.run_number }}
           path: android-collector/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
+          retention-days: 14
