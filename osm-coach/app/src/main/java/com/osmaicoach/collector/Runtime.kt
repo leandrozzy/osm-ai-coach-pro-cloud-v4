@@ -32,6 +32,20 @@ object Diag {
     val unassigned = AtomicInteger()
     val aiCalls = AtomicInteger()
 
+    private val recent = ArrayList<String>()
+
+    /** Últimos eventos do pipeline (mais novo primeiro), sem repetir a mesma mensagem em sequência. */
+    @Synchronized
+    fun log(msg: String) {
+        val line = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date()) + "  " + msg
+        if (recent.isNotEmpty() && recent[0].substring(10) == msg) return
+        recent.add(0, line)
+        while (recent.size > 14) recent.removeAt(recent.size - 1)
+    }
+
+    @Synchronized
+    fun recentEvents(): List<String> = ArrayList(recent)
+
     fun resetCounters() {
         valid.set(0); discarded.set(0); dedup.set(0); ocr.set(0)
         parsed.set(0); extracted.set(0); unassigned.set(0); aiCalls.set(0)

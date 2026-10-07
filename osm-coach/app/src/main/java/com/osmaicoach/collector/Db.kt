@@ -128,6 +128,9 @@ interface CoachDao {
     @Query("DELETE FROM fields WHERE slotId = :slot AND fkey LIKE 'rival.%'")
     suspend fun deleteRivalFields(slot: Int)
 
+    @Query("DELETE FROM fields WHERE source = 'legacy'")
+    suspend fun deleteLegacyFields(): Int
+
     @Query("SELECT * FROM players WHERE slotId = :slot")
     suspend fun playersOf(slot: Int): List<PlayerEntity>
 

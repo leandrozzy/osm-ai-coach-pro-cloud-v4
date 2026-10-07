@@ -1,7 +1,6 @@
 package com.osmaicoach.collector
 
 import android.content.Context
-import org.json.JSONArray
 import org.json.JSONObject
 
 class Repo(private val ctx: Context) {
@@ -232,35 +231,11 @@ class Repo(private val ctx: Context) {
         return changed
     }
 
-    /** Importa uma vez os dados do app antigo (baixa confiança: qualquer leitura nova substitui). */
-    suspend fun importLegacy(): Int {
+    /** Remove dados importados do app antigo (eram inválidos). Os dados novos só vêm de leitura real. */
+    suspend fun purgeLegacy(): Int {
         val prefs = ctx.getSharedPreferences("collector_runtime", Context.MODE_PRIVATE)
-        if (prefs.getBoolean("legacy_imported", false)) return 0
-        val raw = ctx.getSharedPreferences("native_slots_v3", Context.MODE_PRIVATE).getString("slots", null)
+        val removed = dao.deleteLegacyFields()
         prefs.edit().putBoolean("legacy_imported", true).apply()
-        if (raw == null) return 0
-        var total = 0
-        try {
-            val arr = JSONArray(raw)
-            val map = mapOf(
-                "team" to K.TEAM, "competition" to K.COMPETITION, "nextRival" to K.RIVAL_TEAM,
-                "myStrength" to K.MY_STRENGTH, "rivalStrength" to K.RIVAL_STRENGTH, "myValue" to K.MY_VALUE,
-                "rivalValue" to K.RIVAL_VALUE, "rivalFormation" to K.RIVAL_FORMATION, "rivalPlan" to K.RIVAL_PLAN,
-                "marking" to K.RIVAL_MARKING, "offside" to K.RIVAL_OFFSIDE, "secretTraining" to K.RIVAL_SECRET,
-                "trainingCamp" to K.RIVAL_CAMP, "stadium" to K.STADIUM, "referee" to K.REFEREE
-            )
-            for (i in 0 until minOf(4, arr.length())) {
-                val o = arr.optJSONObject(i) ?: continue
-                val r = LinkedHashMap<String, Reading>()
-                for ((from, to) in map) {
-                    val v = o.optString(from, NI)
-                    if (FieldMerge.known(v)) r[to] = Reading(v, 0.3)
-                }
-                total += putFields(i + 1, r, "legacy", System.currentTimeMillis())
-            }
-        } catch (e: Exception) {
-            Diag.lastError = "Importação antiga: " + (e.message ?: e.javaClass.simpleName)
-        }
-        return total
+        return removed
     }
 }

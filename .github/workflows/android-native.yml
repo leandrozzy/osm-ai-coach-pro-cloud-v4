@@ -58,6 +58,26 @@ jobs:
         continue-on-error: true
         run: gradle --no-daemon :app:lintDebug
 
+      - name: Erros do lint no resumo da execução
+        if: always() && steps.lint.outcome == 'failure'
+        run: |
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import xml.etree.ElementTree as ET, os
+          f = "app/build/reports/lint-results-debug.xml"
+          print("## Erros do lint")
+          if not os.path.exists(f):
+              print("Relatório XML não encontrado.")
+          else:
+              n = 0
+              for i in ET.parse(f).getroot().iter("issue"):
+                  if i.get("severity") in ("Error", "Fatal"):
+                      loc = i.find("location")
+                      where = (loc.get("file") + ":" + str(loc.get("line"))) if loc is not None else ""
+                      print("- **" + str(i.get("id")) + "**: " + str(i.get("message")) + " — " + where)
+                      n += 1
+              print("Total de erros: " + str(n))
+          PY
+
       - name: APK debug
         id: debug
         run: gradle --no-daemon :app:assembleDebug

@@ -74,6 +74,7 @@ class FramePipeline private constructor(private val ctx: Context) {
     private var machineSession: String? = null
     private var candidate: LongArray? = null
     private var stable = 0
+    private var unstable = 0
     private var lastProcessed: LongArray? = null
     private var lastOwner: Triple<Int, String, Long>? = null
     private var lastOsmAcceptedAt = 0L
@@ -96,6 +97,7 @@ class FramePipeline private constructor(private val ctx: Context) {
         machineSession = sessionId
         candidate = null
         stable = 0
+        unstable = 0
         lastProcessed = null
         lastOwner = null
         imagesThisSession = 0
@@ -151,6 +153,41 @@ class FramePipeline private constructor(private val ctx: Context) {
         else -> Extraction(type)
     }
 
+    private fun typeLabel(t: ScreenType): String = when (t) {
+        ScreenType.HUB -> "Central dos slots"
+        ScreenType.PREGAME -> "Pré-jogo"
+        ScreenType.SQUAD -> "Elenco"
+        ScreenType.CALENDAR -> "Calendário"
+        ScreenType.MARKET -> "Mercado"
+        ScreenType.TRAINING -> "Treinamento"
+        ScreenType.TACTIC -> "Tática"
+        ScreenType.REPORT -> "Relatório"
+        else -> "Outra tela do OSM"
+    }
+
+    /** Recorta o escudo de cada card da central para mostrar na interface (no máx. 1x a cada 6 h por slot). */
+    private fun saveCrests(bmp: Bitmap, slots: List<Int>) {
+        val dir = File(ctx.filesDir, "crests").apply { mkdirs() }
+        for (slot in slots) {
+            val f = File(dir, "s$slot.png")
+            if (f.exists() && System.currentTimeMillis() - f.lastModified() < 6L * 3600L * 1000L) continue
+            val cx = if (slot % 2 == 1) 0.5867f else 0.7953f
+            val cy = if (slot <= 2) 0.263f else 0.711f
+            val x = ((cx - 0.04f) * bmp.width).toInt().coerceIn(0, bmp.width - 2)
+            val y = ((cy - 0.09f) * bmp.height).toInt().coerceIn(0, bmp.height - 2)
+            val w = (0.08f * bmp.width).toInt().coerceAtMost(bmp.width - x)
+            val hh = (0.18f * bmp.height).toInt().coerceAtMost(bmp.height - y)
+            if (w < 8 || hh < 8) continue
+            try {
+                val crop = Bitmap.createBitmap(bmp, x, y, w, hh)
+                FileOutputStream(f).use { crop.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                crop.recycle()
+            } catch (e: Exception) {
+                Diag.lastError = "Escudo: " + (e.message ?: "erro")
+            }
+        }
+    }
+
     suspend fun onShot(sessionId: String, bmp: Bitmap) {
         mutex.withLock {
             ensureMachine(sessionId)
@@ -163,13 +200,22 @@ class FramePipeline private constructor(private val ctx: Context) {
             val h = FrameHash.of(tpx)
 
             val cand = candidate
-            if (cand != null && FrameHash.distance(cand, h) <= 6) stable++ else {
+            if (cand != null && FrameHash.distance(cand, h) <= 20) {
+                stable++
+                unstable = 0
+            } else {
                 candidate = h
                 stable = 1
+                unstable++
+            }
+            // tela sempre animada: depois de ~5 amostras instáveis, processa mesmo assim
+            if (unstable >= 5 && stable < 2) {
+                stable = 2
+                unstable = 0
             }
             if (stable < 2) return
             val lp = lastProcessed
-            if (lp != null && FrameHash.distance(lp, h) < 12) {
+            if (lp != null && FrameHash.distance(lp, h) < 30) {
                 if (stable == 2) Diag.dedup.incrementAndGet()
                 return
             }
@@ -180,6 +226,7 @@ class FramePipeline private constructor(private val ctx: Context) {
             if (!topBar && !PixelProbe.hubBackdrop(img)) {
                 Diag.discarded.incrementAndGet()
                 Diag.currentType = ScreenType.NON_OSM.name
+                Diag.log("Descartada: não é tela do OSM (anúncio ou outro app)")
                 lastProcessed = h
                 return
             }
@@ -191,6 +238,7 @@ class FramePipeline private constructor(private val ctx: Context) {
             lastProcessed = h
             if (type == ScreenType.NOISE || type == ScreenType.NON_OSM) {
                 Diag.discarded.incrementAndGet()
+                Diag.log(if (type == ScreenType.NOISE) "Descartada: transição/tela vazia" else "Descartada: sem barra do OSM")
                 return
             }
             Diag.valid.incrementAndGet()
@@ -221,7 +269,12 @@ class FramePipeline private constructor(private val ctx: Context) {
                 lastOwner = Triple(cur, own, now)
             }
 
+            if (type == ScreenType.HUB) saveCrests(bmp, ex.hubCards.map { it.slot })
             val changed = repo.apply(asg.slot, ex, "ocr", now)
+            Diag.log(
+                typeLabel(type) + " → " + (asg.slot?.let { "S$it" } ?: if (type == ScreenType.HUB) "central" else "sem slot") +
+                    (if (changed > 0) " (+$changed campos)" else "")
+            )
             if (changed > 0) {
                 Diag.extracted.addAndGet(changed)
                 Diag.lastUpdateAt = now
