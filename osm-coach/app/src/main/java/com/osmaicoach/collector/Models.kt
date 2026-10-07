@@ -7,7 +7,7 @@ const val OSM_PACKAGE = "com.gamebasics.osm"
 const val NI = "NI"
 const val MY_NICK = "leandrozzy"
 
-enum class ScreenType { HUB, PREGAME, SQUAD, CALENDAR, MARKET, TRAINING, TACTIC, REPORT, STADIUM, OTHER_OSM, NOISE, NON_OSM }
+enum class ScreenType { HUB, PREGAME, SQUAD, CALENDAR, MARKET, TRAINING, TACTIC, REPORT, STADIUM, RESULT, OTHER_OSM, NOISE, NON_OSM }
 
 /** Coordenadas sempre normalizadas (0..1) em relação à largura/altura da captura. */
 data class OcrToken(val text: String, val l: Float, val t: Float, val r: Float, val b: Float) {
@@ -73,6 +73,25 @@ data class ListingRead(
 
 data class HubCard(val slot: Int, val team: String, val subtitle: String, val roundDone: Int?, val roundTotal: Int?)
 
+data class MatchReportRead(
+    val round: Int? = null,
+    val homeTeam: String? = null,
+    val awayTeam: String? = null,
+    val homeNick: String? = null,
+    val awayNick: String? = null,
+    val scoreHome: Int? = null,
+    val scoreAway: Int? = null,
+    val referee: String? = null,
+    val tip: String? = null,
+    val advice: String? = null,
+    val mom: String? = null,
+    val stats: Map<String, Pair<String, String>> = emptyMap(),
+    val zones: List<Int> = emptyList(),
+    val ratingsHome: List<Pair<String, Int>> = emptyList(),
+    val ratingsAway: List<Pair<String, Int>> = emptyList(),
+    val events: List<String> = emptyList()
+)
+
 data class Extraction(
     val type: ScreenType,
     val fields: Map<String, Reading> = emptyMap(),
@@ -86,7 +105,8 @@ data class Extraction(
     val teamCandidates: List<String> = emptyList(),
     val roundRead: Int? = null,
     val needsAi: Boolean = false,
-    val note: String = ""
+    val note: String = "",
+    val matchReport: MatchReportRead? = null
 )
 
 /** Chaves dos campos escalares guardados por slot. */
@@ -108,6 +128,10 @@ object K {
     const val STADIUM = "stadium"
     const val STADIUM_BONUS = "stadiumBonus"
     const val MY_STADIUM = "my.stadium"
+    const val MY_STAD_CAP = "my.stadium.cap"
+    const val MY_STAD_PITCH = "my.stadium.pitch"
+    const val MY_STAD_TRAIN = "my.stadium.train"
+    const val MY_BONUS = "my.bonus"
     const val SELLING = "market.selling"
     const val MY_STRENGTH = "my.strength"
     const val MY_VALUE = "my.value"

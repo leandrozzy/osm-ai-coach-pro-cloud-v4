@@ -227,7 +227,8 @@ object Director {
                 val j = JSONObject(p.json)
                 HistRow(
                     j.getString("formation"), j.optString("playStyle"), if (j.isNull("result")) null else j.optString("result"),
-                    if (j.isNull("human")) null else j.optBoolean("human"), if (j.isNull("home")) null else j.optBoolean("home")
+                    if (j.isNull("human")) null else j.optBoolean("human"), if (j.isNull("home")) null else j.optBoolean("home"),
+                    if (j.has("myFouls")) j.optInt("myFouls") else null, if (j.has("myPossession")) j.optInt("myPossession") else null
                 )
             }.getOrNull()
         }
@@ -273,6 +274,33 @@ object Director {
                 "Tática ${j.optString("formation")} (${j.optString("playStyle")}) na J$r contra ${j.optString("rival")} → ${m.result} ${m.scoreMine}-${m.scoreOpp}"
             )
         }
+    }
+
+    /** Resumo curto dos últimos jogos analisados (estatísticas reais) — alimenta o prompt da IA. */
+    suspend fun recentReports(repo: Repo, slot: Int): List<String> {
+        val out = ArrayList<String>()
+        for (p in repo.dao.matchReports(slot).sortedByDescending { it.at }.take(3)) {
+            try {
+                val j = JSONObject(p.json)
+                val mineHome = j.optBoolean("mineHome", true)
+                val st = j.optJSONObject("stats")
+                fun mine(label: String): String {
+                    val a = st?.optJSONArray(label) ?: return NI
+                    return a.optString(if (mineHome) 0 else 1)
+                }
+                fun opp(label: String): String {
+                    val a = st?.optJSONArray(label) ?: return NI
+                    return a.optString(if (mineHome) 1 else 0)
+                }
+                out.add(
+                    "J${j.optInt("round")}: ${j.optInt("sh")}-${j.optInt("sa")} (${if (mineHome) "casa" else "fora"}); posse ${mine("posse de bola")} vs ${opp("posse de bola")}; " +
+                        "remates ${mine("remates")} vs ${opp("remates")}; faltas ${mine("faltas")} vs ${opp("faltas")}; formação rival ${opp("formacao")}; homem do jogo ${j.optString("mom")}"
+                )
+            } catch (e: Exception) {
+                continue
+            }
+        }
+        return out
     }
 
     /** Resultado informado à mão para uma tática ainda sem resultado (ex.: o calendário não foi lido). */
@@ -364,6 +392,7 @@ object Director {
         for (x in Learning.stats(inp.history)) statLines.add("formação ${x.formation}: ${x.v}V ${x.e}E ${x.d}D")
         for (x in Learning.byStyle(inp.history)) statLines.add("estilo ${x.formation}: ${x.v}V ${x.e}E ${x.d}D")
         for (x in Learning.byContext(inp.history)) statLines.add("${x.formation}: ${x.v}V ${x.e}E ${x.d}D")
+        for (r in recentReports(repo, slot)) statLines.add("jogo analisado: $r")
         val stats = statLines.joinToString("\n").ifBlank { "sem jogos registrados ainda" }
         val allowed = res.ranking.take(3).map { it.first }
         val reply = AiClient.ask(ctx, tacticRefinePrompt(context(repo, slot), draft, stats, allowed), null)
@@ -392,7 +421,7 @@ object Director {
 
     suspend fun marketPlan(repo: Repo, slot: Int): MarketEngine.Plan? {
         val f = repo.fieldMap(slot)
-        val mine = repo.dao.playersOf(slot).filter { it.owner == "MY" }
+        val mine = repo.playersOf(slot).filter { it.owner == "MY" }
         if (mine.none { it.strength != null }) return null
         return MarketEngine.plan(
             mine, repo.dao.listingsOf(slot), Money.parse(f[K.CASH]?.value), MarketPlanner.sellSlotsLeft(f[K.SELLING]?.value)

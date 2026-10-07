@@ -1,5 +1,7 @@
 package com.osmaicoach.collector
 
+import kotlin.math.exp
+
 object Formations {
     val ALL = listOf(
         "4-3-3", "4-4-2", "4-2-3-1", "4-5-1", "5-3-2", "3-5-2", "3-4-3", "5-4-1",
@@ -13,9 +15,21 @@ object Formations {
     }
 }
 
-data class HistRow(val formation: String, val playStyle: String, val result: String?, val human: Boolean? = null, val home: Boolean? = null)
+data class HistRow(
+    val formation: String, val playStyle: String, val result: String?, val human: Boolean? = null, val home: Boolean? = null,
+    val fouls: Int? = null, val possession: Int? = null
+)
 
 data class FormStat(val formation: String, val games: Int, val v: Int, val e: Int, val d: Int)
+
+/** Estimativa simples de vitória pela diferença de força (logística) — não é promessa, é referência. */
+object Forecast {
+    fun winPercent(diff: Int, home: Boolean?): Int {
+        val d = diff + (if (home == true) 3 else if (home == false) -3 else 0)
+        val p = 1.0 / (1.0 + exp(-d / 14.0))
+        return (p * 100).toInt().coerceIn(5, 95)
+    }
+}
 
 object Learning {
     fun points(s: FormStat): Int = s.v * 3 + s.e - s.d * 3
@@ -230,6 +244,19 @@ object TacticEngine {
             inp.referee == "Brando" && diff != null && diff >= 5 -> "Agressivo"
             else -> "Normal"
         }
+        // Disciplina: se nos últimos jogos o time cometeu muitas faltas, desarme Normal mesmo contra rival fraco.
+        val foulRows = inp.history.filter { it.fouls != null }.takeLast(3)
+        var tackleFinal = tackle
+        var disciplineNote: String? = null
+        if (foulRows.isNotEmpty()) {
+            var total = 0
+            for (r in foulRows) total += r.fouls ?: 0
+            val avg = total / foulRows.size
+            if (avg >= 16 && tackle == "Agressivo") {
+                tackleFinal = "Normal"
+                disciplineNote = "Média de $avg faltas nos últimos ${foulRows.size} jogos: desarme Normal para evitar cartões."
+            }
+        }
         val marking = if (inp.rivalAtk != null && inp.myDef != null && inp.rivalAtk - inp.myDef >= 5) "Homem a homem" else "À zona"
         val offside = if (inp.rivalAtk != null && inp.myDef != null && inp.myDef - inp.rivalAtk >= 5) "Sim" else "Não"
 
@@ -261,13 +288,14 @@ object TacticEngine {
         if (inp.referee == "Brando" && tackle == "Agressivo") notes.add("Árbitro brando e rival fraco: desarme Agressivo é seguro.")
         if (marking == "Homem a homem") notes.add("Ataque do rival (${inp.rivalAtk}) supera sua defesa (${inp.myDef}): marcação homem a homem.")
         if (styleNote != null) notes.add(styleNote)
+        if (disciplineNote != null) notes.add(disciplineNote)
         val stat = Learning.stats(inp.history).firstOrNull { it.formation == formation }
         if (stat != null) notes.add("Histórico de $formation: ${stat.v}V ${stat.e}E ${stat.d}D em ${stat.games} jogo(s) registrados.")
         if (inp.rivalHuman == true) notes.add("Rival humano: ele pode mudar a tática; confira o relatório antes do jogo.")
 
         val tactic = Tactic(
             formation = formation, playStyle = playStyle, pressure = pressure, mentality = mentality, tempo = tempo,
-            marking = marking, offside = offside, tackle = tackle, advAttack = advAttack, advMid = advMid, advDef = advDef,
+            marking = marking, offside = offside, tackle = tackleFinal, advAttack = advAttack, advMid = advMid, advDef = advDef,
             notes = notes
         )
         return Result(tactic, best.second, diff, scored.take(4).map { Pair(it.first, it.third) })
@@ -289,7 +317,8 @@ object MarketEngine {
         val summary: String,
         val cashM: Double?,
         val budgetM: Double?,
-        val radar: List<RadarItem> = emptyList()
+        val radar: List<RadarItem> = emptyList(),
+        val trainingActive: Int = 0
     )
 
     private val CORE = mapOf("GOL" to 1, "DEF" to 4, "MEI" to 4, "ATA" to 3)
@@ -359,25 +388,52 @@ object MarketEngine {
             }
         }
 
-        // 3) Treino: um jogador por treinador, o titular com maior potencial (força + juventude).
+        // 3) Treino: até 5 treinos ao mesmo tempo (4 treinadores de posição + 1 universal).
         val trains = ArrayList<TrainItem>()
         val infos = ArrayList<String>()
+        val activeAll = players.filter { it.training == true }
+        val busyCats = HashSet<String>()
+        var extraTrainees = 0
         for (c in cats) {
-            val list = byCat[c] ?: continue
-            val busy = list.firstOrNull { it.training == true }
-            if (busy != null) {
-                infos.add("Treinador de ${TRAINER[c]} ocupado com ${busy.name}.")
-                continue
+            val busy = (byCat[c] ?: emptyList()).filter { it.training == true }
+            if (busy.isNotEmpty()) {
+                busyCats.add(c)
+                infos.add("Treinador de ${TRAINER[c]} ocupado com ${busy[0].name}.")
+                for (extra in busy.drop(1)) {
+                    extraTrainees++
+                    infos.add("Treinador universal ocupado com ${extra.name}.")
+                }
             }
+        }
+        val universalBusy = extraTrainees > 0 || activeAll.size >= 5
+        if (universalBusy && extraTrainees == 0) infos.add("Treinador universal ocupado.")
+        val picked = HashSet<String>()
+        fun potential(p: PlayerEntity): Double = (p.strength ?: 0) + maxOf(0, 28 - (p.age ?: 28)) * 0.8
+        for (c in cats) {
+            if (c in busyCats) continue
+            val list = byCat[c] ?: continue
             val core = list.take(CORE[c] ?: 3).filter { it.nameKey !in soldKeys }
-            val pick = core.maxByOrNull { (it.strength ?: 0) + maxOf(0, 28 - (it.age ?: 28)) * 0.8 } ?: continue
+            val pick = core.maxByOrNull { potential(it) } ?: continue
+            picked.add(pick.nameKey)
             trains.add(TrainItem(pick.name, TRAINER[c] ?: "universal", "titular de $c com melhor potencial (força ${pick.strength}, ${pick.age ?: "?"} anos)"))
         }
+        if (!universalBusy && activeAll.size < 5) {
+            val pool = ArrayList<PlayerEntity>()
+            for (c in cats) {
+                val list = byCat[c] ?: continue
+                pool.addAll(list.take(CORE[c] ?: 3).filter { it.nameKey !in soldKeys && it.nameKey !in picked && it.training != true })
+            }
+            val u = pool.maxByOrNull { potential(it) }
+            if (u != null) {
+                trains.add(TrainItem(u.name, "universal", "melhor potencial entre os titulares livres (${u.cat} ${u.strength}, ${u.age ?: "?"} anos)"))
+            }
+        }
+        infos.add(0, "Treinos ocupados: ${minOf(activeAll.size, 5)} de 5.")
 
         val steps = ArrayList<String>()
         for (s in sells) steps.add("Vender ${s.name} (${s.cat} ${s.strength ?: "?"}, ≈ ${fmt(s.valueM)}): ${s.reason}.")
         for (b in buys) steps.add("Comprar ${b.name} (${b.cat} ${b.strength}, ${fmt(b.priceM)}): ${b.reason}.")
-        for (t in trains) steps.add("Treinar ${t.name} com o treinador de ${t.trainer}: ${t.reason}.")
+        for (t in trains) steps.add("Treinar ${t.name} com o " + (if (t.trainer == "universal") "treinador universal" else "treinador de ${t.trainer}") + ": ${t.reason}.")
         steps.addAll(infos)
         if (buys.isEmpty()) {
             steps.add(
@@ -392,6 +448,6 @@ object MarketEngine {
             radar.add(RadarItem(top.l.name, c, top.l.strength ?: 0, top.price, top.gain, top.price <= totalBudget))
         }
         val summary = "Caixa ${fmt(cashM)} • vendas previstas ≈ ${fmt(proceeds)} • ${sells.size} venda(s), ${buys.size} compra(s), ${trains.size} treino(s)."
-        return Plan(sells, buys, trains, steps, summary, cashM, budget, radar)
+        return Plan(sells, buys, trains, steps, summary, cashM, budget, radar, minOf(activeAll.size, 5))
     }
 }

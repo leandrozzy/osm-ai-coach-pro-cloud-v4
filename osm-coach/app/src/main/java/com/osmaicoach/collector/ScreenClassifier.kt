@@ -15,6 +15,8 @@ object ScreenClassifier {
         if (ocr.tokens.size < 4) return ScreenType.NOISE
         // Análise do rival (nota do analista à esquerda): tela cheia, SEM a barra do OSM.
         if (Parsers.isAnalysis(ocr)) return ScreenType.REPORT
+        // Análise do jogo (resultado): placar, estatísticas, zonas de ação e notas dos jogadores.
+        if (Parsers.isMatchResult(ocr)) return ScreenType.RESULT
         // Sem a barra do OSM só passa se o texto tiver o vocabulário do jogo (análise do rival, calendário etc.).
         val osmish = listOf(
             "formacao", "marcacao", "desarme", "estilo de jogo", "jornada", "analista", "relatorio", "adversario",
@@ -37,7 +39,7 @@ object ScreenClassifier {
         if (t.contains("define a tua tatica") || t.contains("taticas por sector") || t.contains("tatica por sector")) {
             return ScreenType.TACTIC
         }
-        if (t.contains("capacidade") && t.contains("nivel")) return ScreenType.STADIUM
+        if ((t.contains("capacidade") && t.contains("nivel")) || t.contains("renova o teu estadio")) return ScreenType.STADIUM
         if (jornada.findAll(t).count() >= 3) return ScreenType.CALENDAR
         if (t.contains("idade") && t.contains("valor") && t.contains("jogador")) return ScreenType.SQUAD
         // Lista rolada: o cabeçalho some, mas continuam as colunas de idade e valor.

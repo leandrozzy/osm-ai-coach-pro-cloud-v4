@@ -60,6 +60,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -383,7 +387,7 @@ private fun KV(label: String, value: String) {
 @Composable
 private fun Panel(content: @Composable () -> Unit) {
     Card(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(18.dp)),
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = C.SURFACE)
     ) { Column(Modifier.padding(14.dp)) { content() } }
@@ -459,7 +463,8 @@ data class SlotData(
     val baseline: List<String> = emptyList(),
     val marketPlan: MarketEngine.Plan? = null,
     val marketNote: String? = null,
-    val logs: List<PlanEntity> = emptyList()
+    val logs: List<PlanEntity> = emptyList(),
+    val reports: List<PlanEntity> = emptyList()
 )
 
 data class SessionRow(val s: SessionEntity, val counts: String, val unassigned: Int)
@@ -468,7 +473,7 @@ private suspend fun loadSlot(ctx: Context, slot: Int): SlotData {
     val repo = Repo(ctx)
     val dao = repo.dao
     val f = repo.fieldMap(slot)
-    val players = dao.playersOf(slot)
+    val players = repo.playersOf(slot)
     val matches = dao.matchesOf(slot)
     val market = dao.snapshots("TRANSFER", slot).isNotEmpty()
     val comp = Completeness.compute(
@@ -486,7 +491,8 @@ private suspend fun loadSlot(ctx: Context, slot: Int): SlotData {
         marketNote = dao.plan(slot, "market")?.json?.let { js ->
             try { JSONObject(js).optString("aiNote").ifBlank { null } } catch (e: Exception) { null }
         },
-        logs = dao.tacticLogs(slot)
+        logs = dao.tacticLogs(slot),
+        reports = dao.matchReports(slot)
     )
 }
 
@@ -666,7 +672,11 @@ private fun SlotCard(s: SlotSummary, onClick: () -> Unit, onTactic: () -> Unit) 
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = C.SURFACE)
     ) {
-        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.Top) {
+        val accent = if (s.tacticReady && s.missing == 0) C.OK else if (s.tacticReady) C.PRIMARY else C.WARN
+        Row(
+            Modifier.drawBehind { drawRect(accent, size = Size(5.dp.toPx(), size.height)) }.padding(14.dp),
+            verticalAlignment = Alignment.Top
+        ) {
             Crest(s.slot, 68.dp)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
@@ -720,13 +730,21 @@ private fun TodayTab(onGoSettings: () -> Unit, onOpenSlot: (Int, Int) -> Unit) {
     val hasKey = Settings.get(ctx, Settings.GEMINI_KEY, "").isNotBlank()
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("OSM AI Coach", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
-            Row {
+        Box(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp))
+                .background(Brush.horizontalGradient(listOf(Color(0xFF0E2A5A), Color(0xFF1F6BFF))))
+                .padding(14.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Image(painterResource(R.drawable.ic_fg), contentDescription = null, modifier = Modifier.size(58.dp))
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("OSM AI Coach", fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
+                    Text("Você joga, o app lê, o diretor decide.", fontSize = 12.sp, color = Color(0xCCFFFFFF))
+                }
                 Pill(if (ready) "Leitura ativa" else "Leitura desligada", ready)
             }
         }
-        Text("Jogue normalmente: o app lê as telas, guarda por slot e a IA monta a tática.", color = C.MUTED, fontSize = 12.sp)
 
         if (!ready || !batteryOk || !hasKey) SetupBanner(ctx, enabled, connected, batteryOk, hasKey, onGoSettings)
 
@@ -933,7 +951,8 @@ data class DirSlot(
     val trains: List<String>,
     val radar: String?,
     val cash: String,
-    val sellSlots: Int
+    val sellSlots: Int,
+    val alerts: List<String> = emptyList()
 )
 
 private suspend fun loadDirector(ctx: Context): List<DirSlot> {
@@ -947,9 +966,19 @@ private suspend fun loadDirector(ctx: Context): List<DirSlot> {
         val res = if (ready) TacticEngine.recommend(inp) else null
         val forecast = if (res == null) "faltam dados do elenco (leia o Plantel do seu time)" else {
             val d = res.diff
-            res.tactic.formation + " • " + res.tactic.playStyle + (if (d != null) " • força " + (if (d >= 0) "+" else "") + d else "")
+            res.tactic.formation + " • " + res.tactic.playStyle +
+                (if (d != null) " • força " + (if (d >= 0) "+" else "") + d + " • chance de vitória ≈ " + Forecast.winPercent(d, inp.home) + "%" else "")
         }
         val plan = Director.marketPlan(repo, s.slot)
+        val alerts = ArrayList<String>()
+        val nextIn = s.nextAt?.let { it - System.currentTimeMillis() }
+        if (!s.tacticReady && nextIn != null && nextIn in 0L..10800000L) alerts.add("⚠ S${s.slot}: jogo em ${countdown(s.nextAt ?: 0L)} e a tática ainda não foi gerada.")
+        if (plan != null) {
+            val free = 5 - plan.trainingActive
+            if (free > 0 && plan.train.isNotEmpty()) alerts.add("🔵 S${s.slot}: $free treino(s) livre(s) — ${plan.train.joinToString(", ") { it.name }}.")
+            if (plan.sell.isNotEmpty()) alerts.add("🔴 S${s.slot}: ${plan.sell.size} venda(s) sugerida(s) para liberar caixa.")
+        }
+        if (s.missing > 0) alerts.add("📋 S${s.slot}: faltam ${s.missing} campos de leitura (toque no slot para preencher).")
         val top = plan?.radar?.maxByOrNull { it.gain }
         out.add(
             DirSlot(
@@ -957,10 +986,11 @@ private suspend fun loadDirector(ctx: Context): List<DirSlot> {
                 forecast = forecast,
                 sells = plan?.sell?.map { it.name + " (" + it.cat + " " + (it.strength ?: "?") + ")" } ?: emptyList(),
                 buys = plan?.buy?.map { it.name + " (+" + it.gain + ")" } ?: emptyList(),
-                trains = plan?.train?.map { it.name + " → " + it.trainer } ?: emptyList(),
+                trains = plan?.train?.map { it.name + " → " + (if (it.trainer == "universal") "universal" else it.trainer) } ?: emptyList(),
                 radar = top?.let { it.cat + ": " + it.name + " (" + it.strength + ")" + (if (it.affordable) " ✔ cabe no caixa" else " — falta caixa") },
                 cash = f[K.CASH]?.value ?: NI,
-                sellSlots = MarketPlanner.sellSlotsLeft(f[K.SELLING]?.value)
+                sellSlots = MarketPlanner.sellSlotsLeft(f[K.SELLING]?.value),
+                alerts = alerts
             )
         )
     }
@@ -985,6 +1015,13 @@ private fun DirectorTab(onOpen: (Int, Int) -> Unit) {
             Text("Comentário e refino da IA: abra o slot → abas Tática e Diretor (botões no topo).", fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
         }
 
+        val alertLines = list.flatMap { it.alerts }
+        if (alertLines.isNotEmpty()) {
+            Title("Alertas do diretor")
+            Panel {
+                for (a in alertLines) Text(a, fontSize = 12.sp, modifier = Modifier.padding(vertical = 3.dp))
+            }
+        }
         val upcoming = list.filter { it.s.nextAt != null && it.s.nextAt > now - 7200000L }.sortedBy { it.s.nextAt }
         if (upcoming.isNotEmpty()) {
             Title("Agenda")
@@ -1057,7 +1094,7 @@ private fun SlotScreen(slot: Int, startTab: Int, onBack: () -> Unit) {
             when (tab) {
                 0 -> SlotSummaryTab(slot, data)
                 1 -> SlotPregame(slot, data)
-                2 -> SlotSquad(data)
+                2 -> SlotSquad(slot, data)
                 3 -> SlotCalendar(slot, data)
                 4 -> SlotTactic(slot, data)
                 5 -> SlotDirector(slot, data)
@@ -1112,7 +1149,9 @@ private fun SlotSummaryTab(slot: Int, d: SlotData) {
             EditRow("Posição na liga", K.LEAGUE_POS),
             EditRow("Pontos", K.POINTS),
             EditRow("Caixa", K.CASH),
-            EditRow("Meu estádio", K.MY_STADIUM)
+            EditRow("Estádio: capacidade (estrelas)", K.MY_STAD_CAP),
+            EditRow("Estádio: relvado (estrelas)", K.MY_STAD_PITCH),
+            EditRow("Estádio: treino (estrelas)", K.MY_STAD_TRAIN)
         )
     )
     if (c != null) {
@@ -1189,6 +1228,7 @@ private fun SlotPregame(slot: Int, d: SlotData) {
         slot, d, "Forças",
         listOf(
             EditRow("Minha força", K.MY_STRENGTH),
+            EditRow("Meu bônus", K.MY_BONUS),
             EditRow("Força do rival", K.RIVAL_STRENGTH),
             EditRow("Valor do meu elenco", K.MY_VALUE),
             EditRow("Valor do elenco rival", K.RIVAL_VALUE),
@@ -1209,7 +1249,7 @@ private fun SlotPregame(slot: Int, d: SlotData) {
     reportRows.add(EditRow("Nível do estádio", K.STADIUM))
     if (rivalIsHuman) {
         reportRows.add(EditRow("Apelido do usuário", K.RIVAL_NICK))
-        reportRows.add(EditRow("Bônus de login", K.RIVAL_LOGIN_BONUS))
+        reportRows.add(EditRow("Bônus do rival (círculo do pré-jogo)", K.RIVAL_LOGIN_BONUS))
     }
     EditSection(slot, d, "Relatório do rival (análise do analista)", reportRows)
     Text(
@@ -1226,7 +1266,35 @@ private fun catColor(cat: String): Color = when (cat) {
 }
 
 @Composable
-private fun SlotSquad(d: SlotData) {
+private fun TrainingDialog(slot: Int, p: PlayerEntity, onDone: () -> Unit) {
+    val ctx = LocalContext.current
+    fun set(v: Boolean?) {
+        AppScope.scope.launch(Dispatchers.IO) {
+            Repo(ctx).setTrainingOverride(slot, p.nameKey, v)
+            UiBus.version++
+        }
+        onDone()
+    }
+    AlertDialog(
+        onDismissRequest = onDone,
+        containerColor = C.SURFACE,
+        title = { Text(p.name, fontWeight = FontWeight.Bold) },
+        text = {
+            Column {
+                Text("Este jogador está em treino (camisa laranja)? Cada slot tem até 5 treinos: 4 treinadores de posição + 1 universal.", fontSize = 12.sp, color = C.MUTED)
+                OutlinedButton(onClick = { set(true) }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("🟠 Está treinando") }
+                OutlinedButton(onClick = { set(false) }, modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) { Text("Não está treinando") }
+                OutlinedButton(onClick = { set(null) }, modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) { Text("Voltar ao automático") }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDone) { Text("Cancelar") } }
+    )
+}
+
+@Composable
+private fun SlotSquad(slot: Int, d: SlotData) {
+    var trainEdit by remember { mutableStateOf<PlayerEntity?>(null) }
     val mine = d.players.filter { it.owner == "MY" }
     val counts = HashMap<String, Int>()
     for (p in mine) p.cat?.let { counts[it] = (counts[it] ?: 0) + 1 }
@@ -1243,7 +1311,8 @@ private fun SlotSquad(d: SlotData) {
             }
         }
         Spacer(Modifier.height(8.dp))
-        KV("Treinando (camisa laranja)", mine.count { it.training == true }.toString())
+        KV("Treinando (camisa laranja)", "${mine.count { it.training == true }} de 5")
+        Text("São no máximo 5 treinos por vez (4 treinadores de posição + 1 universal). Toque num jogador para corrigir se ele está treinando.", fontSize = 11.sp, color = C.MUTED)
         KV("Força geral / GOL / DEF / MEI / ATA", listOf(K.MY_STRENGTH, K.MY_GOL, K.MY_DEF, K.MY_MID, K.MY_ATK).joinToString(" / ") { fv(d, it) })
     }
     if (mine.isEmpty()) {
@@ -1255,7 +1324,7 @@ private fun SlotSquad(d: SlotData) {
         Title(cat)
         Panel {
             for (p in list) {
-                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().clickable { trainEdit = p }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)).background(catColor(cat).copy(alpha = 0.3f)), contentAlignment = Alignment.Center) {
                         Text(p.strength?.toString() ?: "?", fontWeight = FontWeight.ExtraBold)
                     }
@@ -1269,6 +1338,8 @@ private fun SlotSquad(d: SlotData) {
             }
         }
     }
+    val te = trainEdit
+    if (te != null) TrainingDialog(slot, te) { trainEdit = null }
 }
 
 @Composable
@@ -1468,29 +1539,62 @@ private fun SectorIcon(option: String) {
     }
 }
 
+/** Campo em perspectiva (trapézio), como a tela de análise do OSM. */
+private fun DrawScope.miniPitch(w: Float, h: Float) {
+    val top = h * 0.14f
+    val bottom = h * 0.92f
+    val inset = w * 0.13f
+    val path = androidx.compose.ui.graphics.Path()
+    path.moveTo(inset, top)
+    path.lineTo(w - inset, top)
+    path.lineTo(w * 0.97f, bottom)
+    path.lineTo(w * 0.03f, bottom)
+    path.close()
+    drawPath(path, Color(0xFF237F3E))
+    drawPath(path, Color(0xCCFFFFFF), style = Stroke(2f))
+    drawLine(Color(0xCCFFFFFF), Offset(w * 0.5f, top), Offset(w * 0.5f, bottom), 2f)
+    drawOval(Color(0xCCFFFFFF), topLeft = Offset(w * 0.43f, h * 0.40f), size = Size(w * 0.14f, h * 0.22f), style = Stroke(2f))
+}
+
 @Composable
 private fun StyleIcon(style: String) {
     val n = Txt.norm(style)
-    Canvas(Modifier.size(120.dp, 70.dp).clip(RoundedCornerShape(10.dp))) {
+    Canvas(Modifier.size(132.dp, 78.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFF0E2A5A))) {
         val w = size.width
         val h = size.height
-        drawRect(Color(0xFF1E7B3B))
-        drawRect(Color(0xCCFFFFFF), topLeft = Offset(w * 0.04f, h * 0.06f), size = Size(w * 0.92f, h * 0.88f), style = Stroke(2f))
-        drawLine(Color(0xCCFFFFFF), Offset(w * 0.5f, h * 0.06f), Offset(w * 0.5f, h * 0.94f), 2f)
+        miniPitch(w, h)
         when {
             n.contains("alas") -> {
-                arrow(Offset(w * 0.12f, h * 0.28f), Offset(w * 0.88f, h * 0.28f), RD, 5f)
-                arrow(Offset(w * 0.12f, h * 0.72f), Offset(w * 0.88f, h * 0.72f), RD, 5f)
+                arrow(Offset(w * 0.18f, h * 0.34f), Offset(w * 0.86f, h * 0.34f), RD, 6f)
+                arrow(Offset(w * 0.12f, h * 0.76f), Offset(w * 0.9f, h * 0.76f), RD, 6f)
             }
             n.contains("passe") -> {
-                val pts = listOf(Offset(0.12f, 0.7f), Offset(0.3f, 0.3f), Offset(0.5f, 0.7f), Offset(0.7f, 0.3f), Offset(0.88f, 0.5f))
-                for (i in 0 until pts.size - 2) drawLine(RD, Offset(pts[i].x * w, pts[i].y * h), Offset(pts[i + 1].x * w, pts[i + 1].y * h), 5f)
-                arrow(Offset(pts[3].x * w, pts[3].y * h), Offset(pts[4].x * w, pts[4].y * h), RD, 5f)
+                val pts = listOf(Offset(0.14f, 0.78f), Offset(0.32f, 0.36f), Offset(0.5f, 0.74f), Offset(0.68f, 0.34f), Offset(0.88f, 0.52f))
+                for (i in 0 until pts.size - 2) drawLine(RD, Offset(pts[i].x * w, pts[i].y * h), Offset(pts[i + 1].x * w, pts[i + 1].y * h), 6f)
+                arrow(Offset(pts[3].x * w, pts[3].y * h), Offset(pts[4].x * w, pts[4].y * h), RD, 6f)
             }
             n.contains("remate") -> {
-                arrow(Offset(w * 0.2f, h * 0.75f), Offset(w * 0.8f, h * 0.35f), RD, 5f)
-                drawCircle(Color.White, radius = 6f, center = Offset(w * 0.2f, h * 0.75f))
-                drawCircle(Color.White, radius = 6f, center = Offset(w * 0.5f, h * 0.55f))
+                arrow(Offset(w * 0.2f, h * 0.8f), Offset(w * 0.8f, h * 0.3f), RD, 6f)
+                drawCircle(Color.White, radius = 6f, center = Offset(w * 0.2f, h * 0.8f))
+                drawCircle(Color.White, radius = 6f, center = Offset(w * 0.52f, h * 0.56f))
+            }
+            n.contains("contra") -> {
+                // recua e sai em velocidade: seta curta para trás + seta longa para o gol adversário
+                arrow(Offset(w * 0.78f, h * 0.30f), Offset(w * 0.46f, h * 0.30f), OR, 5f)
+                arrow(Offset(w * 0.16f, h * 0.84f), Offset(w * 0.88f, h * 0.34f), RD, 7f)
+                drawCircle(Color.White, radius = 6f, center = Offset(w * 0.16f, h * 0.84f))
+            }
+            n.contains("long") || n.contains("bola") -> {
+                // lançamento: arco da defesa até o ataque
+                var prev = Offset(w * 0.14f, h * 0.84f)
+                for (i in 1..10) {
+                    val t = i / 10f
+                    val x = w * (0.14f + 0.74f * t)
+                    val y = h * (0.84f - 0.50f * t) - h * 0.30f * (1f - (2f * t - 1f) * (2f * t - 1f))
+                    val cur = Offset(x, y)
+                    if (i < 10) drawLine(RD, prev, cur, 6f) else arrow(prev, cur, RD, 6f)
+                    prev = cur
+                }
             }
         }
     }
@@ -1567,11 +1671,25 @@ private fun LineupPitch(plan: JSONObject) {
                         Offset(c.x + dx * (r + 18f * dp), c.y + dy * (r + 18f * dp)), col, 3f * dp
                     )
                 }
+                val markerColor = when {
+                    ri == 0 -> Color(0xFFFFC83D)
+                    ri == 1 -> Color(0xFF3D8BFF)
+                    ri == rows.size - 1 -> Color(0xFFFF6B5C)
+                    else -> Color(0xFF9B6BFF)
+                }
+                drawCircle(Color(0x66000000), radius = r + 4f * dp, center = Offset(c.x, c.y + 2f * dp))
                 drawCircle(Color.White, radius = r + 2f * dp, center = c)
-                drawCircle(if (ri == 0) Color(0xFFFFC83D) else Color(0xFF3D8BFF), radius = r, center = c)
+                drawCircle(markerColor, radius = r, center = c)
+                if (pl.first.isNotBlank()) {
+                    val tw = namePaint.measureText(pl.first)
+                    drawRoundRect(
+                        Color(0xB30B1220), topLeft = Offset(c.x - tw / 2f - 6f * dp, c.y + r + 4f * dp),
+                        size = Size(tw + 12f * dp, 15f * dp), cornerRadius = CornerRadius(8f * dp, 8f * dp)
+                    )
+                }
                 drawIntoCanvas { cv ->
                     if (pl.second > 0) cv.nativeCanvas.drawText(pl.second.toString(), c.x, c.y + 4f * dp, numPaint)
-                    if (pl.first.isNotBlank()) cv.nativeCanvas.drawText(pl.first, c.x, c.y + r + 14f * dp, namePaint)
+                    if (pl.first.isNotBlank()) cv.nativeCanvas.drawText(pl.first, c.x, c.y + r + 15f * dp, namePaint)
                 }
             }
         }
@@ -1783,10 +1901,10 @@ private fun SlotDirector(slot: Int, d: SlotData) {
         }
     }
     if (plan.train.isNotEmpty()) {
-        Title("🔵 Treino")
+        Title("🔵 Treino (${plan.trainingActive} de 5 ocupados)")
         Panel {
             for (t in plan.train) {
-                Text("${t.name}  →  treinador de ${t.trainer}", fontWeight = FontWeight.SemiBold)
+                Text("${t.name}  →  " + (if (t.trainer == "universal") "treinador universal" else "treinador de ${t.trainer}"), fontWeight = FontWeight.SemiBold)
                 Text(t.reason, fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(bottom = 8.dp))
             }
         }
@@ -1835,6 +1953,52 @@ private fun SlotLearning(slot: Int, d: SlotData) {
     }.sortedByDescending { it.round }
     val hist = rows.map { HistRow(it.formation, it.style, it.result, it.human, it.home) }
 
+    // Análise dos jogos (tela de resultado do OSM): estatísticas reais de cada partida.
+    if (d.reports.isNotEmpty()) {
+        Panel {
+            Text("Análise dos jogos (estatísticas lidas)", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            for (p in d.reports.sortedByDescending { it.at }.take(6)) {
+                val j = try { JSONObject(p.json) } catch (e: Exception) { null } ?: continue
+                val mineHome = j.optBoolean("mineHome", true)
+                val st = j.optJSONObject("stats")
+                fun mine(label: String): String = st?.optJSONArray(label)?.optString(if (mineHome) 0 else 1) ?: NI
+                fun opp(label: String): String = st?.optJSONArray(label)?.optString(if (mineHome) 1 else 0) ?: NI
+                val myGoals = if (mineHome) j.optInt("sh") else j.optInt("sa")
+                val oppGoals = if (mineHome) j.optInt("sa") else j.optInt("sh")
+                val oppName = (if (mineHome) j.optString("awayTeam") else j.optString("homeTeam")).ifBlank { "adversário" }
+                val ratings = j.optJSONArray(if (mineHome) "rh" else "ra")
+                var sum = 0
+                var cnt = 0
+                if (ratings != null) {
+                    for (i in 0 until ratings.length()) {
+                        sum += ratings.optJSONArray(i)?.optInt(1) ?: 0
+                        cnt++
+                    }
+                }
+                val res = if (myGoals > oppGoals) "V" else if (myGoals == oppGoals) "E" else "D"
+                Column(Modifier.fillMaxWidth().padding(top = 10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        ResultBadge(res)
+                        Spacer(Modifier.width(8.dp))
+                        Text("J${j.optInt("round")} • $myGoals-$oppGoals vs $oppName", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    }
+                    Text(
+                        "Posse ${mine("posse de bola")} x ${opp("posse de bola")} • Remates ${mine("remates")} x ${opp("remates")} • " +
+                            "Faltas ${mine("faltas")} x ${opp("faltas")} • Cantos ${mine("cantos")} x ${opp("cantos")}",
+                        fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 3.dp)
+                    )
+                    val extra = ArrayList<String>()
+                    if (opp("formacao") != NI) extra.add("formação do rival ${opp("formacao")}")
+                    if (j.optString("mom").isNotBlank()) extra.add("homem do jogo ${j.optString("mom")}")
+                    if (cnt > 0) extra.add("nota média do seu time ${"%.1f".format(sum.toDouble() / cnt)}")
+                    if (extra.isNotEmpty()) Text(extra.joinToString(" • "), fontSize = 11.sp, color = C.MUTED)
+                    val adv = j.optString("advice")
+                    if (adv.isNotBlank()) Text("“$adv”", fontSize = 11.sp, color = C.GOLD, modifier = Modifier.padding(top = 2.dp))
+                }
+            }
+            Text("A IA usa essas estatísticas (posse, remates, faltas) para ajustar tática e disciplina.", fontSize = 10.sp, color = C.MUTED, modifier = Modifier.padding(top = 8.dp))
+        }
+    }
     // Resultados do campeonato (lidos do calendário): é daqui que a IA aprende.
     val played = d.matches.filter { it.result != null && it.round != null }.sortedBy { it.round }
     if (played.isNotEmpty()) {

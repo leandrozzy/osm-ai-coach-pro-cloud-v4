@@ -15,6 +15,7 @@ object Parsers {
     private val RX_TIME = Regex("^(\\d{1,2}):(\\d{2})$")
     private val RX_SCORE = Regex("^(\\d{1,2})\\s*[-–—]\\s*(\\d{1,2})$")
     private val RX_FORMATION = Regex("([3-5]-\\d-\\d(?:-\\d)?)\\s*([A-Da-d])?")
+    private val RX_BONUS = Regex("^\\+?(\\d{1,2})\\s*%$")
     private val RX_SELLING = Regex("vender jogadores\\s*(\\d)\\s*/\\s*(\\d)")
 
     private fun intTok(t: OcrToken): Int? {
@@ -123,6 +124,20 @@ object Parsers {
                 if (t.xc in 0.30f..0.38f) left = n
                 if (t.xc in 0.62f..0.70f) right = n
             }
+            // Times humanos mostram o BÔNUS (+N%) no círculo; times de CPU mostram a força.
+            var leftBonus: Int? = null
+            var rightBonus: Int? = null
+            for (t in o.tokens) {
+                val m = RX_BONUS.find(t.text.trim()) ?: continue
+                if (t.yc !in 0.20f..0.34f) continue
+                val v = m.groupValues[1].toIntOrNull() ?: continue
+                if (t.xc in 0.28f..0.40f) leftBonus = v
+                if (t.xc in 0.60f..0.72f) rightBonus = v
+            }
+            val myBonus = if (mineLeft) leftBonus else rightBonus
+            val rivalBonus = if (mineLeft) rightBonus else leftBonus
+            if (myBonus != null) f[K.MY_BONUS] = Reading("+$myBonus%", 0.85)
+            if (rivalBonus != null) f[K.RIVAL_LOGIN_BONUS] = Reading("+$rivalBonus%", 0.85)
             val mineStr = if (mineLeft) left else right
             val rivalStr = if (mineLeft) right else left
             if (mineStr != null) f[K.MY_STRENGTH] = Reading(mineStr.toString(), 0.85)
@@ -494,22 +509,148 @@ object Parsers {
         return Extraction(ScreenType.REPORT, fields = f, needsAi = f.size < 2)
     }
 
-    /** Meu estádio: níveis por item (Capacidade etc.) e receita de bilheteria. */
-    fun stadium(o: OcrResult): Extraction {
+    /** Meu estádio: o nível de cada card é o número de ESTRELAS douradas (o texto "Nível N" mostra o próximo nível). */
+    fun stadium(o: OcrResult, img: PixelProbe.Img?): Extraction {
         val f = LinkedHashMap<String, Reading>()
+        if (img == null) return Extraction(ScreenType.STADIUM, fields = f)
+        val cards = listOf(
+            Triple("capacidade", K.MY_STAD_CAP, "Capacidade"),
+            Triple("relvado", K.MY_STAD_PITCH, "Relvado"),
+            Triple("treino", K.MY_STAD_TRAIN, "Treino")
+        )
         val parts = ArrayList<String>()
-        for (ln in o.lines) {
-            val m = Regex("nivel\\s*(\\d{1,2})").find(Txt.norm(ln.text)) ?: continue
-            val label = o.lines.filter {
-                it !== ln && it.yc < ln.yc && ln.yc - it.yc <= 0.12f && abs(it.xc - ln.xc) <= 0.15f &&
-                    Txt.letters(it.text) >= 4 && !Txt.norm(it.text).contains("nivel")
-            }.maxByOrNull { it.yc }
-            parts.add((label?.text?.trim() ?: "Item") + ": Nível " + m.groupValues[1])
+        for ((word, key, label) in cards) {
+            val ln = o.lines.firstOrNull { Txt.norm(it.text) == word && it.yc in 0.20f..0.45f } ?: continue
+            val lvl = PixelProbe.starLevel(img, ln.xc, ln.yc + 0.074f)
+            if (lvl in 1..3) {
+                f[key] = Reading(lvl.toString(), 0.85)
+                parts.add("$label $lvl")
+            }
         }
-        val rev = Regex("(\\d{1,3}(?:[.,]\\d{1,2})?\\s*[km])\\s*receitas?").find(Txt.norm(o.fullText))
-        if (rev != null) parts.add("receita +" + rev.groupValues[1].replace(" ", "").uppercase())
-        if (parts.isNotEmpty()) f[K.MY_STADIUM] = Reading(parts.distinct().joinToString(" • "), 0.75)
+        if (parts.size >= 2) f[K.MY_STADIUM] = Reading(parts.joinToString(" • "), 0.85)
         return Extraction(ScreenType.STADIUM, fields = f)
+    }
+
+    // ------------------------------------------------------------------ resultado do jogo
+
+    /** Tela de análise do jogo: placar, eventos, "Homem do jogo", estatísticas, zonas de ação e notas. */
+    fun isMatchResult(o: OcrResult): Boolean {
+        val t = Txt.norm(o.fullText)
+        if (t.contains("estatisticas do jogo") || t.contains("homem do jogo") || t.contains("zonas de acao")) return true
+        if (t.contains("primeira parte") && t.contains("segunda parte")) return true
+        if (t.contains("jornada")) return false
+        val l = o.tokens.count { val n = intTok(it); n != null && n in 1..10 && it.xc in 0.44f..0.49f && it.yc in 0.10f..0.97f }
+        val r = o.tokens.count { val n = intTok(it); n != null && n in 1..10 && it.xc in 0.50f..0.56f && it.yc in 0.10f..0.97f }
+        return l >= 5 && r >= 5
+    }
+
+    private val RX_MINUTE = Regex("^(\\d{1,3})\\s*['’′]$")
+    private val RX_SHIRT = Regex("^\\d{1,2}\\.\\s*")
+
+    fun matchResult(o: OcrResult): Extraction {
+        var round: Int? = null
+        for (ln in o.lines) {
+            if (ln.yc < 0.2f && ln.xc in 0.4f..0.6f) {
+                val m = RX_JORNADA.find(Txt.norm(ln.text))
+                if (m != null) round = m.groupValues[1].toIntOrNull()
+            }
+        }
+        var home: String? = null
+        var away: String? = null
+        var homeNick: String? = null
+        var awayNick: String? = null
+        var sh: Int? = null
+        var sa: Int? = null
+        var referee: String? = null
+        var tip: String? = null
+        var advice: String? = null
+        if (round != null) {
+            val names = o.lines.filter { it.yc in 0.19f..0.28f && Txt.letters(it.text) >= 3 }
+            home = names.filter { it.xc < 0.35f }.maxByOrNull { it.h }?.text?.trim()
+            away = names.filter { it.xc > 0.65f }.maxByOrNull { it.h }?.text?.trim()
+            val nicks = o.lines.filter { it.yc in 0.265f..0.33f && Txt.letters(it.text) >= 2 }
+            homeNick = nicks.firstOrNull { it.xc < 0.35f }?.text?.trim()
+            awayNick = nicks.firstOrNull { it.xc > 0.65f }?.text?.trim()
+            val sl = o.lines.firstOrNull { it.xc in 0.4f..0.6f && it.yc in 0.18f..0.34f && RX_SCORE.find(it.text.trim()) != null }
+            if (sl != null) {
+                val m = RX_SCORE.find(sl.text.trim())
+                if (m != null) {
+                    sh = m.groupValues[1].toIntOrNull()
+                    sa = m.groupValues[2].toIntOrNull()
+                }
+            } else {
+                val digits = o.tokens.filter { val n = intTok(it); n != null && n in 0..15 && it.yc in 0.19f..0.33f && it.xc in 0.40f..0.60f }
+                val dl = digits.filter { it.xc < 0.5f }.maxByOrNull { it.xc }
+                val dr = digits.filter { it.xc >= 0.5f }.minByOrNull { it.xc }
+                if (dl != null && dr != null) {
+                    sh = intTok(dl)
+                    sa = intTok(dr)
+                }
+            }
+            referee = o.lines.firstOrNull { it.xc > 0.7f && it.yc in 0.34f..0.46f && Txt.letters(it.text) >= 5 }?.text?.trim()
+            tip = o.lines.filter { it.yc in 0.49f..0.60f && it.xc in 0.05f..0.8f && Txt.letters(it.text) >= 12 }
+                .sortedBy { it.xc }.joinToString(" ") { it.text.trim() }.ifBlank { null }
+            advice = o.lines.filter { it.yc in 0.64f..0.76f && it.xc in 0.05f..0.8f && Txt.letters(it.text) >= 12 }
+                .sortedBy { it.xc }.joinToString(" ") { it.text.trim() }.ifBlank { null }
+        }
+
+        // Estatísticas: rótulo no centro, valor do time da casa à esquerda e do visitante à direita.
+        val stats = LinkedHashMap<String, Pair<String, String>>()
+        val labels = listOf("golos", "remates", "precisao", "cantos", "faltas", "cartoes", "formacao", "posse de bola")
+        for (ln in o.lines) {
+            if (ln.xc !in 0.42f..0.58f) continue
+            val lab = labels.firstOrNull { it == Txt.norm(ln.text) } ?: continue
+            if (lab == "cartoes") {
+                val lt = o.tokens.filter { intTok(it) != null && it.xc < 0.15f && abs(it.yc - ln.yc) <= 0.04f }.sortedBy { it.xc }.mapNotNull { intTok(it) }
+                val rt = o.tokens.filter { intTok(it) != null && it.xc > 0.85f && abs(it.yc - ln.yc) <= 0.04f }.sortedBy { it.xc }.mapNotNull { intTok(it) }
+                if (lt.size >= 2 && rt.size >= 2) stats[lab] = Pair("${lt[0]},${lt[1]}", "${rt[1]},${rt[0]}")
+            } else {
+                val lv = o.lines.filter { it !== ln && it.xc < 0.15f && abs(it.yc - ln.yc) <= 0.035f }.minByOrNull { it.xc }?.text?.trim()
+                val rv = o.lines.filter { it !== ln && it.xc > 0.85f && abs(it.yc - ln.yc) <= 0.035f }.maxByOrNull { it.xc }?.text?.trim()
+                if (lv != null && rv != null) stats[lab] = Pair(lv, rv)
+            }
+        }
+        val zones = o.lines.filter { it.yc in 0.72f..0.88f && it.xc in 0.25f..0.75f && it.text.contains("%") }
+            .sortedBy { it.xc }.mapNotNull { Regex("(\\d{1,3})\\s*%").find(it.text)?.groupValues?.get(1)?.toIntOrNull() }
+        val momHeader = o.lines.firstOrNull { Txt.norm(it.text) == "homem do jogo" }
+        val mom = if (momHeader == null) null else o.lines.filter {
+            it.yc > momHeader.yc && it.yc - momHeader.yc <= 0.16f && Txt.letters(it.text) >= 3
+        }.minByOrNull { it.yc }?.text?.trim()
+
+        // Eventos (minuto no centro; jogador e descrição do lado do time).
+        val events = ArrayList<String>()
+        for (mn in o.lines) {
+            val mm = RX_MINUTE.find(mn.text.trim()) ?: continue
+            if (mn.xc !in 0.42f..0.58f) continue
+            val band = o.lines.filter { it !== mn && abs(it.yc - mn.yc) <= 0.07f && it.xc !in 0.42f..0.58f && Txt.letters(it.text) >= 2 }.sortedBy { it.yc }
+            if (band.isEmpty()) continue
+            val side = if (band[0].xc < 0.5f) "casa" else "visitante"
+            events.add("${mm.groupValues[1]}' ($side) " + band.joinToString(" — ") { it.text.trim().replace(RX_SHIRT, "") })
+        }
+
+        // Notas dos jogadores: bolinhas à esquerda (time da casa) e à direita (visitante).
+        val ratingsHome = ArrayList<Pair<String, Int>>()
+        val ratingsAway = ArrayList<Pair<String, Int>>()
+        val lr = o.tokens.filter { val n = intTok(it); n != null && n in 1..10 && it.xc in 0.44f..0.49f && it.yc in 0.10f..0.97f }
+        for (t in lr) {
+            val nm = o.lines.filter { it.xc < 0.35f && abs(it.yc - t.yc) <= 0.03f && Txt.letters(it.text) >= 3 }.minByOrNull { abs(it.yc - t.yc) }?.text?.trim()
+            if (nm != null) ratingsHome.add(Pair(nm.replace(RX_SHIRT, ""), intTok(t) ?: 0))
+        }
+        val rr = o.tokens.filter { val n = intTok(it); n != null && n in 1..10 && it.xc in 0.50f..0.56f && it.yc in 0.10f..0.97f }
+        for (t in rr) {
+            val nm = o.lines.filter { it.xc > 0.65f && abs(it.yc - t.yc) <= 0.03f && Txt.letters(it.text) >= 3 }.minByOrNull { abs(it.yc - t.yc) }?.text?.trim()
+            if (nm != null) ratingsAway.add(Pair(nm.replace(RX_SHIRT, ""), intTok(t) ?: 0))
+        }
+
+        val rep = MatchReportRead(
+            round = round, homeTeam = home, awayTeam = away, homeNick = homeNick, awayNick = awayNick,
+            scoreHome = sh, scoreAway = sa, referee = referee, tip = tip, advice = advice, mom = mom,
+            stats = stats, zones = if (zones.size == 3) zones else emptyList(),
+            ratingsHome = if (ratingsHome.size >= 3) ratingsHome else emptyList(),
+            ratingsAway = if (ratingsAway.size >= 3) ratingsAway else emptyList(),
+            events = events
+        )
+        return Extraction(ScreenType.RESULT, matchReport = rep)
     }
 
     /** Tela com cara de relatório/análise do adversário (será lida pela IA, que confirma se é mesmo). */

@@ -59,7 +59,9 @@ object Completeness {
         Item(K.RIVAL_CAMP, "Campo de treinamento rival"),
         Item(K.REFEREE, "Árbitro"),
         Item(K.STADIUM, "Nível do estádio rival"),
-        Item(K.MY_STADIUM, "Meu estádio"),
+        Item(K.MY_STAD_CAP, "Estádio: capacidade"),
+        Item(K.MY_STAD_PITCH, "Estádio: relvado"),
+        Item(K.MY_STAD_TRAIN, "Estádio: treino"),
         Item(K.MY_GOL, "Meu setor GOL"),
         Item(K.MY_DEF, "Meu setor DEF"),
         Item(K.MY_MID, "Meu setor MEI"),
@@ -73,7 +75,7 @@ object Completeness {
     /** Só existem quando o rival é humano (time de CPU não tem apelido nem bônus de login). */
     val HUMAN_ONLY = listOf(
         Item(K.RIVAL_NICK, "Apelido do rival (humano)"),
-        Item(K.RIVAL_LOGIN_BONUS, "Bônus de login do rival (humano)")
+        Item(K.RIVAL_LOGIN_BONUS, "Bônus do rival (humano)")
     )
 
     data class Result(val known: List<String>, val missing: List<String>, val percent: Int, val missingItems: List<Item> = emptyList())

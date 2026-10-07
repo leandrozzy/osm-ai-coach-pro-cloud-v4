@@ -6,6 +6,7 @@ object ManualFields {
 
     private val YES_NO = listOf("Sim", "Não")
     private val STYLES = listOf("Jogo de passe", "Jogar pelas alas", "Remate à vista", "Contra-ataque", "Bolas longas")
+    private const val STADIUM_HINT = "Menu → Estádio: o nível é o número de ESTRELAS douradas do card"
     private const val ANALYSIS = "Analista de dados → Relatório do analista → tela com a nota à esquerda (alterne Tática e Equipa inicial)"
 
     private val NUMERIC = setOf(
@@ -49,9 +50,13 @@ object ManualFields {
         Spec(K.RIVAL_TACKLE, "Desarme do rival", listOf("Normal", "Agressivo"), ANALYSIS, "Normal"),
         Spec(K.RIVAL_SECRET, "Treino secreto do rival", YES_NO, ANALYSIS, "Não"),
         Spec(K.RIVAL_CAMP, "Campo de treinamento do rival", YES_NO, ANALYSIS, "Não"),
-        Spec(K.RIVAL_LOGIN_BONUS, "Bônus de login do rival", null, ANALYSIS, "+3%"),
+        Spec(K.RIVAL_LOGIN_BONUS, "Bônus do rival (login)", null, "Pré-jogo (círculo do rival, +N%, só humano)", "+3%"),
         Spec(K.STADIUM, "Nível do estádio do rival", null, ANALYSIS, "Nível 1"),
-        Spec(K.MY_STADIUM, "Meu estádio", null, "Menu → Estádio", "Capacidade: Nível 2")
+        Spec(K.MY_STADIUM, "Meu estádio", null, "Menu → Estádio", "Capacidade 3 • Relvado 2 • Treino 1"),
+        Spec(K.MY_STAD_CAP, "Estádio: capacidade (estrelas)", listOf("1", "2", "3"), STADIUM_HINT, "3"),
+        Spec(K.MY_STAD_PITCH, "Estádio: relvado (estrelas)", listOf("1", "2", "3"), STADIUM_HINT, "2"),
+        Spec(K.MY_STAD_TRAIN, "Estádio: treino (estrelas)", listOf("1", "2", "3"), STADIUM_HINT, "1"),
+        Spec(K.MY_BONUS, "Meu bônus", null, "Pré-jogo (círculo do seu time, +N%)", "+3%")
     ).associateBy { it.key }
 
     fun spec(key: String, fallbackLabel: String): Spec = SPECS[key] ?: Spec(key, fallbackLabel, null, "", "")
@@ -64,6 +69,10 @@ object ManualFields {
         if (key in MONEY) {
             val m = Regex("^(\\d{1,3}(?:[.,]\\d{1,2})?)\\s*([kKmM])$").find(t) ?: return null
             return m.groupValues[1].replace('.', ',') + m.groupValues[2].uppercase()
+        }
+        if (key == K.RIVAL_LOGIN_BONUS || key == K.MY_BONUS) {
+            val m = Regex("^\\+?(\\d{1,2})\\s*%$").find(t) ?: return null
+            return "+" + m.groupValues[1] + "%"
         }
         if (key == K.MATCH_AT) {
             val m = Regex("^(\\d{1,2})/(\\d{1,2})\\s+(\\d{1,2}):(\\d{2})$").find(t) ?: return null

@@ -158,7 +158,8 @@ class FramePipeline private constructor(private val ctx: Context) {
         ScreenType.CALENDAR -> Parsers.calendar(ocr, img)
         ScreenType.MARKET -> Parsers.market(ocr)
         ScreenType.REPORT -> Parsers.report(ocr)
-        ScreenType.STADIUM -> Parsers.stadium(ocr)
+        ScreenType.STADIUM -> Parsers.stadium(ocr, img)
+        ScreenType.RESULT -> Parsers.matchResult(ocr)
         else -> Extraction(type)
     }
 
@@ -172,6 +173,7 @@ class FramePipeline private constructor(private val ctx: Context) {
         ScreenType.TACTIC -> "Tática"
         ScreenType.REPORT -> "Relatório"
         ScreenType.STADIUM -> "Estádio"
+        ScreenType.RESULT -> "Resultado do jogo"
         else -> "Outra tela do OSM"
     }
 
@@ -299,6 +301,7 @@ class FramePipeline private constructor(private val ctx: Context) {
                 ScreenType.SQUAD -> " [${ex.players.size} jogadores" + (if (ex.ownerTeam == null) ", sem dono" else "") + "]"
                 ScreenType.MARKET -> " [${ex.listings.size} jogadores à venda]"
                 ScreenType.REPORT -> " [${ex.fields.size} campos do relatório]"
+                ScreenType.RESULT -> " [placar ${ex.matchReport?.scoreHome ?: "?"}-${ex.matchReport?.scoreAway ?: "?"}, ${ex.matchReport?.stats?.size ?: 0} estatísticas, ${(ex.matchReport?.ratingsHome?.size ?: 0) + (ex.matchReport?.ratingsAway?.size ?: 0)} notas]"
                 else -> ""
             }
             val hint = if (type == ScreenType.OTHER_OSM || type == ScreenType.TACTIC || type == ScreenType.REPORT || type == ScreenType.STADIUM) {

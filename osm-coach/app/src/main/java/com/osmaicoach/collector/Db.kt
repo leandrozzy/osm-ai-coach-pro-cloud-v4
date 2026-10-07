@@ -125,6 +125,12 @@ interface CoachDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun putField(f: FieldEntity)
 
+    @Query("SELECT * FROM plans WHERE slotId = :slot AND substr(kind, 1, 3) = 'mr_'")
+    suspend fun matchReports(slot: Int): List<PlanEntity>
+
+    @Query("DELETE FROM matches WHERE slotId = :slot AND substr(mkey, 1, 2) = 'C:'")
+    suspend fun deleteCupCards(slot: Int)
+
     @Query("DELETE FROM fields WHERE slotId = :slot AND fkey = :key")
     suspend fun deleteField(slot: Int, key: String)
 

@@ -144,7 +144,7 @@ class EngineTest {
         val base = squad().map { if (it.name == "Foden") it.copy(training = true) else it }
         val plan = MarketEngine.plan(base, emptyList(), 1.0, 4)
         val cat = base.associate { it.name to it.cat }
-        for (t in plan.train) {
+        for (t in plan.train.filter { it.trainer != "universal" }) {
             val expected = when (cat[t.name]) {
                 "ATA" -> "avançados"
                 "MEI" -> "médios"
@@ -168,6 +168,38 @@ class EngineTest {
         assertTrue(mei.affordable)
         val gol = plan.radar.first { it.cat == "GOL" }
         assertFalse(gol.affordable)
+    }
+
+    @Test fun fiveTrainingsMeansUniversalTrainerIsBusy() {
+        val busy = setOf("Foden", "Gibbs", "Mbeumo", "Guehi", "Kelleher")
+        val base = squad().map { if (it.name in busy) it.copy(training = true) else it }
+        val plan = MarketEngine.plan(base, emptyList(), 1.0, 4)
+        assertEquals(5, plan.trainingActive)
+        assertTrue(plan.train.none { it.trainer == "universal" })
+        assertTrue(plan.steps.any { it.contains("Treinador universal ocupado com Gibbs") })
+        assertTrue(plan.steps.any { it.contains("5 de 5") })
+    }
+
+    @Test fun freeUniversalTrainerGetsARecommendation() {
+        val plan = MarketEngine.plan(squad(), emptyList(), 1.0, 4)
+        assertEquals(0, plan.trainingActive)
+        assertEquals(5, plan.train.size)
+        assertEquals(1, plan.train.count { it.trainer == "universal" })
+    }
+
+    @Test fun foulsHistoryTurnsAggressiveTackleIntoNormal() {
+        val hist = listOf(
+            HistRow("4-3-3", "x", "V", fouls = 20), HistRow("4-3-3", "x", "V", fouls = 18), HistRow("4-3-3", "x", "V", fouls = 19)
+        )
+        val r = TacticEngine.recommend(input(91, 61, "Brando", hist))!!
+        assertEquals("Normal", r.tactic.tackle)
+        assertTrue(r.tactic.notes.any { it.contains("faltas") })
+    }
+
+    @Test fun winForecastGrowsWithStrengthDifference() {
+        assertTrue(Forecast.winPercent(30, true) > 85)
+        assertTrue(Forecast.winPercent(-30, false) < 15)
+        assertTrue(Forecast.winPercent(10, null) > Forecast.winPercent(0, null))
     }
 
     @Test fun noAffordableUpgradeExplainsTheShortfall() {

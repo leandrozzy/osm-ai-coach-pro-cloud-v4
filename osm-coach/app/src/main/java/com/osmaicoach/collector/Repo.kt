@@ -3,6 +3,13 @@ package com.osmaicoach.collector
 import android.content.Context
 import org.json.JSONObject
 
+/** Rodada do relatório de resultado em andamento (o cabeçalho com "Jornada N" só aparece no topo da tela). */
+object ResultCtx {
+    var slot: Int = 0
+    var round: Int? = null
+    var at: Long = 0L
+}
+
 class Repo(private val ctx: Context) {
     val dao: CoachDao = CoachDb.get(ctx).dao()
 
@@ -52,6 +59,7 @@ class Repo(private val ctx: Context) {
             ScreenType.MARKET -> applyMarket(slot, ex, source, now)
             ScreenType.REPORT -> putFields(slot, ex.fields, source, now)
             ScreenType.STADIUM -> putFields(slot, ex.fields, source, now)
+            ScreenType.RESULT -> applyResult(slot, ex, now)
             else -> 0
         }
     }
@@ -281,6 +289,165 @@ class Repo(private val ctx: Context) {
         )
     }
 
+    // ------------------------------------------------------------------ treinos informados à mão
+
+    private suspend fun trainingOverrides(slot: Int): Map<String, Boolean> {
+        val p = dao.plan(slot, "trainov") ?: return emptyMap()
+        val out = HashMap<String, Boolean>()
+        try {
+            val j = org.json.JSONObject(p.json)
+            for (k in j.keys()) out[k] = j.optBoolean(k)
+        } catch (e: Exception) {
+            return emptyMap()
+        }
+        return out
+    }
+
+    /** Jogadores do slot com o que o usuário marcou à mão sobre treino (vale mais que a leitura da camisa laranja). */
+    suspend fun playersOf(slot: Int): List<PlayerEntity> {
+        val ov = trainingOverrides(slot)
+        return dao.playersOf(slot).map { p ->
+            val o = if (p.owner == "MY") ov[p.nameKey] else null
+            if (o != null) p.copy(training = o) else p
+        }
+    }
+
+    suspend fun setTrainingOverride(slot: Int, nameKey: String, value: Boolean?) {
+        val j = org.json.JSONObject()
+        for ((k, v) in trainingOverrides(slot)) j.put(k, v)
+        if (value == null) j.remove(nameKey) else j.put(nameKey, value)
+        dao.putPlan(PlanEntity(slot, "trainov", j.toString(), System.currentTimeMillis()))
+    }
+
+    // ------------------------------------------------------------------ resultado do jogo
+
+    private fun statPair(j: org.json.JSONObject, label: String): Pair<String, String>? {
+        val a = j.optJSONObject("stats")?.optJSONArray(label) ?: return null
+        return Pair(a.optString(0), a.optString(1))
+    }
+
+    private fun pct(s: String): Int? = Regex("(\\d{1,3})").find(s)?.groupValues?.get(1)?.toIntOrNull()
+
+    private suspend fun applyResult(slot: Int, ex: Extraction, now: Long): Int {
+        val rep = ex.matchReport ?: return 0
+        val f = fieldMap(slot)
+        var round = rep.round
+        if (round != null) {
+            ResultCtx.slot = slot
+            ResultCtx.round = round
+            ResultCtx.at = now
+        } else if (ResultCtx.slot == slot && ResultCtx.round != null && now - ResultCtx.at < 600000L) {
+            round = ResultCtx.round
+            ResultCtx.at = now
+        } else {
+            val done = f[K.ROUND_DONE]?.value?.toIntOrNull()
+            val next = f[K.ROUND]?.value?.toIntOrNull()
+            round = done ?: next?.let { it - 1 }
+        }
+        if (round == null || round <= 0) return 0
+        val key = "mr_R$round"
+        val old = dao.plan(slot, key)
+        val j = try { if (old != null) org.json.JSONObject(old.json) else org.json.JSONObject() } catch (e: Exception) { org.json.JSONObject() }
+        var changed = 0
+        fun put(k: String, v: Any?) {
+            if (v == null) return
+            if (j.opt(k)?.toString() != v.toString()) {
+                j.put(k, v)
+                changed++
+            }
+        }
+        put("round", round)
+        put("homeTeam", rep.homeTeam)
+        put("awayTeam", rep.awayTeam)
+        put("homeNick", rep.homeNick)
+        put("awayNick", rep.awayNick)
+        put("sh", rep.scoreHome)
+        put("sa", rep.scoreAway)
+        put("referee", rep.referee)
+        put("tip", rep.tip)
+        put("advice", rep.advice)
+        put("mom", rep.mom)
+        if (rep.homeNick != null || rep.awayNick != null) {
+            val mineHome = rep.homeNick != null && Txt.sim(Txt.key(rep.homeNick), MY_NICK) >= 0.75
+            val mineAway = rep.awayNick != null && Txt.sim(Txt.key(rep.awayNick), MY_NICK) >= 0.75
+            if (mineHome != mineAway) put("mineHome", mineHome)
+        }
+        val stats = j.optJSONObject("stats") ?: org.json.JSONObject()
+        for ((lab, pr) in rep.stats) {
+            val arr = org.json.JSONArray().put(pr.first).put(pr.second)
+            if (stats.optJSONArray(lab)?.toString() != arr.toString()) {
+                stats.put(lab, arr)
+                changed++
+            }
+        }
+        j.put("stats", stats)
+        if (rep.zones.size == 3) {
+            val z = org.json.JSONArray()
+            for (v in rep.zones) z.put(v)
+            put("zones", z)
+        }
+        fun mergeRatings(k: String, list: List<Pair<String, Int>>) {
+            if (list.isEmpty()) return
+            val cur = j.optJSONArray(k) ?: org.json.JSONArray()
+            val names = HashSet<String>()
+            for (i in 0 until cur.length()) names.add(cur.optJSONArray(i)?.optString(0) ?: "")
+            for ((n, r) in list) {
+                if (n !in names) {
+                    cur.put(org.json.JSONArray().put(n).put(r))
+                    names.add(n)
+                    changed++
+                }
+            }
+            j.put(k, cur)
+        }
+        mergeRatings("rh", rep.ratingsHome)
+        mergeRatings("ra", rep.ratingsAway)
+        val evs = j.optJSONArray("events") ?: org.json.JSONArray()
+        val seen = HashSet<String>()
+        for (i in 0 until evs.length()) seen.add(evs.optString(i))
+        for (e in rep.events) if (seen.add(e)) {
+            evs.put(e)
+            changed++
+        }
+        j.put("events", evs)
+        if (changed > 0 || old == null) {
+            dao.putPlan(PlanEntity(slot, key, j.toString(), now))
+            linkResult(slot, round, j, now)
+        }
+        return changed
+    }
+
+    /** Liga o relatório ao calendário e à tática usada naquela rodada (é daqui que a IA aprende). */
+    private suspend fun linkResult(slot: Int, round: Int, j: org.json.JSONObject, now: Long) {
+        if (!j.has("mineHome")) return
+        val mineHome = j.optBoolean("mineHome")
+        val hasScore = j.has("sh") && j.has("sa")
+        val mine = if (hasScore) (if (mineHome) j.optInt("sh") else j.optInt("sa")) else null
+        val opp = if (hasScore) (if (mineHome) j.optInt("sa") else j.optInt("sh")) else null
+        val oppName = (if (mineHome) j.optString("awayTeam") else j.optString("homeTeam")).ifBlank { null }
+        if (mine != null && opp != null) setManualMatch(slot, round, oppName, mine, opp, mineHome)
+        val p = dao.plan(slot, "tlog_R$round") ?: return
+        val t = try { org.json.JSONObject(p.json) } catch (e: Exception) { return }
+        if (mine != null && opp != null && t.isNull("result")) {
+            t.put("result", if (mine > opp) "V" else if (mine == opp) "E" else "D")
+            t.put("scoreMine", mine)
+            t.put("scoreOpp", opp)
+            learn(slot, "resultado", "Tática ${t.optString("formation")} (${t.optString("playStyle")}) na J$round → ${t.optString("result")} $mine-$opp (análise do jogo)", now)
+        }
+        fun side(label: String, mineSide: Boolean): String? {
+            val pr = statPair(j, label) ?: return null
+            val home = mineHome == mineSide
+            return if (home) pr.first else pr.second
+        }
+        side("posse de bola", true)?.let { v -> pct(v)?.let { t.put("myPossession", it) } }
+        side("faltas", true)?.let { v -> pct(v)?.let { t.put("myFouls", it) } }
+        side("remates", true)?.let { v -> pct(v)?.let { t.put("myShots", it) } }
+        side("remates", false)?.let { v -> pct(v)?.let { t.put("oppShots", it) } }
+        side("formacao", false)?.let { t.put("oppFormation", it) }
+        j.optString("mom").takeIf { it.isNotBlank() }?.let { t.put("mom", it) }
+        dao.putPlan(PlanEntity(slot, "tlog_R$round", t.toString(), p.at))
+    }
+
     private fun looksGarbled(name: String): Boolean =
         Regex("^[a-z][A-Z]").containsMatchIn(name) || Txt.letters(name) < 3
 
@@ -322,6 +489,11 @@ class Repo(private val ctx: Context) {
         try {
             dedupeSquads()
             dropStaleTactics()
+            for (slot in 1..4) {
+                dao.deleteCupCards(slot)
+                val st = dao.fieldsOf(slot).firstOrNull { it.fkey == K.MY_STADIUM }
+                if (st != null && !st.fvalue.contains("Capacidade ")) dao.deleteField(slot, K.MY_STADIUM)
+            }
         } catch (e: Exception) {
             Diag.lastError = "Limpeza: " + (e.message ?: e.javaClass.simpleName)
         }

@@ -53,6 +53,14 @@ class ClassifierTest {
         assertEquals(ScreenType.REPORT, ScreenClassifier.classify(o, false))
     }
 
+    @Test fun matchResultScreenIsRecognized() {
+        val o = Fx.ocr(
+            Fx.line("Casa", 0.02f, 0.125f), Fx.line("Jornada 3", 0.5f, 0.125f, 0.08f), Fx.line("Fora", 0.98f, 0.125f),
+            Fx.line("Primeira parte", 0.5f, 0.79f, 0.1f), Fx.line("Segunda parte", 0.5f, 0.95f, 0.1f), Fx.line("Rever", 0.5f, 0.4f)
+        )
+        assertEquals(ScreenType.RESULT, ScreenClassifier.classify(o, true))
+    }
+
     @Test fun stadiumScreen() {
         val o = Fx.ocr(Fx.line("Capacidade", 0.5f, 0.3f), Fx.line("Nível 2", 0.5f, 0.35f), Fx.line("+414K receitas de bilheteria", 0.5f, 0.42f, 0.3f), Fx.line("Estádio", 0.2f, 0.1f))
         assertEquals(ScreenType.STADIUM, ScreenClassifier.classify(o, true))

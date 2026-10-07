@@ -37,7 +37,7 @@ class ManualTest {
         val r = Completeness.compute(emptyMap(), 0, 0, false)
         assertTrue(r.missingItems.size >= 20)
         assertTrue(r.missingItems.any { it.key == K.RIVAL_PLAN })
-        assertTrue(r.missingItems.any { it.key == K.MY_STADIUM })
+        assertTrue(r.missingItems.any { it.key == K.MY_STAD_CAP })
     }
 
     @Test fun fieldsThatDoNotExistInTheGameAreNotRequired() {
@@ -58,6 +58,14 @@ class ManualTest {
     @Test fun calendarIsCompleteOnlyWhenAllRoundsWereRead() {
         assertTrue(Completeness.compute(emptyMap(), 0, 24, false, 34).missing.any { it.contains("24 de 34") })
         assertTrue(Completeness.compute(emptyMap(), 0, 34, false, 34).known.contains("Calendário completo"))
+    }
+
+    @Test fun bonusAcceptsOnlyPercentValues() {
+        assertEquals("+3%", ManualFields.normalize(K.RIVAL_LOGIN_BONUS, "3 %"))
+        assertEquals("+12%", ManualFields.normalize(K.MY_BONUS, "+12%"))
+        assertNull(ManualFields.normalize(K.RIVAL_LOGIN_BONUS, "abc"))
+        assertEquals("2", ManualFields.normalize(K.MY_STAD_PITCH, "2"))
+        assertNull(ManualFields.normalize(K.MY_STAD_PITCH, "4"))
     }
 
     @Test fun everyMissingFieldHasAManualSpec() {

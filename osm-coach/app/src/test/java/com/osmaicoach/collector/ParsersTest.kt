@@ -191,14 +191,125 @@ class ParsersTest {
         assertEquals("91", ex.fields["x.atk"]?.value)
     }
 
-    @Test fun stadiumLevelAndRevenueAreRead() {
+    private fun starImg(levels: Map<Float, Int>): PixelProbe.Img {
+        val w = 1000
+        val h = 500
+        val px = IntArray(w * h) { 0xFF102040.toInt() }
+        for ((cx, lvl) in levels) {
+            for (i in -1..1) {
+                val filled = (i + 2) <= lvl
+                val color = if (filled) 0xFFFFC83D.toInt() else 0xFFD0D0D0.toInt()
+                val sx = ((cx + i * 0.0286f) * w).toInt()
+                val sy = ((0.31f + 0.074f) * h).toInt()
+                for (y in sy - 10..sy + 10) for (x in sx - 10..sx + 10) px[y * w + x] = color
+            }
+        }
+        return PixelProbe.Img(w, h, px)
+    }
+
+    @Test fun stadiumLevelsAreTheNumberOfGoldStars() {
         val o = Fx.ocr(
-            Fx.line("Capacidade", 0.5f, 0.30f, 0.12f), Fx.line("Nível 2", 0.5f, 0.35f, 0.08f),
-            Fx.line("+414K receitas de bilheteria", 0.5f, 0.42f, 0.3f)
+            Fx.line("Capacidade", 0.196f, 0.31f, 0.12f), Fx.line("Relvado", 0.5f, 0.31f, 0.1f), Fx.line("Treino", 0.805f, 0.31f, 0.08f),
+            Fx.line("Nível 3", 0.5f, 0.62f, 0.08f), Fx.line("Nível 2", 0.805f, 0.62f, 0.08f)
         )
-        val v = Parsers.stadium(o).fields[K.MY_STADIUM]?.value ?: ""
-        assertTrue(v.contains("Capacidade: Nível 2"))
-        assertTrue(v.contains("414K"))
+        val img = starImg(mapOf(0.196f to 3, 0.5f to 2, 0.805f to 1))
+        val ex = Parsers.stadium(o, img)
+        assertEquals("3", ex.fields[K.MY_STAD_CAP]?.value)
+        assertEquals("2", ex.fields[K.MY_STAD_PITCH]?.value)
+        assertEquals("1", ex.fields[K.MY_STAD_TRAIN]?.value)
+        assertEquals("Capacidade 3 • Relvado 2 • Treino 1", ex.fields[K.MY_STADIUM]?.value)
+        assertTrue(Parsers.stadium(o, null).fields.isEmpty())
+    }
+
+    @Test fun humanRivalShowsBonusInTheCircleAndCpuShowsStrength() {
+        val human = Fx.ocr(
+            Fx.line("Jornada 4", 0.5f, 0.13f, 0.08f),
+            Fx.line("Deportes La Serena", 0.23f, 0.37f, 0.2f, 0.05f), Fx.line("Universidad de Chile", 0.77f, 0.37f, 0.2f, 0.05f),
+            Fx.line("ChinoM10", 0.25f, 0.42f, 0.1f), Fx.line("leandrozzy", 0.77f, 0.42f, 0.1f),
+            Fx.line("+3%", 0.339f, 0.26f, 0.05f), Fx.line("+3%", 0.66f, 0.26f, 0.05f)
+        )
+        val h = Parsers.pregame(human, null, 0L)
+        assertEquals("Universidad de Chile", h.fields[K.TEAM]?.value)
+        assertEquals("Fora", h.fields[K.HOME]?.value)
+        assertEquals("+3%", h.fields[K.RIVAL_LOGIN_BONUS]?.value)
+        assertEquals("+3%", h.fields[K.MY_BONUS]?.value)
+        val cpu = Fx.ocr(
+            Fx.line("Jornada 25", 0.5f, 0.13f, 0.08f),
+            Fx.line("Tobol", 0.23f, 0.37f, 0.2f, 0.05f), Fx.line("FC Zhenis Astana", 0.77f, 0.37f, 0.2f, 0.05f),
+            Fx.line("leandrozzy", 0.23f, 0.42f, 0.1f),
+            Fx.line("+3%", 0.339f, 0.26f, 0.05f), Fx.line("61", 0.66f, 0.26f, 0.04f)
+        )
+        val c = Parsers.pregame(cpu, null, 0L)
+        assertEquals("Casa", c.fields[K.HOME]?.value)
+        assertEquals("61", c.fields[K.RIVAL_STRENGTH]?.value)
+        assertEquals("+3%", c.fields[K.MY_BONUS]?.value)
+        assertNull(c.fields[K.RIVAL_LOGIN_BONUS])
+    }
+
+    @Test fun matchResultHeaderIsRead() {
+        val o = Fx.ocr(
+            Fx.line("Casa", 0.02f, 0.125f, 0.03f), Fx.line("Jornada 3", 0.5f, 0.125f, 0.08f), Fx.line("Fora", 0.98f, 0.125f, 0.03f),
+            Fx.line("Coquimbo Unido", 0.115f, 0.235f, 0.15f, 0.05f), Fx.line("Universidad de Chile", 0.875f, 0.235f, 0.2f, 0.05f),
+            Fx.line("cnco 55", 0.085f, 0.285f, 0.07f), Fx.line("leandrozzy", 0.905f, 0.285f, 0.09f),
+            Fx.line("0-1", 0.5f, 0.25f, 0.1f, 0.12f), Fx.line("Cristián Galaz", 0.9f, 0.395f, 0.12f),
+            Fx.line("K. Phillips é o jogador certo para marcar os cantos. A assistência para golo é a prova disso mesmo!", 0.35f, 0.53f, 0.4f),
+            Fx.line("Adorei a tática. Gostei da vitória. O meu trabalho aqui está terminado.", 0.25f, 0.68f, 0.3f),
+            Fx.line("Primeira parte", 0.5f, 0.79f, 0.1f), Fx.line("Segunda parte", 0.5f, 0.95f, 0.1f)
+        )
+        assertTrue(Parsers.isMatchResult(o))
+        val r = Parsers.matchResult(o).matchReport!!
+        assertEquals(3, r.round)
+        assertEquals("Coquimbo Unido", r.homeTeam)
+        assertEquals("Universidad de Chile", r.awayTeam)
+        assertEquals("leandrozzy", r.awayNick)
+        assertEquals(0, r.scoreHome)
+        assertEquals(1, r.scoreAway)
+        assertEquals("Cristián Galaz", r.referee)
+        assertTrue(r.tip!!.contains("K. Phillips"))
+        assertTrue(r.advice!!.contains("Adorei"))
+    }
+
+    @Test fun matchResultStatsAndZonesAreRead() {
+        fun row(label: String, l: String, rr: String, y: Float) = listOf(
+            Fx.line(label, 0.5f, y, 0.1f), Fx.line(l, 0.045f, y, 0.05f), Fx.line(rr, 0.955f, y, 0.05f)
+        )
+        val lines = ArrayList<OcrLine>()
+        lines.add(Fx.line("Estatísticas do jogo", 0.5f, 0.05f, 0.15f))
+        lines.addAll(row("Golos", "0", "1", 0.10f))
+        lines.addAll(row("Remates", "12", "11", 0.20f))
+        lines.addAll(row("Cantos", "8", "5", 0.30f))
+        lines.addAll(row("Faltas", "7", "21", 0.40f))
+        lines.addAll(row("Formação", "4-3-3 A", "4-3-3 B", 0.50f))
+        lines.addAll(row("Posse de bola", "52%", "48%", 0.60f))
+        lines.add(Fx.line("Cartões", 0.5f, 0.70f, 0.08f))
+        lines.add(Fx.line("0", 0.026f, 0.70f, 0.02f)); lines.add(Fx.line("0", 0.046f, 0.70f, 0.02f))
+        lines.add(Fx.line("0", 0.954f, 0.70f, 0.02f)); lines.add(Fx.line("2", 0.973f, 0.70f, 0.02f))
+        lines.add(Fx.line("25 %", 0.33f, 0.85f, 0.05f)); lines.add(Fx.line("50 %", 0.5f, 0.85f, 0.05f)); lines.add(Fx.line("25 %", 0.67f, 0.85f, 0.05f))
+        val r = Parsers.matchResult(Fx.ocr(*lines.toTypedArray())).matchReport!!
+        assertEquals(Pair("0", "1"), r.stats["golos"])
+        assertEquals(Pair("12", "11"), r.stats["remates"])
+        assertEquals(Pair("7", "21"), r.stats["faltas"])
+        assertEquals(Pair("4-3-3 A", "4-3-3 B"), r.stats["formacao"])
+        assertEquals(Pair("52%", "48%"), r.stats["posse de bola"])
+        assertEquals(Pair("0,0", "2,0"), r.stats["cartoes"])
+        assertEquals(listOf(25, 50, 25), r.zones)
+    }
+
+    @Test fun matchResultPlayerRatingsAreReadForBothTeams() {
+        val lines = ArrayList<OcrLine>()
+        val home = listOf("1. L. Popescu", "17. Giannoulis", "18. Otávio", "2. Gazzolo", "Sugawara")
+        val away = listOf("1. Trott", "13. O. Rodríguez", "14. Keane", "4. Calero", "17. Hormazábal")
+        for (i in 0 until 5) {
+            val y = 0.2f + i * 0.1f
+            lines.add(Fx.line(home[i], 0.07f, y, 0.1f)); lines.add(Fx.line("6", 0.467f, y, 0.02f))
+            lines.add(Fx.line("7", 0.533f, y, 0.02f)); lines.add(Fx.line(away[i], 0.93f, y, 0.1f))
+        }
+        val o = Fx.ocr(*lines.toTypedArray())
+        assertTrue(Parsers.isMatchResult(o))
+        val r = Parsers.matchResult(o).matchReport!!
+        assertEquals(5, r.ratingsHome.size)
+        assertEquals(Pair("L. Popescu", 6), r.ratingsHome.first())
+        assertEquals(Pair("O. Rodríguez", 7), r.ratingsAway[1])
     }
 
     private fun analysisNote() = listOf(

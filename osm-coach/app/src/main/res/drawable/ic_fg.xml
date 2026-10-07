@@ -4,15 +4,47 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+    <!-- campo em perspectiva -->
     <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M54,54m-26,0a26,26 0,1 1,52 0a26,26 0,1 1,-52 0" />
-    <path
-        android:fillColor="#0B1220"
-        android:pathData="M54,42l9,6.5l-3.5,10.5h-11l-3.5,-10.5z" />
+        android:fillColor="#2BA84A"
+        android:fillAlpha="0.95"
+        android:pathData="M36,34 L72,34 L84,76 L24,76 Z" />
     <path
         android:fillColor="#00000000"
-        android:strokeColor="#3D8BFF"
-        android:strokeWidth="3"
-        android:pathData="M54,54m-31,0a31,31 0,1 1,62 0a31,31 0,1 1,-62 0" />
+        android:strokeWidth="2"
+        android:strokeColor="#E6FFFFFF"
+        android:strokeLineJoin="round"
+        android:pathData="M36,34 L72,34 L84,76 L24,76 Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeWidth="1.6"
+        android:strokeColor="#CCFFFFFF"
+        android:pathData="M54,34 L54,76" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeWidth="1.6"
+        android:strokeColor="#CCFFFFFF"
+        android:pathData="M45,55 a9,6 0 1,0 18,0 a9,6 0 1,0 -18,0" />
+    <!-- seta tática dourada -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeWidth="5"
+        android:strokeColor="#FFC83D"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M32,70 C44,68 58,58 74,42" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeWidth="5"
+        android:strokeColor="#FFC83D"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M62,40 L76,40 L76,54" />
+    <!-- bola -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M32,70 m-5,0 a5,5 0 1,0 10,0 a5,5 0 1,0 -10,0" />
+    <path
+        android:fillColor="#1B2A4A"
+        android:pathData="M32,67.6 l2.2,1.6 l-0.8,2.6 l-2.8,0 l-0.8,-2.6 z" />
 </vector>

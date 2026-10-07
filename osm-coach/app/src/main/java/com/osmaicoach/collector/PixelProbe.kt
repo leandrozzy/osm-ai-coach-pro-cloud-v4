@@ -64,6 +64,18 @@ object PixelProbe {
     /** A central dos 4 slots não tem barra superior; ela é azul. Serve só para decidir se vale rodar OCR. */
     fun hubBackdrop(img: Img): Boolean = frac(img, 0f, 1f, 0f, 1f, HUB_BLUE) >= 0.25f
 
+    private val GOLD: (Float, Float, Float) -> Boolean = { h, s, v -> h in 36f..58f && s > 0.55f && v > 0.75f }
+
+    /** Estrelas preenchidas (douradas) de um card do estádio: 3 estrelas centradas em cx, espaçadas 0,0286. */
+    fun starLevel(img: Img, cx: Float, cy: Float): Int {
+        var n = 0
+        for (i in -1..1) {
+            val x = cx + i * 0.0286f
+            if (frac(img, x - 0.008f, x + 0.008f, cy - 0.016f, cy + 0.016f, GOLD) >= 0.25f) n++
+        }
+        return n
+    }
+
     /** Camisa laranja na linha do jogador (treino). */
     fun orangeShirt(img: Img, rowY: Float): Boolean =
         frac(img, 0.005f, 0.055f, rowY - 0.04f, rowY + 0.04f, ORANGE) >= 0.04f
