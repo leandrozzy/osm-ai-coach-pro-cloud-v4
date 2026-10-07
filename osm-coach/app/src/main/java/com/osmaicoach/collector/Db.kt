@@ -221,6 +221,9 @@ interface CoachDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun putPlan(p: PlanEntity)
 
+    @Query("SELECT * FROM plans WHERE slotId = :slot AND kind LIKE 'tlog:%'")
+    suspend fun tacticLogs(slot: Int): List<PlanEntity>
+
     @Query("SELECT * FROM plans WHERE slotId = :slot AND kind = :kind LIMIT 1")
     suspend fun plan(slot: Int, kind: String): PlanEntity?
 }

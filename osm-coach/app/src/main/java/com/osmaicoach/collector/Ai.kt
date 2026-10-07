@@ -21,10 +21,12 @@ object Settings {
 
     /** Versões antigas gravaram nomes de modelo que travam ou não existem mais: volta para detecção automática. */
     fun migrate(ctx: Context) {
-        if (get(ctx, "settings_v2", "") == "1") return
+        if (get(ctx, "settings_v3", "") == "1") return
         if (get(ctx, "gemini_model", "") == "gemini-flash-latest") put(ctx, "gemini_model", "auto")
         if (get(ctx, "compat_model", "") == "llama-3.3-70b-versatile") put(ctx, "compat_model", "auto")
-        put(ctx, "settings_v2", "1")
+        put(ctx, "gemini_model_resolved", "")
+        put(ctx, "compat_model_resolved", "")
+        put(ctx, "settings_v3", "1")
     }
 
     const val GEMINI_KEY = "gemini_key"
@@ -61,7 +63,10 @@ object ModelPicker {
     private data class Cand(val id: String, val stable: Boolean, val version: Double, val lite: Boolean)
 
     /** Escolhe o Flash estável mais novo (sem lite/preview/imagem/áudio) entre os modelos que a chave enxerga. */
-    fun pickGemini(names: List<String>): String? {
+    fun pickGemini(names: List<String>): String? = rankGemini(names).firstOrNull()
+
+    /** Lista ordenada dos melhores Flash estáveis (para tentar o próximo quando um estiver sobrecarregado). */
+    fun rankGemini(names: List<String>): List<String> {
         val banned = listOf("image", "tts", "live", "audio", "embedding", "robotics", "computer", "exp", "thinking", "8b")
         val cands = names.map { it.removePrefix("models/") }
             .filter { n -> n.startsWith("gemini") && n.contains("flash") && banned.none { n.contains(it) } }
@@ -75,7 +80,7 @@ object ModelPicker {
             }
         return cands.sortedWith(
             compareByDescending<Cand> { it.stable }.thenByDescending { !it.lite }.thenByDescending { it.version }
-        ).firstOrNull()?.id
+        ).map { it.id }
     }
 
     /** Escolhe um modelo de texto grande entre os que o provedor (Groq/xAI/OpenAI-compatível) lista. */
@@ -98,6 +103,11 @@ object AiClient {
 
     private val gate = Mutex()
     private var lastGeminiAt = 0L
+    private val cooldownUntil = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    private fun cool(provider: String, ms: Long) {
+        cooldownUntil[provider] = System.currentTimeMillis() + ms
+    }
     private const val CONNECT_MS = 15000
     private const val READ_MS = 45000
 
@@ -170,16 +180,16 @@ object AiClient {
         return out
     }
 
-    private suspend fun geminiModel(ctx: Context, key: String, forceDiscover: Boolean): String {
+    private suspend fun geminiModels(ctx: Context, key: String, forceDiscover: Boolean): List<String> {
         val setting = Settings.get(ctx, Settings.GEMINI_MODEL, Settings.DEFAULT_GEMINI_MODEL)
-        if (setting.isNotBlank() && !setting.equals("auto", true)) return setting
-        val cached = Settings.get(ctx, Settings.GEMINI_RESOLVED, "")
-        if (cached.isNotBlank() && !forceDiscover) return cached
-        val picked = withContext(Dispatchers.IO) {
-            try { ModelPicker.pickGemini(listGemini(key)) } catch (e: Exception) { null }
-        }
-        if (picked != null) Settings.put(ctx, Settings.GEMINI_RESOLVED, picked)
-        return picked ?: cached.ifBlank { "gemini-2.5-flash" }
+        if (setting.isNotBlank() && !setting.equals("auto", true)) return listOf(setting)
+        val cached = Settings.get(ctx, Settings.GEMINI_RESOLVED, "").split(",").filter { it.isNotBlank() }
+        if (cached.isNotEmpty() && !forceDiscover) return cached
+        val ranked = withContext(Dispatchers.IO) {
+            try { ModelPicker.rankGemini(listGemini(key)) } catch (e: Exception) { emptyList() }
+        }.take(3)
+        if (ranked.isNotEmpty()) Settings.put(ctx, Settings.GEMINI_RESOLVED, ranked.joinToString(","))
+        return ranked.ifEmpty { cached.ifEmpty { listOf("gemini-2.5-flash") } }
     }
 
     private suspend fun compatModel(ctx: Context, base: String, key: String, forceDiscover: Boolean): String {
@@ -199,16 +209,17 @@ object AiClient {
     private suspend fun gemini(ctx: Context, prompt: String, jpeg: ByteArray?): Reply = withContext(Dispatchers.IO) {
         val key = Settings.get(ctx, Settings.GEMINI_KEY, "")
         if (key.isBlank()) return@withContext Reply(false, null, "chave do Gemini não configurada")
-        var model = geminiModel(ctx, key, false)
-        var withThinking = true
+        var models = geminiModels(ctx, key, false)
         var rediscovered = false
+        var withThinking = true
         var lastErr = "falha desconhecida"
-        var attempt = 1
-        while (attempt <= 2) {
+        var idx = 0
+        while (idx < models.size) {
+            val model = models[idx]
             val capErr = throttleGemini(ctx)
             if (capErr != null) return@withContext Reply(false, null, capErr)
             Diag.aiCalls.incrementAndGet()
-            AiStatus.set("Gemini ($model) — tentativa $attempt/2")
+            AiStatus.set("Gemini ($model) — modelo ${idx + 1} de ${models.size}")
             val parts = JSONArray().put(JSONObject().put("text", prompt))
             if (jpeg != null) {
                 parts.put(JSONObject().put("inline_data", JSONObject().put("mime_type", "image/jpeg").put("data", Base64.encodeToString(jpeg, Base64.NO_WRAP))))
@@ -223,24 +234,24 @@ object AiClient {
                         ?.optJSONObject("content")?.optJSONArray("parts")?.optJSONObject(0)?.optString("text")
                     return@withContext if (t.isNullOrBlank()) Reply(false, null, "resposta vazia") else Reply(true, t, null)
                 }
-                lastErr = "HTTP ${r.code}: " + short(r.body)
+                lastErr = "$model: HTTP ${r.code} " + short(r.body)
                 if (r.code == 400 && withThinking && r.body.contains("thinking", true)) {
                     withThinking = false
                     continue
                 }
                 if ((r.code == 404 || r.code == 400) && !rediscovered && r.body.contains("model", true)) {
                     rediscovered = true
-                    model = geminiModel(ctx, key, true)
+                    models = geminiModels(ctx, key, true)
+                    idx = 0
                     continue
                 }
                 if (r.code != 429 && r.code != 503 && r.code != 500) break
             } catch (e: SocketTimeoutException) {
-                lastErr = "tempo esgotado (${READ_MS / 1000}s) no modelo $model"
+                lastErr = "$model: tempo esgotado (${READ_MS / 1000}s)"
             } catch (e: Exception) {
-                lastErr = e.message ?: e.javaClass.simpleName
+                lastErr = "$model: " + (e.message ?: e.javaClass.simpleName)
             }
-            attempt++
-            if (attempt <= 2) delay(4000L)
+            idx++
         }
         Reply(false, null, lastErr)
     }
@@ -318,7 +329,10 @@ object AiClient {
         if (Settings.get(ctx, Settings.CLAUDE_KEY, "").isNotBlank()) have.add("claude")
         if (!hasImage && Settings.get(ctx, Settings.COMPAT_KEY, "").isNotBlank()) have.add("compat")
         val pref = Settings.get(ctx, Settings.PREFERRED, "gemini")
-        return if (pref in have) listOf(pref) + have.filter { it != pref } else have
+        val ordered = if (pref in have) listOf(pref) + have.filter { it != pref } else have
+        // quem acabou de falhar vai para o fim da fila (evita esperar de novo um provedor sobrecarregado)
+        val now = System.currentTimeMillis()
+        return ordered.filter { (cooldownUntil[it] ?: 0L) <= now } + ordered.filter { (cooldownUntil[it] ?: 0L) > now }
     }
 
     suspend fun askProvider(ctx: Context, provider: String, prompt: String, jpeg: ByteArray?): Reply = when (provider) {
@@ -347,9 +361,11 @@ object AiClient {
             val started = System.currentTimeMillis()
             val r = askProvider(ctx, p, prompt, jpeg)
             if (r.ok) {
+                cooldownUntil.remove(p)
                 AiStatus.set("")
                 return r
             }
+            cool(p, 180000L)
             errors.add(label(p) + " (" + ((System.currentTimeMillis() - started) / 1000) + "s): " + (r.error ?: "erro"))
         }
         AiStatus.set("")

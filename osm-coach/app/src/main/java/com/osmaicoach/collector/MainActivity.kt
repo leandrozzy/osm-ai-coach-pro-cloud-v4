@@ -12,6 +12,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -59,16 +60,21 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.io.File
+import kotlin.math.sqrt
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -266,7 +272,9 @@ data class SlotSummary(
     val rival: String?,
     val human: String?,
     val pct: Int,
-    val updated: Long
+    val updated: Long,
+    val nextAt: Long? = null,
+    val tacticReady: Boolean = false
 )
 
 data class TodayData(val active: Boolean = false, val slots: List<SlotSummary> = emptyList())
@@ -280,7 +288,10 @@ data class SlotData(
     val learning: List<LearningEntity> = emptyList(),
     val sections: Map<String, Long> = emptyMap(),
     val completeness: Completeness.Result? = null,
-    val baseline: List<String> = emptyList()
+    val baseline: List<String> = emptyList(),
+    val marketPlan: MarketEngine.Plan? = null,
+    val marketNote: String? = null,
+    val logs: List<PlanEntity> = emptyList()
 )
 
 data class SessionRow(val s: SessionEntity, val counts: String, val unassigned: Int)
@@ -293,17 +304,39 @@ private suspend fun loadSlot(ctx: Context, slot: Int): SlotData {
     val matches = dao.matchesOf(slot)
     val market = dao.snapshots("TRANSFER", slot).isNotEmpty()
     val comp = Completeness.compute(f, players.count { it.owner == "MY" }, matches.size, market)
+    Director.resolveTacticLogs(repo, slot)
     return SlotData(
         fields = f, players = players, matches = matches,
         tactic = dao.plan(slot, "tactic"), market = dao.plan(slot, "market"),
         learning = dao.learningOf(slot),
         sections = dao.lastBySection(slot).associate { it.type to it.c },
-        completeness = comp, baseline = Director.marketBaseline(repo, slot)
+        completeness = comp,
+        marketPlan = Director.marketPlan(repo, slot),
+        marketNote = dao.plan(slot, "market")?.json?.let { js ->
+            try { JSONObject(js).optString("aiNote").ifBlank { null } } catch (e: Exception) { null }
+        },
+        logs = dao.tacticLogs(slot)
     )
 }
 
 private fun known(f: Map<String, StoredField>, key: String): String? =
     f[key]?.value?.takeIf { FieldMerge.known(it) }
+
+private suspend fun tacticFor(repo: Repo, slot: Int, round: Int?): Boolean {
+    val p = repo.dao.plan(slot, "tactic") ?: return false
+    return try {
+        round != null && JSONObject(p.json).optInt("forRound", -1) == round
+    } catch (e: Exception) {
+        false
+    }
+}
+
+private fun until(ms: Long): String {
+    val d = ms - System.currentTimeMillis()
+    if (d <= 0L) return "horário passou — releia o pré-jogo"
+    val m = d / 60000L
+    return if (m >= 60) "em ${m / 60}h ${m % 60}min" else "em $m min"
+}
 
 private suspend fun loadToday(ctx: Context): TodayData {
     val repo = Repo(ctx)
@@ -321,7 +354,9 @@ private suspend fun loadToday(ctx: Context): TodayData {
                 competition = known(f, K.COMPETITION), compType = known(f, K.COMP_TYPE),
                 roundDone = known(f, K.ROUND_DONE), roundTotal = known(f, K.ROUND_TOTAL),
                 rival = known(f, K.RIVAL_TEAM), human = known(f, K.RIVAL_HUMAN),
-                pct = c.percent, updated = f.values.maxOfOrNull { it.updatedAt } ?: 0L
+                pct = c.percent, updated = f.values.maxOfOrNull { it.updatedAt } ?: 0L,
+                nextAt = known(f, K.MATCH_AT)?.toLongOrNull(),
+                tacticReady = tacticFor(repo, slot, known(f, K.ROUND)?.toIntOrNull())
             )
         )
     }
@@ -470,6 +505,12 @@ private fun SlotCard(s: SlotSummary, onClick: () -> Unit) {
                     if (s.rival != null) Pill("vs ${s.rival}")
                     if (s.human != null) Pill(if (s.human == "Sim") "Humano" else "CPU", s.human == "Sim")
                 }
+                if (s.nextAt != null) {
+                    Row(Modifier.padding(top = 2.dp)) {
+                        Pill("⏱ " + until(s.nextAt))
+                        Pill(if (s.tacticReady) "Tática ✔" else "Tática pendente", s.tacticReady)
+                    }
+                }
                 Spacer(Modifier.height(6.dp))
                 Bar(s.pct)
                 Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -544,6 +585,22 @@ private fun TodayTab(onGoSettings: () -> Unit, onOpenSlot: (Int) -> Unit) {
         }
         if (msg.isNotBlank()) Text(msg, color = C.WARN, modifier = Modifier.padding(top = 8.dp))
         ProcessCard()
+
+        val upcoming = data.slots.filter { it.nextAt != null && it.nextAt > System.currentTimeMillis() - 7200000L }.sortedBy { it.nextAt }
+        if (upcoming.isNotEmpty()) {
+            Title("Próximos jogos")
+            Panel {
+                for (u in upcoming) {
+                    Row(Modifier.fillMaxWidth().clickable { onOpenSlot(u.slot) }.padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("S${u.slot} • ${u.title}" + (if (u.rival != null) " vs ${u.rival}" else ""), fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            Text(until(u.nextAt!!), fontSize = 11.sp, color = C.MUTED)
+                        }
+                        Pill(if (u.tacticReady) "Tática ✔" else "Gerar tática", u.tacticReady)
+                    }
+                }
+            }
+        }
 
         Title("Seus slots")
         for (s in data.slots) SlotCard(s) { onOpenSlot(s.slot) }
@@ -927,7 +984,7 @@ private fun ResultBadge(result: String?) {
 }
 
 @Composable
-private fun MatchCard(m: MatchEntity, modifier: Modifier) {
+private fun MatchCard(m: MatchEntity, modifier: Modifier, highlight: Boolean) {
     val tint = when (m.result) {
         "V" -> Color(0xFF12351F)
         "E" -> Color(0xFF3A3210)
@@ -936,41 +993,74 @@ private fun MatchCard(m: MatchEntity, modifier: Modifier) {
     }
     val score = if (m.scoreMine != null && m.scoreOpp != null) "${m.scoreMine}-${m.scoreOpp}" else "–"
     val place = when (m.home) {
-        true -> "🏠 "
-        false -> "✈ "
+        true -> "🏠"
+        false -> "✈"
         null -> ""
     }
+    val shape = RoundedCornerShape(12.dp)
+    val frame = if (highlight) modifier.border(2.dp, C.GOLD, shape) else modifier
     Column(
-        modifier.clip(RoundedCornerShape(12.dp)).background(tint).padding(8.dp),
+        frame.height(128.dp).clip(shape).background(tint).padding(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text(place + (if (m.round != null) "J${m.round}" else m.label.take(8)), fontSize = 11.sp, color = C.MUTED)
+            Text(place + " " + (if (m.round != null) "J${m.round}" else m.label.take(8)), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = C.MUTED)
             ResultBadge(m.result)
         }
-        Text(score, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.padding(vertical = 2.dp))
-        Text(m.opponent ?: NI, fontSize = 11.sp, textAlign = TextAlign.Center, maxLines = 2, fontWeight = FontWeight.SemiBold)
-        if (m.opponentNick != null) Text(m.opponentNick, fontSize = 10.sp, color = C.PRIMARY, textAlign = TextAlign.Center, maxLines = 1)
-        Text(m.date ?: m.time ?: "", fontSize = 10.sp, color = C.MUTED)
+        Text(score, fontSize = 26.sp, fontWeight = FontWeight.ExtraBold)
+        Text(
+            (m.opponent ?: NI) + (if (m.opponentNick != null) " 👤" else ""),
+            fontSize = 11.sp, textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold
+        )
+        Text(m.date ?: m.time ?: "", fontSize = 10.sp, color = C.MUTED, modifier = Modifier.padding(top = 2.dp))
+        if (highlight) Text("PRÓXIMO", fontSize = 9.sp, color = C.GOLD, fontWeight = FontWeight.Bold)
     }
 }
 
 @Composable
+private fun UnreadCard(round: Int, modifier: Modifier) {
+    Column(
+        modifier.height(128.dp).clip(RoundedCornerShape(12.dp)).border(1.dp, C.SURFACE2, RoundedCornerShape(12.dp)).padding(8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text("J$round", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = C.MUTED)
+        Text("não lido", fontSize = 11.sp, color = C.MUTED)
+        Text("role o jogo até aqui", fontSize = 9.sp, color = C.MUTED, textAlign = TextAlign.Center)
+    }
+}
+
+@Composable
+private fun FilterChip(text: String, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier.padding(end = 6.dp).clip(RoundedCornerShape(50))
+            .background(if (selected) C.PRIMARY else C.SURFACE2).clickable { onClick() }
+            .padding(horizontal = 14.dp, vertical = 6.dp)
+    ) { Text(text, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = if (selected) Color.White else C.MUTED) }
+}
+
+@Composable
 private fun SlotCalendar(d: SlotData) {
+    var filter by remember { mutableIntStateOf(0) }
     if (d.matches.isEmpty()) {
         Text("Calendário ainda não lido neste slot. No jogo: menu → Calendário do SEU time (no topo da lista) e role devagar.", color = C.MUTED)
         return
     }
     val sorted = d.matches.sortedBy { it.round ?: 999 }
     val total = fv(d, K.ROUND_TOTAL).toIntOrNull()
+    val read = sorted.count { it.round != null }
+    val byRound = sorted.filter { it.round != null }.associateBy { it.round!! }
+    val unread = if (total != null) (1..total).filter { it !in byRound } else emptyList()
     if (total != null && total > 0) {
-        val read = sorted.count { it.round != null }
         Panel {
             Text("Calendário lido: $read de $total rodadas", fontWeight = FontWeight.Bold, fontSize = 13.sp)
             Spacer(Modifier.height(6.dp))
             Bar(read * 100 / total)
-            if (read < total) {
-                Text("Role o calendário do jogo até o fim para ler as rodadas que faltam.", fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
+            if (unread.isNotEmpty()) {
+                Text(
+                    "Faltam as rodadas ${unread.first()}–${unread.last()}. Role o calendário do jogo até o fim para ler.",
+                    fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp)
+                )
             }
         }
     }
@@ -980,46 +1070,192 @@ private fun SlotCalendar(d: SlotData) {
         CountPill("D ${sorted.count { it.result == "D" }}", C.LOSS)
         CountPill("${sorted.count { it.result == null }} a jogar", C.SURFACE2)
     }
-    for (row in sorted.chunked(3)) {
+    Row(Modifier.padding(bottom = 8.dp)) {
+        FilterChip("Todos", filter == 0) { filter = 0 }
+        FilterChip("Resultados", filter == 1) { filter = 1 }
+        FilterChip("Próximos", filter == 2) { filter = 2 }
+    }
+    val nextRound = sorted.firstOrNull { it.result == null && it.round != null }?.round
+    // Lista final: rodadas da liga em ordem (com "não lido" nos buracos), depois jogos de copa/outros.
+    val cells = ArrayList<Pair<Int?, MatchEntity?>>()
+    if (total != null && total > 0) {
+        for (r in 1..total) cells.add(Pair(r, byRound[r]))
+    } else {
+        for (m in sorted.filter { it.round != null }) cells.add(Pair(m.round, m))
+    }
+    for (m in sorted.filter { it.round == null }) cells.add(Pair(null, m))
+    val shown = cells.filter { (_, m) ->
+        when (filter) {
+            1 -> m != null && m.result != null
+            2 -> m == null || m.result == null
+            else -> true
+        }
+    }
+    for (row in shown.chunked(3)) {
         Row(Modifier.fillMaxWidth()) {
-            for (m in row) MatchCard(m, Modifier.weight(1f).padding(3.dp))
+            for ((r, m) in row) {
+                val mod = Modifier.weight(1f).padding(3.dp)
+                if (m != null) MatchCard(m, mod, m.round != null && m.round == nextRound) else UnreadCard(r ?: 0, mod)
+            }
             repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
         }
     }
 }
 
-private fun formationLines(f: String): List<Int> {
-    val nums = f.trim().split(" ")[0].split("-").mapNotNull { it.toIntOrNull() }
-    return if (nums.isNotEmpty() && nums.sum() == 10) nums else emptyList()
+private fun formationLines(f: String): List<Int> = Formations.lines(f)
+
+private val CY = Color(0xFF29B6F6)
+private val OR = Color(0xFFFFA726)
+private val RD = Color(0xFFE5484D)
+
+private fun DrawScope.arrow(from: Offset, to: Offset, color: Color, width: Float) {
+    drawLine(color, from, to, width)
+    val dx = to.x - from.x
+    val dy = to.y - from.y
+    val len = sqrt(dx * dx + dy * dy)
+    if (len < 1f) return
+    val ux = dx / len
+    val uy = dy / len
+    val head = width * 3.2f
+    drawLine(color, to, Offset(to.x - ux * head - uy * head * 0.6f, to.y - uy * head + ux * head * 0.6f), width)
+    drawLine(color, to, Offset(to.x - ux * head + uy * head * 0.6f, to.y - uy * head - ux * head * 0.6f), width)
+}
+
+/** Setas como nas telas "Avançadas" do OSM: ciano = ataque/pressão, laranja = apoio/recuo. */
+private fun arrowSet(option: String): List<Triple<Float, Float, Color>> {
+    val n = Txt.norm(option)
+    return when {
+        n.contains("atacar apenas") -> listOf(Triple(0f, -1f, CY))
+        n.contains("ajudar a defender") || n.contains("ajudar a defesa") ->
+            listOf(Triple(0f, -1f, CY), Triple(-0.7f, 0.7f, OR), Triple(0.7f, 0.7f, OR))
+        n.contains("manter") -> listOf(Triple(-1f, 0f, OR), Triple(1f, 0f, OR))
+        n.contains("pressionar") -> listOf(Triple(0f, -1f, CY), Triple(-0.7f, -0.7f, OR), Triple(0.7f, -0.7f, OR))
+        n.contains("defender atras") -> listOf(Triple(0f, 1f, OR), Triple(-0.7f, 0.7f, OR), Triple(0.7f, 0.7f, OR))
+        else -> emptyList()
+    }
 }
 
 @Composable
-private fun PitchView(formation: String) {
-    val lines = formationLines(formation)
-    Canvas(Modifier.fillMaxWidth().height(300.dp).clip(RoundedCornerShape(16.dp))) {
+private fun SectorIcon(option: String) {
+    Canvas(Modifier.size(64.dp, 84.dp).clip(RoundedCornerShape(10.dp))) {
         val w = size.width
         val h = size.height
         drawRect(Color(0xFF1E7B3B))
-        val stripe = h / 8f
-        for (i in 0 until 8 step 2) {
-            drawRect(Color(0x14FFFFFF), topLeft = Offset(0f, i * stripe), size = Size(w, stripe))
+        drawRect(Color(0xCCFFFFFF), topLeft = Offset(w * 0.06f, h * 0.05f), size = Size(w * 0.88f, h * 0.9f), style = Stroke(2f))
+        val c = Offset(w * 0.5f, h * 0.5f)
+        drawCircle(Color(0xCCFFFFFF), radius = w * 0.2f, center = c, style = Stroke(2f))
+        for ((dx, dy, col) in arrowSet(option)) {
+            arrow(c, Offset(c.x + dx * w * 0.38f, c.y + dy * h * 0.38f), col, 4f)
         }
+        drawCircle(Color.White, radius = 7f, center = c)
+    }
+}
+
+@Composable
+private fun StyleIcon(style: String) {
+    val n = Txt.norm(style)
+    Canvas(Modifier.size(120.dp, 70.dp).clip(RoundedCornerShape(10.dp))) {
+        val w = size.width
+        val h = size.height
+        drawRect(Color(0xFF1E7B3B))
+        drawRect(Color(0xCCFFFFFF), topLeft = Offset(w * 0.04f, h * 0.06f), size = Size(w * 0.92f, h * 0.88f), style = Stroke(2f))
+        drawLine(Color(0xCCFFFFFF), Offset(w * 0.5f, h * 0.06f), Offset(w * 0.5f, h * 0.94f), 2f)
+        when {
+            n.contains("alas") -> {
+                arrow(Offset(w * 0.12f, h * 0.28f), Offset(w * 0.88f, h * 0.28f), RD, 5f)
+                arrow(Offset(w * 0.12f, h * 0.72f), Offset(w * 0.88f, h * 0.72f), RD, 5f)
+            }
+            n.contains("passe") -> {
+                val pts = listOf(Offset(0.12f, 0.7f), Offset(0.3f, 0.3f), Offset(0.5f, 0.7f), Offset(0.7f, 0.3f), Offset(0.88f, 0.5f))
+                for (i in 0 until pts.size - 2) drawLine(RD, Offset(pts[i].x * w, pts[i].y * h), Offset(pts[i + 1].x * w, pts[i + 1].y * h), 5f)
+                arrow(Offset(pts[3].x * w, pts[3].y * h), Offset(pts[4].x * w, pts[4].y * h), RD, 5f)
+            }
+            n.contains("remate") -> {
+                arrow(Offset(w * 0.2f, h * 0.75f), Offset(w * 0.8f, h * 0.35f), RD, 5f)
+                drawCircle(Color.White, radius = 6f, center = Offset(w * 0.2f, h * 0.75f))
+                drawCircle(Color.White, radius = 6f, center = Offset(w * 0.5f, h * 0.55f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun LineupPitch(plan: JSONObject) {
+    val rows = ArrayList<List<Pair<String, Int>>>()
+    val arr = plan.optJSONArray("lineup")
+    if (arr != null) {
+        for (i in 0 until arr.length()) {
+            val r = arr.optJSONArray(i) ?: continue
+            val row = ArrayList<Pair<String, Int>>()
+            for (j in 0 until r.length()) {
+                val o = r.optJSONObject(j)
+                row.add(Pair(o?.optString("n") ?: "?", o?.optInt("s") ?: 0))
+            }
+            rows.add(row)
+        }
+    }
+    if (rows.isEmpty()) {
+        val ls = formationLines(plan.optString("formation"))
+        if (ls.isNotEmpty()) {
+            rows.add(listOf(Pair("GOL", 0)))
+            for (n in ls) rows.add(List(n) { Pair("", 0) })
+        }
+    }
+    val advA = arrowSet(plan.optString("advAttack"))
+    val advM = arrowSet(plan.optString("advMid"))
+    val advD = arrowSet(plan.optString("advDef"))
+    Canvas(Modifier.fillMaxWidth().height(400.dp).clip(RoundedCornerShape(16.dp))) {
+        val w = size.width
+        val h = size.height
+        val dp = density
+        drawRect(Color(0xFF1E7B3B))
+        val stripe = h / 8f
+        for (i in 0 until 8 step 2) drawRect(Color(0x14FFFFFF), topLeft = Offset(0f, i * stripe), size = Size(w, stripe))
         val line = Color(0xCCFFFFFF)
         drawRect(line, topLeft = Offset(w * 0.04f, h * 0.03f), size = Size(w * 0.92f, h * 0.94f), style = Stroke(3f))
         drawLine(line, Offset(w * 0.04f, h * 0.5f), Offset(w * 0.96f, h * 0.5f), 3f)
-        drawCircle(line, radius = h * 0.12f, center = Offset(w * 0.5f, h * 0.5f), style = Stroke(3f))
-        drawRect(line, topLeft = Offset(w * 0.3f, h * 0.03f), size = Size(w * 0.4f, h * 0.14f), style = Stroke(3f))
-        drawRect(line, topLeft = Offset(w * 0.3f, h * 0.83f), size = Size(w * 0.4f, h * 0.14f), style = Stroke(3f))
-        if (lines.isEmpty()) return@Canvas
-        drawCircle(Color.White, radius = 19f, center = Offset(w * 0.5f, h * 0.91f))
-        drawCircle(Color(0xFFFFC83D), radius = 15f, center = Offset(w * 0.5f, h * 0.91f))
-        val k = lines.size
-        for ((i, n) in lines.withIndex()) {
-            val y = if (k == 1) 0.5f else 0.74f - i * (0.58f / (k - 1))
-            for (j in 0 until n) {
-                val x = (j + 1f) / (n + 1f)
-                drawCircle(Color.White, radius = 19f, center = Offset(w * x, h * y))
-                drawCircle(Color(0xFF3D8BFF), radius = 15f, center = Offset(w * x, h * y))
+        drawCircle(line, radius = h * 0.1f, center = Offset(w * 0.5f, h * 0.5f), style = Stroke(3f))
+        drawRect(line, topLeft = Offset(w * 0.3f, h * 0.03f), size = Size(w * 0.4f, h * 0.12f), style = Stroke(3f))
+        drawRect(line, topLeft = Offset(w * 0.3f, h * 0.85f), size = Size(w * 0.4f, h * 0.12f), style = Stroke(3f))
+        if (rows.isEmpty()) return@Canvas
+        val namePaint = android.graphics.Paint().apply {
+            color = android.graphics.Color.WHITE
+            textSize = 10f * dp
+            textAlign = android.graphics.Paint.Align.CENTER
+            isAntiAlias = true
+        }
+        val numPaint = android.graphics.Paint().apply {
+            color = android.graphics.Color.WHITE
+            textSize = 11f * dp
+            textAlign = android.graphics.Paint.Align.CENTER
+            isAntiAlias = true
+            isFakeBoldText = true
+        }
+        val k = rows.size - 1
+        for ((ri, row) in rows.withIndex()) {
+            val y = if (ri == 0) 0.9f else if (k <= 1) 0.5f else 0.75f - (ri - 1) * (0.6f / (k - 1))
+            val arrows: List<Triple<Float, Float, Color>> = when {
+                ri == 0 -> emptyList()
+                ri == 1 -> advD
+                ri == rows.size - 1 -> advA
+                else -> advM
+            }
+            for ((j, pl) in row.withIndex()) {
+                val x = (j + 1f) / (row.size + 1f)
+                val c = Offset(w * x, h * y)
+                val r = 16f * dp
+                for ((dx, dy, col) in arrows) {
+                    arrow(
+                        Offset(c.x + dx * (r + 2f * dp), c.y + dy * (r + 2f * dp)),
+                        Offset(c.x + dx * (r + 18f * dp), c.y + dy * (r + 18f * dp)), col, 3f * dp
+                    )
+                }
+                drawCircle(Color.White, radius = r + 2f * dp, center = c)
+                drawCircle(if (ri == 0) Color(0xFFFFC83D) else Color(0xFF3D8BFF), radius = r, center = c)
+                drawIntoCanvas { cv ->
+                    if (pl.second > 0) cv.nativeCanvas.drawText(pl.second.toString(), c.x, c.y + 4f * dp, numPaint)
+                    if (pl.first.isNotBlank()) cv.nativeCanvas.drawText(pl.first, c.x, c.y + r + 14f * dp, namePaint)
+                }
             }
         }
     }
@@ -1044,9 +1280,9 @@ private fun GenPanel(kind: String, slot: Int, label: String, onStart: () -> Unit
     Button(
         enabled = !running,
         onClick = onStart,
-        modifier = Modifier.fillMaxWidth().height(56.dp),
+        modifier = Modifier.fillMaxWidth().height(52.dp),
         shape = RoundedCornerShape(16.dp)
-    ) { Text(if (running) "Gerando… (continua em segundo plano)" else label, fontWeight = FontWeight.Bold) }
+    ) { Text(if (running) "Trabalhando… (continua em segundo plano)" else label, fontWeight = FontWeight.Bold) }
     if (job == null || tick < 0) return
     val end = if (job.ok == null) System.currentTimeMillis() else job.finishedAt
     val secs = (end - job.startedAt) / 1000
@@ -1054,18 +1290,18 @@ private fun GenPanel(kind: String, slot: Int, label: String, onStart: () -> Unit
     Panel {
         when (job.ok) {
             null -> {
-                Text("⏳ Gerando… $time", fontWeight = FontWeight.Bold)
+                Text("⏳ Trabalhando… $time", fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(6.dp))
                 LinearProgressIndicator(Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50)), color = C.PRIMARY, trackColor = C.SURFACE2)
                 Text(
-                    if (AiStatus.stage.isNotBlank()) AiStatus.stage else "Montando os dados e consultando a IA…",
+                    if (AiStatus.stage.isNotBlank()) AiStatus.stage else "Montando os dados…",
                     fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp)
                 )
-                Text("Pode trocar de aba ou sair do app: a geração continua.", fontSize = 11.sp, color = C.MUTED)
+                Text("Pode trocar de aba ou sair do app: continua.", fontSize = 11.sp, color = C.MUTED)
             }
             true -> Text("✔ Pronto em $time", color = C.OK, fontWeight = FontWeight.Bold)
             false -> {
-                Text("✘ Falhou após $time", color = C.BAD, fontWeight = FontWeight.Bold)
+                Text("✘ Não deu certo após $time", color = C.BAD, fontWeight = FontWeight.Bold)
                 Text(job.error ?: "erro desconhecido", fontSize = 12.sp, color = C.WARN, modifier = Modifier.padding(top = 4.dp))
             }
         }
@@ -1078,7 +1314,7 @@ private fun SlotTactic(slot: Int, d: SlotData) {
     GenPanel("tactic", slot, "Gerar tática para o próximo jogo") { startGeneration(ctx, "tactic", slot) }
     val plan = d.tactic
     if (plan == null) {
-        Text("Nenhuma tática gerada ainda.", color = C.MUTED, modifier = Modifier.padding(top = 8.dp))
+        Text("Nenhuma tática gerada ainda. A tática é calculada na hora com o seu elenco, a força do rival, o árbitro e o que já deu certo ou errado antes.", color = C.MUTED, modifier = Modifier.padding(top = 8.dp), fontSize = 12.sp)
         return
     }
     val j = try {
@@ -1087,11 +1323,24 @@ private fun SlotTactic(slot: Int, d: SlotData) {
         null
     }
     if (j == null) return
-    Text("Gerada ${ago(plan.at)} — coloque manualmente no jogo:", color = C.MUTED, modifier = Modifier.padding(top = 8.dp, bottom = 6.dp))
+    val forRound = j.optInt("forRound", -1)
+    val curRound = fv(d, K.ROUND).toIntOrNull()
+    if (curRound != null && forRound != curRound) {
+        Text("⚠ Esta tática é da rodada ${if (forRound > 0) forRound else "?"}; o próximo jogo é a rodada $curRound. Gere de novo.", color = C.WARN, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+    }
+    Text("Gerada ${ago(plan.at)} para o jogo contra ${j.optString("rival")} — coloque no jogo:", color = C.MUTED, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp, bottom = 6.dp))
     Panel {
-        Text("Formação ${j.optString("formation")}", fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
-        Text(j.optString("playStyle"), color = C.GOLD, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(bottom = 8.dp))
-        PitchView(j.optString("formation"))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Formação ${j.optString("formation")}", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
+                Text(j.optString("playStyle"), color = C.GOLD, fontWeight = FontWeight.SemiBold)
+                if (j.optBoolean("refined")) Pill("🤖 refinada pela IA")
+            }
+            StyleIcon(j.optString("playStyle"))
+        }
+        Spacer(Modifier.height(8.dp))
+        LineupPitch(j)
+        Text("Os números são a força de cada titular escolhido. Setas: ciano = ataque/pressão, laranja = apoio/recuo.", fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 6.dp))
     }
     Panel {
         Text("Controles", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
@@ -1105,10 +1354,16 @@ private fun SlotTactic(slot: Int, d: SlotData) {
         }
     }
     Panel {
-        Text("Avançadas por setor", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-        KV("⬆ Ataque", j.optString("advAttack"))
-        KV("↔ Meio", j.optString("advMid"))
-        KV("⬇ Defesa", j.optString("advDef"))
+        Text("Avançadas por setor (como no jogo)", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+            for ((label, opt) in listOf("Ataque" to j.optString("advAttack"), "Meio" to j.optString("advMid"), "Defesa" to j.optString("advDef"))) {
+                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                    SectorIcon(opt)
+                    Text(label, fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
+                    Text(opt, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+                }
+            }
+        }
     }
     val ra = j.optJSONArray("rationale")
     if (ra != null && ra.length() > 0) {
@@ -1117,49 +1372,125 @@ private fun SlotTactic(slot: Int, d: SlotData) {
             for (i in 0 until ra.length()) Text("• " + ra.optString(i), fontSize = 13.sp, modifier = Modifier.padding(vertical = 2.dp))
         }
     }
+    val rk = j.optJSONArray("ranking")
+    if (rk != null && rk.length() > 1) {
+        Panel {
+            Text("Outras formações calculadas", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            for (i in 0 until rk.length()) {
+                val r = rk.optJSONArray(i) ?: continue
+                Text("${i + 1}. ${r.optString(0)}  (pontuação ${r.optLong(1)})", fontSize = 12.sp, color = C.MUTED)
+            }
+        }
+    }
+    Spacer(Modifier.height(6.dp))
+    GenPanel("tactic_ai", slot, "Refinar com IA (opcional)") { startGeneration(ctx, "tactic_ai", slot) }
 }
 
 @Composable
 private fun SlotDirector(slot: Int, d: SlotData) {
     val ctx = LocalContext.current
-    Title("Plano local (sem IA)")
-    Panel { for (l in d.baseline) Text("• $l", fontSize = 13.sp, modifier = Modifier.padding(vertical = 2.dp)) }
-    GenPanel("market", slot, "Gerar plano de mercado e treino (IA)") { startGeneration(ctx, "market", slot) }
-    val plan = d.market ?: return
-    val j = try {
-        JSONObject(plan.json)
-    } catch (e: Exception) {
+    val plan = d.marketPlan
+    if (plan == null) {
+        Text("Leia o elenco do SEU time (Plantel no jogo, role a lista) para o diretor montar vendas, compras e treino.", color = C.MUTED)
         return
     }
-    Text("Gerado ${ago(plan.at)}", color = C.MUTED, modifier = Modifier.padding(top = 8.dp))
-    fun list(key: String, label: String): List<String> {
-        val a = j.optJSONArray(key) ?: return emptyList()
-        val out = ArrayList<String>()
-        for (i in 0 until a.length()) {
-            val o = a.optJSONObject(i) ?: continue
-            val extra = if (o.has("trainer")) " (${o.optString("trainer")})" else ""
-            out.add("$label ${o.optString("name")}$extra — ${o.optString("reason")}")
-        }
-        return out
-    }
     Panel {
-        for (l in list("sell", "VENDER") + list("buy", "COMPRAR") + list("train", "TREINAR")) {
-            Text("• $l", fontSize = 13.sp, modifier = Modifier.padding(vertical = 2.dp))
-        }
-        val s = j.optString("summary")
-        if (s.isNotBlank()) Text(s, fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 6.dp))
+        Text("Resumo do diretor", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+        Text(plan.summary, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
+        Text("Preços de venda são estimados pelo valor do jogador; confirme no jogo.", fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
     }
+    if (plan.sell.isNotEmpty()) {
+        Title("🔴 Vender")
+        Panel {
+            for (s in plan.sell) {
+                Text("${s.name}  •  ${s.cat} ${s.strength ?: "?"}  •  ≈ ${s.valueM?.let { "%.1fM".format(it).replace('.', ',') } ?: NI}", fontWeight = FontWeight.SemiBold)
+                Text(s.reason, fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(bottom = 8.dp))
+            }
+        }
+    }
+    if (plan.buy.isNotEmpty()) {
+        Title("🟢 Comprar")
+        Panel {
+            for (b in plan.buy) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("${b.name}  •  ${b.cat} ${b.strength}", fontWeight = FontWeight.SemiBold)
+                    CountPill("+${b.gain}", C.WIN)
+                }
+                Text("%.1fM".format(b.priceM).replace('.', ',') + " — " + b.reason, fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(bottom = 8.dp))
+            }
+        }
+    }
+    if (plan.train.isNotEmpty()) {
+        Title("🔵 Treino")
+        Panel {
+            for (t in plan.train) {
+                Text("${t.name}  →  treinador de ${t.trainer}", fontWeight = FontWeight.SemiBold)
+                Text(t.reason, fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(bottom = 8.dp))
+            }
+        }
+    }
+    val extra = plan.steps.filter { !it.startsWith("Vender") && !it.startsWith("Comprar") && !it.startsWith("Treinar") }
+    if (extra.isNotEmpty()) {
+        Panel { for (e in extra) Text("• $e", fontSize = 12.sp, modifier = Modifier.padding(vertical = 2.dp)) }
+    }
+    if (d.marketNote != null) {
+        Panel {
+            Text("🤖 Comentário da IA", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Text(d.marketNote, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
+        }
+    }
+    GenPanel("market_ai", slot, "Pedir comentário da IA (opcional)") { startGeneration(ctx, "market_ai", slot) }
 }
 
 @Composable
 private fun SlotLearning(d: SlotData) {
-    if (d.learning.isEmpty()) {
-        Text("Sem eventos de aprendizado ainda.", color = C.MUTED)
-        return
-    }
+    data class Row2(val round: Int, val formation: String, val style: String, val rival: String, val result: String?, val score: String)
+    val rows = d.logs.mapNotNull { p ->
+        try {
+            val j = JSONObject(p.json)
+            Row2(
+                j.optInt("round", -1), j.optString("formation"), j.optString("playStyle"), j.optString("rival"),
+                if (j.isNull("result")) null else j.optString("result"),
+                if (j.isNull("scoreMine")) "" else "${j.optInt("scoreMine")}-${j.optInt("scoreOpp")}"
+            )
+        } catch (e: Exception) {
+            null
+        }
+    }.sortedByDescending { it.round }
     Panel {
-        for (l in d.learning) {
-            Text("${fmtTime(l.at)} • ${l.kind}: ${l.text}", fontSize = 12.sp, modifier = Modifier.padding(vertical = 3.dp))
+        Text("O que o app aprendeu com as suas táticas", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+        if (rows.isEmpty()) {
+            Text("Ainda sem histórico. Gere a tática antes de cada jogo: quando o resultado aparecer no calendário, ele entra aqui e passa a pesar na escolha da próxima formação.", fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
+        }
+        val stats = Learning.stats(rows.map { HistRow(it.formation, it.style, it.result) })
+        for (s in stats) {
+            Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(s.formation, fontWeight = FontWeight.Bold, modifier = Modifier.width(80.dp))
+                CountPill("${s.v}V", C.WIN)
+                CountPill("${s.e}E", C.DRAW)
+                CountPill("${s.d}D", C.LOSS)
+                Text("${s.games} jogo(s)", fontSize = 11.sp, color = C.MUTED)
+            }
+        }
+    }
+    if (rows.isNotEmpty()) {
+        Panel {
+            Text("Táticas usadas e resultado", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            for (r in rows.take(12)) {
+                Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                    ResultBadge(r.result)
+                    Spacer(Modifier.width(8.dp))
+                    Text("J${r.round} • ${r.formation} • ${r.style} vs ${r.rival}" + (if (r.score.isNotBlank()) " • ${r.score}" else " • aguardando resultado"), fontSize = 12.sp)
+                }
+            }
+        }
+    }
+    if (d.learning.isNotEmpty()) {
+        Title("Eventos de leitura")
+        Panel {
+            for (l in d.learning) {
+                Text("${fmtTime(l.at)} • ${l.kind}: ${l.text}", fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(vertical = 2.dp))
+            }
         }
     }
 }

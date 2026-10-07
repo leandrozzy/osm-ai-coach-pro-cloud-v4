@@ -20,9 +20,7 @@ data class Tactic(
 )
 
 object TacticValidator {
-    val FORMATIONS = setOf(
-        "4-4-2", "4-3-3", "3-5-2", "4-5-1", "5-3-2", "4-2-3-1", "3-4-3", "5-4-1", "4-1-4-1", "4-3-2-1", "4-1-3-2"
-    )
+    val FORMATIONS: Set<String> get() = Formations.ALL.toSet()
 
     private fun slider(j: JSONObject, key: String): Int? {
         if (!j.has(key) || j.isNull(key)) return null
@@ -195,46 +193,172 @@ object Director {
             "train (lista de {name, trainer: \"avançados\"|\"médios\"|\"defesas\"|\"guarda-redes\", reason}), summary (texto curto).\n\nDADOS:\n" +
             context.toString()
 
-    suspend fun generateTactic(ctx: Context, repo: Repo, slot: Int): Outcome {
-        val c = context(repo, slot)
-        val f = repo.fieldMap(slot)
-        val squadCount = c.getJSONArray("meu_elenco").length()
-        if (f[K.TEAM] == null || squadCount < 8) {
-            val faltam = ArrayList<String>()
-            if (f[K.TEAM] == null) faltam.add("pré-jogo (time do slot)")
-            if (squadCount < 8) faltam.add("meu elenco ($squadCount de pelo menos 8 jogadores lidos — abra o elenco do SEU time e role a lista)")
-            return Outcome(false, null, "Dados insuficientes. Falta ler: " + faltam.joinToString("; ") + ".")
-        }
-        val reply = AiClient.ask(ctx, tacticPrompt(c), null)
-        val json = AiClient.parseJson(reply.text)
-        if (!reply.ok || json == null) return Outcome(false, null, reply.error ?: "IA devolveu JSON inválido.")
-        val (tactic, err) = TacticValidator.validate(json, f[K.REFEREE]?.value)
-        if (tactic == null) return Outcome(false, null, err)
-        val out = TacticValidator.toJson(tactic).toString()
-        repo.dao.putPlan(PlanEntity(slot, "tactic", out, System.currentTimeMillis()))
-        return Outcome(true, out, null)
+    // ------------------------------------------------------------ tática local (instantânea) + aprendizado
+
+    private fun boolOf(v: String?, yes: String, no: String): Boolean? = when (v) {
+        yes -> true
+        no -> false
+        else -> null
     }
 
-    suspend fun generateMarket(ctx: Context, repo: Repo, slot: Int): Outcome {
-        val c = context(repo, slot, true)
-        val f = repo.fieldMap(slot)
-        val squadCount = c.getJSONArray("meu_elenco").length()
-        if (squadCount < 8) {
-            return Outcome(false, null, "Dados insuficientes: só $squadCount jogadores do seu elenco foram lidos. Abra o elenco do SEU time e role a lista inteira.")
+    suspend fun history(repo: Repo, slot: Int): List<HistRow> =
+        repo.dao.tacticLogs(slot).mapNotNull { p ->
+            runCatching {
+                val j = JSONObject(p.json)
+                HistRow(j.getString("formation"), j.optString("playStyle"), if (j.isNull("result")) null else j.optString("result"))
+            }.getOrNull()
         }
-        val reply = AiClient.ask(ctx, marketPrompt(c), null)
+
+    suspend fun tacticInput(repo: Repo, slot: Int): TacticEngine.Input {
+        val f = repo.fieldMap(slot)
+        val players = repo.dao.playersOf(slot).filter { it.owner == "MY" }
+        return TacticEngine.Input(
+            players = players,
+            myStrength = f[K.MY_STRENGTH]?.value?.toIntOrNull(),
+            rivalStrength = f[K.RIVAL_STRENGTH]?.value?.toIntOrNull(),
+            rivalHuman = boolOf(f[K.RIVAL_HUMAN]?.value, "Sim", "Não"),
+            rivalFormation = f[K.RIVAL_FORMATION]?.value,
+            myDef = f[K.MY_DEF]?.value?.toIntOrNull(),
+            rivalAtk = f[K.RIVAL_ATK]?.value?.toIntOrNull(),
+            referee = f[K.REFEREE]?.value,
+            home = boolOf(f[K.HOME]?.value, "Casa", "Fora"),
+            history = history(repo, slot)
+        )
+    }
+
+    /** Preenche o resultado das táticas já usadas quando o jogo daquela rodada aparece no calendário. */
+    suspend fun resolveTacticLogs(repo: Repo, slot: Int) {
+        val logs = repo.dao.tacticLogs(slot)
+        if (logs.isEmpty()) return
+        val matches = repo.dao.matchesOf(slot)
+        for (p in logs) {
+            val j = try { JSONObject(p.json) } catch (e: Exception) { continue }
+            if (!j.isNull("result")) continue
+            val r = j.optInt("round", -1)
+            if (r < 0) continue
+            val m = matches.firstOrNull { it.round == r && it.result != null } ?: continue
+            j.put("result", m.result)
+            j.put("scoreMine", m.scoreMine ?: JSONObject.NULL)
+            j.put("scoreOpp", m.scoreOpp ?: JSONObject.NULL)
+            repo.dao.putPlan(PlanEntity(slot, p.kind, j.toString(), p.at))
+        }
+    }
+
+    private fun lineupJson(rows: List<List<PlayerEntity?>>): JSONArray {
+        val out = JSONArray()
+        for (row in rows) {
+            val r = JSONArray()
+            for (p in row) {
+                r.put(JSONObject().put("n", p?.name?.take(14) ?: "?").put("s", p?.strength ?: 0).put("p", p?.posCode ?: ""))
+            }
+            out.put(r)
+        }
+        return out
+    }
+
+    fun tacticPlanJson(res: TacticEngine.Result, round: Int?, rival: String?, refined: Boolean): JSONObject {
+        val j = TacticValidator.toJson(res.tactic)
+        j.put("lineup", lineupJson(res.rows))
+        j.put("forRound", round ?: -1)
+        j.put("rival", rival ?: NI)
+        j.put("diff", res.diff ?: JSONObject.NULL)
+        j.put("refined", refined)
+        val rk = JSONArray()
+        for ((f, sc) in res.ranking) rk.put(JSONArray().put(f).put(Math.round(sc)))
+        j.put("ranking", rk)
+        return j
+    }
+
+    private fun logJson(t: Tactic, round: Int?, rival: String?, inp: TacticEngine.Input): JSONObject =
+        JSONObject().put("round", round ?: -1).put("rival", rival ?: NI).put("formation", t.formation)
+            .put("playStyle", t.playStyle).put("pressure", t.pressure).put("mentality", t.mentality).put("tempo", t.tempo)
+            .put("myStrength", inp.myStrength ?: JSONObject.NULL).put("rivalStrength", inp.rivalStrength ?: JSONObject.NULL)
+            .put("result", JSONObject.NULL)
+
+    /** Tática calculada por regras e números: instantânea, não depende de IA nem de internet. */
+    suspend fun generateTacticLocal(repo: Repo, slot: Int): Outcome {
+        resolveTacticLogs(repo, slot)
+        val f = repo.fieldMap(slot)
+        val inp = tacticInput(repo, slot)
+        val squad = inp.players.count { it.strength != null }
+        if (squad < 8) {
+            return Outcome(false, null, "Dados insuficientes: só $squad jogadores do seu elenco foram lidos. Abra o Plantel do SEU time e role a lista inteira.")
+        }
+        val res = TacticEngine.recommend(inp) ?: return Outcome(false, null, "Não consegui montar um XI com o elenco lido.")
+        val round = f[K.ROUND]?.value?.toIntOrNull()
+        val rival = f[K.RIVAL_TEAM]?.value
+        val now = System.currentTimeMillis()
+        val json = tacticPlanJson(res, round, rival, false)
+        repo.dao.putPlan(PlanEntity(slot, "tactic", json.toString(), now))
+        repo.dao.putPlan(PlanEntity(slot, "tlog:R${round ?: 0}", logJson(res.tactic, round, rival, inp).toString(), now))
+        return Outcome(true, json.toString(), null)
+    }
+
+    private fun tacticRefinePrompt(context: JSONObject, draft: JSONObject, statsText: String, allowed: List<String>): String =
+        "Você é o analista tático do OSM 26. O rascunho abaixo foi calculado por regras e números (força do XI, confronto de forças, " +
+            "árbitro, histórico). Revise com critério e devolva a tática final em JSON. " +
+            "REGRAS OBRIGATÓRIAS: formation deve ser uma de $allowed; pressure, mentality e tempo (0 a 100) devem ficar a no máximo 15 pontos " +
+            "do rascunho; contra rival bem mais fraco use formação ofensiva; árbitro Rigoroso => tackle Normal. " +
+            "Responda APENAS JSON com as chaves: formation, playStyle, pressure, mentality, tempo, marking, offside, tackle, " +
+            "advAttack, advMid, advDef, rationale (até 4 frases curtas citando números dos dados).\n\n" +
+            "HISTÓRICO DAS SUAS TÁTICAS (resultado real):\n$statsText\n\nRASCUNHO:\n$draft\n\nDADOS:\n$context"
+
+    /** Refinamento opcional por IA, dentro de limites: se sair deles, a tática local é mantida. */
+    suspend fun refineTactic(ctx: Context, repo: Repo, slot: Int): Outcome {
+        val inp = tacticInput(repo, slot)
+        val res = TacticEngine.recommend(inp) ?: return Outcome(false, null, "Gere a tática local primeiro (faltam dados do elenco).")
+        val f = repo.fieldMap(slot)
+        val round = f[K.ROUND]?.value?.toIntOrNull()
+        val rival = f[K.RIVAL_TEAM]?.value
+        val draft = tacticPlanJson(res, round, rival, false)
+        val stats = Learning.stats(inp.history).joinToString("\n") { "${it.formation}: ${it.v}V ${it.e}E ${it.d}D" }.ifBlank { "sem jogos registrados ainda" }
+        val allowed = res.ranking.take(3).map { it.first }
+        val reply = AiClient.ask(ctx, tacticRefinePrompt(context(repo, slot), draft, stats, allowed), null)
+        val json = AiClient.parseJson(reply.text)
+        if (!reply.ok || json == null) return Outcome(false, null, reply.error ?: "IA devolveu JSON inválido. Mantive a tática local.")
+        val (tactic, err) = TacticValidator.validate(json, inp.referee)
+        if (tactic == null) return Outcome(false, null, "$err. Mantive a tática local.")
+        val base = res.tactic
+        if (tactic.formation !in allowed) return Outcome(false, null, "IA sugeriu ${tactic.formation}, fora das 3 melhores opções do cálculo. Mantive a tática local.")
+        if (Math.abs(tactic.pressure - base.pressure) > 15 || Math.abs(tactic.mentality - base.mentality) > 15 || Math.abs(tactic.tempo - base.tempo) > 15) {
+            return Outcome(false, null, "IA fugiu dos limites de pressão/mentalidade/ritmo. Mantive a tática local.")
+        }
+        val lineup = TacticEngine.lineup(tactic.formation, inp.players) ?: return Outcome(false, null, "Sem XI para ${tactic.formation}.")
+        val notes = ArrayList<String>(tactic.notes)
+        notes.addAll(base.notes)
+        val merged = res.copy(tactic = tactic.copy(notes = notes), rows = lineup.first)
+        val out = tacticPlanJson(merged, round, rival, true)
+        val now = System.currentTimeMillis()
+        repo.dao.putPlan(PlanEntity(slot, "tactic", out.toString(), now))
+        repo.dao.putPlan(PlanEntity(slot, "tlog:R${round ?: 0}", logJson(tactic, round, rival, inp).toString(), now))
+        return Outcome(true, out.toString(), null)
+    }
+
+    // ------------------------------------------------------------ mercado / treino
+
+    suspend fun marketPlan(repo: Repo, slot: Int): MarketEngine.Plan? {
+        val f = repo.fieldMap(slot)
+        val mine = repo.dao.playersOf(slot).filter { it.owner == "MY" }
+        if (mine.none { it.strength != null }) return null
+        return MarketEngine.plan(
+            mine, repo.dao.listingsOf(slot), Money.parse(f[K.CASH]?.value), MarketPlanner.sellSlotsLeft(f[K.SELLING]?.value)
+        )
+    }
+
+    /** IA só comenta o plano calculado (não troca jogadores). */
+    suspend fun marketNote(ctx: Context, repo: Repo, slot: Int): Outcome {
+        val plan = marketPlan(repo, slot) ?: return Outcome(false, null, "Leia o elenco do SEU time antes de pedir análise.")
+        val prompt = "Você é o diretor de mercado do OSM 26. O plano abaixo foi calculado por regras (metas 4 ATA, 6 MEI, 6 DEF, 2 GOL; " +
+            "máximo 4 à venda). Comente em até 5 frases curtas: riscos, ordem de execução e o que priorizar para evoluir rápido. " +
+            "NÃO invente jogadores nem preços. Responda APENAS JSON {\"commentary\": \"...\"}.\n\nPLANO:\n" + plan.steps.joinToString("\n") +
+            "\n\nRESUMO: " + plan.summary
+        val reply = AiClient.ask(ctx, prompt, null)
         val json = AiClient.parseJson(reply.text)
         if (!reply.ok || json == null) return Outcome(false, null, reply.error ?: "IA devolveu JSON inválido.")
-        val players = repo.dao.playersOf(slot).filter { it.owner == "MY" }
-        val prices = HashMap<String, Double?>()
-        for (l in repo.dao.listingsOf(slot)) prices[l.nameKey] = Money.parse(l.priceText)
-        val clean = MarketValidator.sanitize(
-            json, players.map { it.nameKey }.toSet(), prices, Money.parse(f[K.CASH]?.value),
-            MarketPlanner.sellSlotsLeft(f[K.SELLING]?.value)
-        )
-        val out = clean.toString()
-        repo.dao.putPlan(PlanEntity(slot, "market", out, System.currentTimeMillis()))
-        return Outcome(true, out, null)
+        val text = json.optString("commentary").trim().take(700)
+        if (text.isBlank()) return Outcome(false, null, "IA não devolveu comentário.")
+        repo.dao.putPlan(PlanEntity(slot, "market", JSONObject().put("aiNote", text).toString(), System.currentTimeMillis()))
+        return Outcome(true, text, null)
     }
 
     /** Plano local, sem IA: o que falta por posição e quem comprar com o caixa atual. */

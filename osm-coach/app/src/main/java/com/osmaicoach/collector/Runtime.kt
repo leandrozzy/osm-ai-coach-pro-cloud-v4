@@ -109,7 +109,11 @@ fun startGeneration(ctx: Context, kind: String, slot: Int) {
     GenState.begin(kind, slot)
     AppScope.scope.launch(Dispatchers.IO) {
         val r = try {
-            if (kind == "tactic") Director.generateTactic(app, Repo(app), slot) else Director.generateMarket(app, Repo(app), slot)
+            when (kind) {
+                "tactic" -> Director.generateTacticLocal(Repo(app), slot)
+                "tactic_ai" -> Director.refineTactic(app, Repo(app), slot)
+                else -> Director.marketNote(app, Repo(app), slot)
+            }
         } catch (e: Exception) {
             Director.Outcome(false, null, e.message ?: e.javaClass.simpleName)
         }

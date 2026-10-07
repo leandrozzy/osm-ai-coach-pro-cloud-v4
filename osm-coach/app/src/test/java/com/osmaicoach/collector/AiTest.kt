@@ -58,6 +58,11 @@ class AiTest {
         assertNull(ModelPicker.pickGemini(listOf("models/gemini-2.5-pro", "models/text-embedding-004")))
     }
 
+    @Test fun geminiRankingGivesFallbackModelsInOrder() {
+        val r = ModelPicker.rankGemini(listOf("models/gemini-2.5-flash", "models/gemini-3-flash", "models/gemini-2.5-flash-lite", "models/gemini-3.8-flash"))
+        assertEquals(listOf("gemini-3.8-flash", "gemini-3-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite"), r)
+    }
+
     @Test fun compatModelSkipsAudioAndPrefersBigLlama() {
         assertEquals("llama-3.3-70b-versatile", ModelPicker.pickCompat(listOf("whisper-large-v3", "llama-3.1-8b-instant", "llama-3.3-70b-versatile")))
         assertEquals("openai/gpt-oss-120b", ModelPicker.pickCompat(listOf("whisper-large-v3", "openai/gpt-oss-120b", "llama-guard-4")))
