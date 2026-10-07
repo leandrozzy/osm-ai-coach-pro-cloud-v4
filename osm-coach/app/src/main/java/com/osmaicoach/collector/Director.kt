@@ -66,6 +66,26 @@ object TacticValidator {
         )
     }
 
+    private val STYLES = listOf("Jogo de passe", "Jogar pelas alas", "Remate à vista", "Contra-ataque", "Bolas longas")
+
+    private fun pickKnown(value: String, options: List<String>, fallback: String): String {
+        val n = Txt.norm(value)
+        for (o in options) if (Txt.norm(o) == n) return o
+        for (o in options) if (n.length >= 5 && (n.contains(Txt.norm(o)) || Txt.norm(o).contains(n))) return o
+        return fallback
+    }
+
+    /** Só aceita nomes de opção que existem no jogo; o resto volta para a escolha calculada. */
+    fun canonical(t: Tactic, base: Tactic): Tactic = t.copy(
+        playStyle = pickKnown(t.playStyle, STYLES, base.playStyle),
+        marking = pickKnown(t.marking, listOf("À zona", "Homem a homem"), base.marking),
+        tackle = pickKnown(t.tackle, listOf("Normal", "Agressivo"), "Normal"),
+        advAttack = pickKnown(t.advAttack, listOf("Atacar apenas", "Ajudar a defender"), base.advAttack),
+        advMid = pickKnown(t.advMid, listOf("Manter posições", "Pressionar à frente", "Ajudar a defesa"), base.advMid),
+        advDef = pickKnown(t.advDef, listOf("Defender atrás"), base.advDef),
+        offside = if (t.offside == "Sim" || t.offside == "Não") t.offside else base.offside
+    )
+
     fun toJson(t: Tactic): JSONObject = JSONObject()
         .put("formation", t.formation).put("playStyle", t.playStyle).put("pressure", t.pressure)
         .put("mentality", t.mentality).put("tempo", t.tempo).put("marking", t.marking)
@@ -222,7 +242,11 @@ object Director {
             rivalAtk = f[K.RIVAL_ATK]?.value?.toIntOrNull(),
             referee = f[K.REFEREE]?.value,
             home = boolOf(f[K.HOME]?.value, "Casa", "Fora"),
-            history = history(repo, slot)
+            history = history(repo, slot),
+            myAtk = f[K.MY_ATK]?.value?.toIntOrNull(),
+            myMid = f[K.MY_MID]?.value?.toIntOrNull(),
+            rivalMid = f[K.RIVAL_MID]?.value?.toIntOrNull(),
+            rivalDef = f[K.RIVAL_DEF]?.value?.toIntOrNull()
         )
     }
 
@@ -305,6 +329,11 @@ object Director {
 
     /** Refinamento opcional por IA, dentro de limites: se sair deles, a tática local é mantida. */
     suspend fun refineTactic(ctx: Context, repo: Repo, slot: Int): Outcome {
+        val curPlan = repo.dao.plan(slot, "tactic")
+        val curRound = repo.fieldMap(slot)[K.ROUND]?.value?.toIntOrNull()
+        val current = curPlan != null && curRound != null &&
+            runCatching { JSONObject(curPlan.json).optInt("forRound", -1) == curRound }.getOrDefault(false)
+        if (!current) return Outcome(false, null, "Gere a tática desta rodada primeiro: a IA só refina uma tática que você já pediu.")
         val inp = tacticInput(repo, slot)
         val res = TacticEngine.recommend(inp) ?: return Outcome(false, null, "Gere a tática local primeiro (faltam dados do elenco).")
         val f = repo.fieldMap(slot)
@@ -316,9 +345,10 @@ object Director {
         val reply = AiClient.ask(ctx, tacticRefinePrompt(context(repo, slot), draft, stats, allowed), null)
         val json = AiClient.parseJson(reply.text)
         if (!reply.ok || json == null) return Outcome(false, null, reply.error ?: "IA devolveu JSON inválido. Mantive a tática local.")
-        val (tactic, err) = TacticValidator.validate(json, inp.referee)
-        if (tactic == null) return Outcome(false, null, "$err. Mantive a tática local.")
+        val (validated, err) = TacticValidator.validate(json, inp.referee)
+        if (validated == null) return Outcome(false, null, "$err. Mantive a tática local.")
         val base = res.tactic
+        val tactic = TacticValidator.canonical(validated, base)
         if (tactic.formation !in allowed) return Outcome(false, null, "IA sugeriu ${tactic.formation}, fora das 3 melhores opções do cálculo. Mantive a tática local.")
         if (Math.abs(tactic.pressure - base.pressure) > 15 || Math.abs(tactic.mentality - base.mentality) > 15 || Math.abs(tactic.tempo - base.tempo) > 15) {
             return Outcome(false, null, "IA fugiu dos limites de pressão/mentalidade/ritmo. Mantive a tática local.")

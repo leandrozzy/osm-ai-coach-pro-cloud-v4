@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.PowerManager
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -48,6 +49,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -172,6 +174,7 @@ private fun typeLabel(name: String): String = when (name) {
     "TRAINING" -> "Treinamento"
     "TACTIC" -> "Tática"
     "REPORT" -> "Relatório"
+    "STADIUM" -> "Meu estádio"
     "OTHER_OSM" -> "Outra tela do OSM"
     "NON_OSM" -> "Fora do OSM / anúncio"
     "NOISE" -> "Transição"
@@ -369,7 +372,11 @@ private suspend fun loadToday(ctx: Context): TodayData {
 private fun App() {
     var tab by remember { mutableIntStateOf(0) }
     var openSlot by remember { mutableIntStateOf(0) }
+    var openTab by remember { mutableIntStateOf(0) }
     val items = listOf("🏠" to "Hoje", "🕘" to "Sessões", "⚽" to "Slots", "🧠" to "Diretor", "⚙️" to "Ajustes")
+    // Botão Voltar do Android: fecha o slot aberto, depois volta para Hoje (em vez de fechar o app).
+    BackHandler(enabled = openSlot > 0) { openSlot = 0 }
+    BackHandler(enabled = openSlot == 0 && tab != 0) { tab = 0 }
     Scaffold(
         containerColor = C.BG,
         bottomBar = {
@@ -387,10 +394,14 @@ private fun App() {
     ) { pad ->
         Box(Modifier.padding(pad).fillMaxSize()) {
             when (tab) {
-                0 -> TodayTab(onGoSettings = { tab = 4 }, onOpenSlot = { tab = 2; openSlot = it })
+                0 -> TodayTab(onGoSettings = { tab = 4 }, onOpenSlot = { slot, t -> tab = 2; openSlot = slot; openTab = t })
                 1 -> SessionsTab()
-                2 -> if (openSlot > 0) SlotScreen(openSlot, 0) { openSlot = 0 } else SlotsTab { openSlot = it }
-                3 -> if (openSlot > 0) SlotScreen(openSlot, 5) { openSlot = 0 } else DirectorTab { openSlot = it }
+                2 -> if (openSlot > 0) {
+                    key(openSlot, openTab) { SlotScreen(openSlot, openTab) { openSlot = 0 } }
+                } else SlotsTab { slot, t -> openSlot = slot; openTab = t }
+                3 -> if (openSlot > 0) {
+                    key(openSlot, openTab) { SlotScreen(openSlot, openTab) { openSlot = 0 } }
+                } else DirectorTab { slot, t -> openSlot = slot; openTab = t }
                 else -> SettingsTab()
             }
         }
@@ -480,7 +491,7 @@ private fun ProcessCard() {
 }
 
 @Composable
-private fun SlotCard(s: SlotSummary, onClick: () -> Unit) {
+private fun SlotCard(s: SlotSummary, onClick: () -> Unit, onTactic: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).clickable { onClick() },
         shape = RoundedCornerShape(18.dp),
@@ -508,7 +519,7 @@ private fun SlotCard(s: SlotSummary, onClick: () -> Unit) {
                 if (s.nextAt != null) {
                     Row(Modifier.padding(top = 2.dp)) {
                         Pill("⏱ " + countdown(s.nextAt))
-                        Pill(if (s.tacticReady) "Tática ✔" else "Tática pendente", s.tacticReady)
+                        Box(Modifier.clickable { onTactic() }) { Pill(if (s.tacticReady) "Tática ✔" else "Gerar tática →", s.tacticReady) }
                     }
                 }
                 Spacer(Modifier.height(6.dp))
@@ -523,7 +534,7 @@ private fun SlotCard(s: SlotSummary, onClick: () -> Unit) {
 }
 
 @Composable
-private fun TodayTab(onGoSettings: () -> Unit, onOpenSlot: (Int) -> Unit) {
+private fun TodayTab(onGoSettings: () -> Unit, onOpenSlot: (Int, Int) -> Unit) {
     val ctx = LocalContext.current
     val tick = rememberTick(1000L)
     val scope = rememberCoroutineScope()
@@ -591,19 +602,19 @@ private fun TodayTab(onGoSettings: () -> Unit, onOpenSlot: (Int) -> Unit) {
             Title("Próximos jogos")
             Panel {
                 for (u in upcoming) {
-                    Row(Modifier.fillMaxWidth().clickable { onOpenSlot(u.slot) }.padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.fillMaxWidth().clickable { onOpenSlot(u.slot, 4) }.padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("S${u.slot} • ${u.title}" + (if (u.rival != null) " vs ${u.rival}" else ""), fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                             Text(countdown(u.nextAt!!), fontSize = 11.sp, color = C.MUTED)
                         }
-                        Pill(if (u.tacticReady) "Tática ✔" else "Gerar tática", u.tacticReady)
+                        Pill(if (u.tacticReady) "Tática ✔" else "Gerar tática →", u.tacticReady)
                     }
                 }
             }
         }
 
         Title("Seus slots")
-        for (s in data.slots) SlotCard(s) { onOpenSlot(s.slot) }
+        for (s in data.slots) SlotCard(s, { onOpenSlot(s.slot, 0) }, { onOpenSlot(s.slot, 4) })
 
         Title("Últimos eventos")
         Panel {
@@ -732,25 +743,119 @@ private fun SessionsTab() {
 }
 
 @Composable
-private fun SlotsTab(onOpen: (Int) -> Unit) {
+private fun SlotsTab(onOpen: (Int, Int) -> Unit) {
     val ctx = LocalContext.current
     val tick = rememberTick()
     val data = rememberLoaded(TodayData(), tick, null) { loadToday(ctx) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
         Text("Slots", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
-        for (s in data.slots) SlotCard(s) { onOpen(s.slot) }
+        for (s in data.slots) SlotCard(s, { onOpen(s.slot, 0) }, { onOpen(s.slot, 4) })
     }
 }
 
+data class DirSlot(
+    val s: SlotSummary,
+    val forecast: String,
+    val sells: List<String>,
+    val buys: List<String>,
+    val trains: List<String>,
+    val radar: String?,
+    val cash: String,
+    val sellSlots: Int
+)
+
+private suspend fun loadDirector(ctx: Context): List<DirSlot> {
+    val repo = Repo(ctx)
+    val today = loadToday(ctx)
+    val out = ArrayList<DirSlot>()
+    for (s in today.slots) {
+        val f = repo.fieldMap(s.slot)
+        val inp = Director.tacticInput(repo, s.slot)
+        val ready = inp.players.count { it.strength != null } >= 8
+        val res = if (ready) TacticEngine.recommend(inp) else null
+        val forecast = if (res == null) "faltam dados do elenco (leia o Plantel do seu time)" else {
+            val d = res.diff
+            res.tactic.formation + " • " + res.tactic.playStyle + (if (d != null) " • força " + (if (d >= 0) "+" else "") + d else "")
+        }
+        val plan = Director.marketPlan(repo, s.slot)
+        val top = plan?.radar?.maxByOrNull { it.gain }
+        out.add(
+            DirSlot(
+                s = s,
+                forecast = forecast,
+                sells = plan?.sell?.map { it.name + " (" + it.cat + " " + (it.strength ?: "?") + ")" } ?: emptyList(),
+                buys = plan?.buy?.map { it.name + " (+" + it.gain + ")" } ?: emptyList(),
+                trains = plan?.train?.map { it.name + " → " + it.trainer } ?: emptyList(),
+                radar = top?.let { it.cat + ": " + it.name + " (" + it.strength + ")" + (if (it.affordable) " ✔ cabe no caixa" else " — falta caixa") },
+                cash = f[K.CASH]?.value ?: NI,
+                sellSlots = MarketPlanner.sellSlotsLeft(f[K.SELLING]?.value)
+            )
+        )
+    }
+    return out
+}
+
 @Composable
-private fun DirectorTab(onOpen: (Int) -> Unit) {
+private fun DirectorTab(onOpen: (Int, Int) -> Unit) {
     val ctx = LocalContext.current
     val tick = rememberTick(3000L)
-    val data = rememberLoaded(TodayData(), tick, null) { loadToday(ctx) }
+    val list = rememberLoaded(emptyList<DirSlot>(), tick, null) { loadDirector(ctx) }
+    val now = System.currentTimeMillis()
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
         Text("Diretor", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
-        Text("Escolha o slot para gerar a tática e o plano de mercado. A IA só usa dados já lidos; o que for NI não é presumido.", color = C.MUTED, fontSize = 12.sp)
-        for (s in data.slots) SlotCard(s) { onOpen(s.slot) }
+        Text("Visão geral dos 4 slots: o que fazer e em que ordem, tudo calculado com os dados já lidos.", color = C.MUTED, fontSize = 12.sp)
+
+        // IA sempre no topo
+        Panel {
+            Text("🤖 IA", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            KV("Chamadas ao Gemini hoje", AiClient.usedToday(ctx).toString())
+            KV("Último erro", Diag.lastError ?: "nenhum")
+            Text("Comentário e refino da IA: abra o slot → abas Tática e Diretor (botões no topo).", fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
+        }
+
+        val upcoming = list.filter { it.s.nextAt != null && it.s.nextAt > now - 7200000L }.sortedBy { it.s.nextAt }
+        if (upcoming.isNotEmpty()) {
+            Title("Agenda")
+            Panel {
+                for (u in upcoming) {
+                    Row(Modifier.fillMaxWidth().clickable { onOpen(u.s.slot, 4) }.padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("S${u.s.slot} • ${u.s.title}" + (if (u.s.rival != null) " vs ${u.s.rival}" else ""), fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            Text(countdown(u.s.nextAt!!) + " • previsão: " + u.forecast, fontSize = 11.sp, color = C.MUTED)
+                        }
+                        Pill(if (u.s.tacticReady) "Tática ✔" else "Gerar →", u.s.tacticReady)
+                    }
+                }
+            }
+        }
+
+        for (d in list) {
+            Panel {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Crest(d.s.slot, 44.dp)
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("S${d.s.slot} • ${d.s.title}", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Row {
+                            if (d.s.rival != null) Pill("vs ${d.s.rival}")
+                            if (d.s.human != null) Pill(if (d.s.human == "Sim") "Humano" else "CPU", d.s.human == "Sim")
+                        }
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                Text("⚽ Previsão de tática: ${d.forecast}", fontSize = 13.sp)
+                Text("💰 Caixa ${d.cash} • vagas para vender: ${d.sellSlots}", fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 2.dp))
+                Text("🔴 Vender: " + (if (d.sells.isEmpty()) "nada por enquanto" else d.sells.joinToString(", ")), fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
+                Text("🟢 Comprar: " + (if (d.buys.isEmpty()) "nada que caiba no caixa" else d.buys.joinToString(", ")), fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
+                Text("🔵 Treino: " + (if (d.trains.isEmpty()) "treinadores ocupados" else d.trains.joinToString(", ")), fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
+                if (d.radar != null) Text("📡 Radar: ${d.radar}", fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 2.dp))
+                Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { onOpen(d.s.slot, 4) }, modifier = Modifier.weight(1f)) { Text("Tática", fontSize = 12.sp) }
+                    OutlinedButton(onClick = { onOpen(d.s.slot, 5) }, modifier = Modifier.weight(1f)) { Text("Plano completo", fontSize = 12.sp) }
+                }
+            }
+        }
+        Spacer(Modifier.height(16.dp))
     }
 }
 
@@ -832,7 +937,8 @@ private fun SlotSummaryTab(d: SlotData) {
             "Próxima rodada" to fv(d, K.ROUND),
             "Posição na liga" to fv(d, K.LEAGUE_POS),
             "Pontos" to fv(d, K.POINTS),
-            "Caixa" to fv(d, K.CASH)
+            "Caixa" to fv(d, K.CASH),
+            "Meu estádio" to fv(d, K.MY_STADIUM)
         )
     )
     if (c != null) {
@@ -868,6 +974,13 @@ private fun ForceBox(label: String, value: String, color: Color) {
 private fun SlotPregame(slot: Int, d: SlotData) {
     val ctx = LocalContext.current
     val at = fv(d, K.MATCH_AT).toLongOrNull()
+    // IA sempre no topo
+    OutlinedButton(
+        onClick = { startReadLatest(ctx, slot) },
+        enabled = !ProcessState.running,
+        modifier = Modifier.fillMaxWidth()
+    ) { Text("🤖 Ler a análise do rival com IA agora") }
+    ProcessCard()
     Section(
         "Jogo",
         listOf(
@@ -906,12 +1019,6 @@ private fun SlotPregame(slot: Int, d: SlotData) {
             "Bônus de estádio" to fv(d, K.STADIUM_BONUS)
         )
     )
-    OutlinedButton(
-        onClick = { startReadLatest(ctx, slot) },
-        enabled = !ProcessState.running,
-        modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
-    ) { Text("Ler a análise do rival com IA agora") }
-    ProcessCard()
     Text(
         "NI = ainda não lido. Formação, força e setores do rival vêm do elenco dele. Plano, marcação, impedimento e desarme vêm da análise do rival: abra-a no jogo, deixe a tela parada por 3 segundos e toque no botão acima (ou ao encerrar a captura).",
         fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 6.dp)
@@ -1334,8 +1441,15 @@ private fun SlotTactic(slot: Int, d: SlotData) {
     val forRound = j.optInt("forRound", -1)
     val curRound = fv(d, K.ROUND).toIntOrNull()
     if (curRound != null && forRound != curRound) {
-        Text("⚠ Esta tática é da rodada ${if (forRound > 0) forRound else "?"}; o próximo jogo é a rodada $curRound. Gere de novo.", color = C.WARN, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+        Text(
+            "⚠ A tática guardada é de outra rodada (${if (forRound > 0) forRound else "?"}); o próximo jogo é a rodada $curRound. Toque em “Gerar tática” para criar a desta rodada.",
+            color = C.WARN, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp)
+        )
+        return
     }
+    // IA sempre no topo
+    Spacer(Modifier.height(8.dp))
+    GenPanel("tactic_ai", slot, "🤖 Refinar com IA (opcional)") { startGeneration(ctx, "tactic_ai", slot) }
     Text("Gerada ${ago(plan.at)} para o jogo contra ${j.optString("rival")} — coloque no jogo:", color = C.MUTED, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp, bottom = 6.dp))
     Panel {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -1422,8 +1536,6 @@ private fun SlotTactic(slot: Int, d: SlotData) {
             }
         }
     }
-    Spacer(Modifier.height(6.dp))
-    GenPanel("tactic_ai", slot, "Refinar com IA (opcional)") { startGeneration(ctx, "tactic_ai", slot) }
 }
 
 @Composable
@@ -1433,6 +1545,14 @@ private fun SlotDirector(slot: Int, d: SlotData) {
     if (plan == null) {
         Text("Leia o elenco do SEU time (Plantel no jogo, role a lista) para o diretor montar vendas, compras e treino.", color = C.MUTED)
         return
+    }
+    // IA sempre no topo
+    GenPanel("market_ai", slot, "🤖 Pedir comentário da IA (opcional)") { startGeneration(ctx, "market_ai", slot) }
+    if (d.marketNote != null) {
+        Panel {
+            Text("🤖 Comentário da IA", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Text(d.marketNote, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
+        }
     }
     Panel {
         Text("Resumo do diretor", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
@@ -1488,13 +1608,6 @@ private fun SlotDirector(slot: Int, d: SlotData) {
     if (extra.isNotEmpty()) {
         Panel { for (e in extra) Text("• $e", fontSize = 12.sp, modifier = Modifier.padding(vertical = 2.dp)) }
     }
-    if (d.marketNote != null) {
-        Panel {
-            Text("🤖 Comentário da IA", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-            Text(d.marketNote, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
-        }
-    }
-    GenPanel("market_ai", slot, "Pedir comentário da IA (opcional)") { startGeneration(ctx, "market_ai", slot) }
 }
 
 @Composable

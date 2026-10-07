@@ -72,6 +72,28 @@ class EngineTest {
         assertNull(TacticEngine.lineup("9-9-9", squad()))
     }
 
+    @Test fun evenMatchAgainstHumanKeepsFourDefenders() {
+        val inp = TacticEngine.Input(squad(), 74, 73, true, "4-3-3 B", null, null, null, false, emptyList())
+        val r = TacticEngine.recommend(inp)!!
+        val lines = Formations.lines(r.tactic.formation)
+        assertEquals(4, lines.first())
+        assertTrue(lines.last() <= 3)
+        assertEquals("Jogo de passe", r.tactic.playStyle)
+    }
+
+    @Test fun sectorAdvantageInMidfieldFavorsMoreMidfielders() {
+        val base = TacticEngine.Input(squad(), 74, 73, null, null, null, null, null, null, emptyList())
+        val withEdge = base.copy(myMid = 90, rivalMid = 70)
+        val r = TacticEngine.recommend(withEdge)!!
+        val lines = Formations.lines(r.tactic.formation)
+        assertTrue(10 - lines.first() - lines.last() >= 3)
+        assertTrue(r.tactic.notes.any { it.contains("Meio-campo") })
+    }
+
+    @Test fun underdogPlaysCounterAttack() {
+        assertEquals("Contra-ataque", TacticEngine.recommend(input(70, 90))!!.tactic.playStyle)
+    }
+
     @Test fun learningStatsCountOnlyResolvedGames() {
         val h = listOf(HistRow("4-3-3", "a", "V"), HistRow("4-3-3", "a", "E"), HistRow("4-4-2", "a", "D"), HistRow("4-4-2", "a", null))
         val s = Learning.stats(h)

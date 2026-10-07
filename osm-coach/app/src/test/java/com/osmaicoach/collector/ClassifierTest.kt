@@ -37,6 +37,19 @@ class ClassifierTest {
         assertEquals(ScreenType.PREGAME, ScreenClassifier.classify(o, true))
     }
 
+    @Test fun openSideMenuDoesNotTurnAnyScreenIntoMarket() {
+        val o = Fx.ocr(
+            Fx.line("Plantel", 0.9f, 0.3f), Fx.line("Equipa inicial", 0.9f, 0.35f, 0.1f), Fx.line("Tática", 0.9f, 0.4f),
+            Fx.line("Especialistas", 0.9f, 0.45f), Fx.line("Lista de transferências", 0.9f, 0.55f, 0.15f), Fx.line("Olheiro", 0.9f, 0.6f)
+        )
+        assertEquals(ScreenType.OTHER_OSM, ScreenClassifier.classify(o, true))
+    }
+
+    @Test fun stadiumScreen() {
+        val o = Fx.ocr(Fx.line("Capacidade", 0.5f, 0.3f), Fx.line("Nível 2", 0.5f, 0.35f), Fx.line("+414K receitas de bilheteria", 0.5f, 0.42f, 0.3f), Fx.line("Estádio", 0.2f, 0.1f))
+        assertEquals(ScreenType.STADIUM, ScreenClassifier.classify(o, true))
+    }
+
     @Test fun trainingPickerIsNotSquad() {
         val o = Fx.ocr(Fx.line("Seleciona um Avançado para treinar", 0.5f, 0.1f, 0.3f), Fx.line("Jogador", 0.1f, 0.2f), Fx.line("Idade", 0.55f, 0.2f), Fx.line("Valor", 0.9f, 0.2f))
         assertEquals(ScreenType.TRAINING, ScreenClassifier.classify(o, true))

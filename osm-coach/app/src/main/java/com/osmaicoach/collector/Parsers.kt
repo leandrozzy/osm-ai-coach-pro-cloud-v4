@@ -170,14 +170,22 @@ object Parsers {
         val owner = head.firstOrNull { Txt.letters(it.text) >= 3 && !Txt.norm(it.text).startsWith("nota") }
         val nick = if (owner != null) head.firstOrNull { it !== owner && it.yc > owner.yc && Txt.letters(it.text) >= 3 } else null
 
-        // Bolhas de força por setor + força geral.
-        val labels = mapOf("gr" to "x.gol", "def" to "x.def", "med" to "x.mid", "ata" to "x.atk")
+        // Bolhas de força por setor (GOL, DEF, MEI, ATA): lidas pela POSIÇÃO, porque o rótulo pequeno o OCR erra.
+        val bubbleX = listOf(0.631f, 0.676f, 0.721f, 0.766f)
+        val bubbleKeys = listOf("x.gol", "x.def", "x.mid", "x.atk")
         for (t in o.tokens) {
-            if (t.yc !in 0.20f..0.30f || t.xc !in 0.58f..0.80f) continue
-            val key = labels[Txt.norm(t.text)] ?: continue
-            val v = o.tokens.filter { intTok(it) != null && abs(it.xc - t.xc) < 0.03f && it.yc > t.yc && it.yc <= t.yc + 0.08f }
-                .mapNotNull { intTok(it) }.firstOrNull { it in 30..130 }
-            if (v != null) f[key] = Reading(v.toString(), 0.85)
+            val n = intTok(t) ?: continue
+            if (n !in 30..130 || t.yc !in 0.24f..0.31f || t.xc !in 0.60f..0.80f) continue
+            var bi = -1
+            var bd = 1f
+            for (i in bubbleX.indices) {
+                val dd = abs(t.xc - bubbleX[i])
+                if (dd < bd) {
+                    bd = dd
+                    bi = i
+                }
+            }
+            if (bi >= 0 && bd <= 0.022f) f[bubbleKeys[bi]] = Reading(n.toString(), 0.85)
         }
         val equipa = o.tokens.firstOrNull { Txt.norm(it.text) == "equipa" && it.yc in 0.24f..0.34f }
         if (equipa != null) {
@@ -454,6 +462,24 @@ object Parsers {
             if (m != null) f[K.STADIUM] = Reading("Nível " + m.groupValues[1], conf)
         }
         return Extraction(ScreenType.REPORT, fields = f, needsAi = f.size < 2)
+    }
+
+    /** Meu estádio: níveis por item (Capacidade etc.) e receita de bilheteria. */
+    fun stadium(o: OcrResult): Extraction {
+        val f = LinkedHashMap<String, Reading>()
+        val parts = ArrayList<String>()
+        for (ln in o.lines) {
+            val m = Regex("nivel\\s*(\\d{1,2})").find(Txt.norm(ln.text)) ?: continue
+            val label = o.lines.filter {
+                it !== ln && it.yc < ln.yc && ln.yc - it.yc <= 0.12f && abs(it.xc - ln.xc) <= 0.15f &&
+                    Txt.letters(it.text) >= 4 && !Txt.norm(it.text).contains("nivel")
+            }.maxByOrNull { it.yc }
+            parts.add((label?.text?.trim() ?: "Item") + ": Nível " + m.groupValues[1])
+        }
+        val rev = Regex("(\\d{1,3}(?:[.,]\\d{1,2})?\\s*[km])\\s*receitas?").find(Txt.norm(o.fullText))
+        if (rev != null) parts.add("receita +" + rev.groupValues[1].replace(" ", "").uppercase())
+        if (parts.isNotEmpty()) f[K.MY_STADIUM] = Reading(parts.distinct().joinToString(" • "), 0.75)
+        return Extraction(ScreenType.STADIUM, fields = f)
     }
 
     /** Tela com cara de relatório/análise do adversário (será lida pela IA, que confirma se é mesmo). */

@@ -7,7 +7,7 @@ const val OSM_PACKAGE = "com.gamebasics.osm"
 const val NI = "NI"
 const val MY_NICK = "leandrozzy"
 
-enum class ScreenType { HUB, PREGAME, SQUAD, CALENDAR, MARKET, TRAINING, TACTIC, REPORT, OTHER_OSM, NOISE, NON_OSM }
+enum class ScreenType { HUB, PREGAME, SQUAD, CALENDAR, MARKET, TRAINING, TACTIC, REPORT, STADIUM, OTHER_OSM, NOISE, NON_OSM }
 
 /** Coordenadas sempre normalizadas (0..1) em relação à largura/altura da captura. */
 data class OcrToken(val text: String, val l: Float, val t: Float, val r: Float, val b: Float) {
@@ -107,6 +107,7 @@ object K {
     const val REFEREE_RAW = "refereeRaw"
     const val STADIUM = "stadium"
     const val STADIUM_BONUS = "stadiumBonus"
+    const val MY_STADIUM = "my.stadium"
     const val SELLING = "market.selling"
     const val MY_STRENGTH = "my.strength"
     const val MY_VALUE = "my.value"

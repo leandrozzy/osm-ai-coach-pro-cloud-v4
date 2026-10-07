@@ -51,6 +51,7 @@ class Repo(private val ctx: Context) {
             ScreenType.CALENDAR -> applyCalendar(slot, ex, source, now)
             ScreenType.MARKET -> applyMarket(slot, ex, source, now)
             ScreenType.REPORT -> putFields(slot, ex.fields, source, now)
+            ScreenType.STADIUM -> putFields(slot, ex.fields, source, now)
             else -> 0
         }
     }
@@ -134,12 +135,18 @@ class Repo(private val ctx: Context) {
             var key = Txt.key(p.name)
             if (existing.none { it.nameKey == key }) {
                 val near = existing.firstOrNull { it.age == p.age && Txt.sim(it.nameKey, key) >= 0.88 }
-                if (near != null) key = near.nameKey
+                // mesmo jogador lido com nome ilegível: mesma idade, força e posição, e algum dos nomes é lixo de OCR
+                val twin = existing.firstOrNull {
+                    p.age != null && it.age == p.age && p.strength != null && it.strength == p.strength && it.cat == p.cat &&
+                        (it.valueText == null || p.valueText == null || it.valueText == p.valueText) &&
+                        (looksGarbled(it.name) || looksGarbled(p.name))
+                }
+                if (near != null) key = near.nameKey else if (twin != null) key = twin.nameKey
             }
             val old = dao.player(slot, owner, key)
             val n = PlayerEntity(
                 slotId = slot, owner = owner, nameKey = key,
-                name = old?.name ?: p.name,
+                name = chooseName(old?.name, p.name),
                 age = p.age ?: old?.age,
                 posCode = p.posCode ?: old?.posCode,
                 cat = p.cat ?: old?.cat,
@@ -189,8 +196,19 @@ class Repo(private val ctx: Context) {
         }
 
         val ot = ex.ownerTeam
-        if (ot == null || myTeam == null || Txt.sim(Txt.key(ot), Txt.key(myTeam)) < 0.8) {
-            if (ex.matches.isNotEmpty()) learn(slot, "calendário", "Calendário de outro time ou sem dono (${ot ?: "?"}) ignorado.", now)
+        var accept = false
+        if (myTeam != null) {
+            if (ot != null) {
+                accept = Txt.sim(Txt.key(ot), Txt.key(myTeam)) >= 0.8
+            } else {
+                // Sem o título visível (lista rolada): é o MEU calendário se nenhum card mostra o meu time como adversário.
+                val mk = Txt.key(myTeam)
+                val seesMe = ex.matches.any { it.opponent != null && Txt.sim(Txt.key(it.opponent), mk) >= 0.85 }
+                accept = ex.matches.isNotEmpty() && !seesMe
+            }
+        }
+        if (!accept) {
+            if (ex.matches.isNotEmpty()) learn(slot, "calendário", "Calendário de outro time ignorado (${ot ?: "sem título"}).", now)
             return changed
         }
         for (m in ex.matches) {
@@ -241,11 +259,50 @@ class Repo(private val ctx: Context) {
         return changed
     }
 
+    private fun looksGarbled(name: String): Boolean =
+        Regex("^[a-z][A-Z]").containsMatchIn(name) || Txt.letters(name) < 3
+
+    private fun chooseName(old: String?, incoming: String): String {
+        if (old == null) return incoming
+        return if (looksGarbled(old) && !looksGarbled(incoming)) incoming else old
+    }
+
+    /** Apaga jogadores "fantasma" (nome ilegível) que repetem outro jogador com mesma idade, força e posição. */
+    private suspend fun dedupeSquads() {
+        for (slot in 1..4) {
+            val mine = dao.playersOf(slot).filter { it.owner == "MY" }
+            for (bad in mine) {
+                if (!looksGarbled(bad.name)) continue
+                val real = mine.firstOrNull {
+                    it.nameKey != bad.nameKey && !looksGarbled(it.name) && it.age != null && it.age == bad.age &&
+                        it.strength != null && it.strength == bad.strength && it.cat == bad.cat &&
+                        (it.valueText == null || bad.valueText == null || it.valueText == bad.valueText)
+                }
+                if (real != null) dao.deletePlayer(slot, "MY", bad.nameKey)
+            }
+        }
+    }
+
+    /** Táticas guardadas por versões antigas (sem rodada) não valem mais e não podem aparecer como "prontas". */
+    private suspend fun dropStaleTactics() {
+        for (slot in 1..4) {
+            val p = dao.plan(slot, "tactic") ?: continue
+            val has = try { org.json.JSONObject(p.json).optInt("forRound", -1) > 0 } catch (e: Exception) { false }
+            if (!has) dao.deletePlan(slot, "tactic")
+        }
+    }
+
     /** Remove dados importados do app antigo (eram inválidos). Os dados novos só vêm de leitura real. */
     suspend fun purgeLegacy(): Int {
         val prefs = ctx.getSharedPreferences("collector_runtime", Context.MODE_PRIVATE)
         val removed = dao.deleteLegacyFields()
         prefs.edit().putBoolean("legacy_imported", true).apply()
+        try {
+            dedupeSquads()
+            dropStaleTactics()
+        } catch (e: Exception) {
+            Diag.lastError = "Limpeza: " + (e.message ?: e.javaClass.simpleName)
+        }
         return removed
     }
 }

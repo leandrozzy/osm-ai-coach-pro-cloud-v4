@@ -140,6 +140,12 @@ interface CoachDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun putPlayer(p: PlayerEntity)
 
+    @Query("DELETE FROM players WHERE slotId = :slot AND owner = :owner AND nameKey = :nameKey")
+    suspend fun deletePlayer(slot: Int, owner: String, nameKey: String)
+
+    @Query("DELETE FROM plans WHERE slotId = :slot AND kind = :kind")
+    suspend fun deletePlan(slot: Int, kind: String)
+
     @Query("DELETE FROM players WHERE slotId = :slot AND owner = 'RIVAL'")
     suspend fun deleteRivalPlayers(slot: Int)
 

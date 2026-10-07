@@ -58,6 +58,24 @@ class AiTest {
         assertNull(ModelPicker.pickGemini(listOf("models/gemini-2.5-pro", "models/text-embedding-004")))
     }
 
+    @Test fun visionModelIsFoundOnlyWhenTheProviderHasOne() {
+        assertEquals(
+            "meta-llama/llama-4-scout-17b-16e-instruct",
+            ModelPicker.pickCompatVision(listOf("llama-3.3-70b-versatile", "meta-llama/llama-4-scout-17b-16e-instruct"))
+        )
+        assertNull(ModelPicker.pickCompatVision(listOf("llama-3.3-70b-versatile", "whisper-large-v3")))
+    }
+
+    @Test fun onlyGameOptionNamesSurviveCanonicalization() {
+        val base = Tactic("4-3-3", "Jogo de passe", 60, 60, 60, "À zona", "Não", "Normal", "Atacar apenas", "Manter posições", "Defender atrás", emptyList())
+        val ai = base.copy(playStyle = "Contra-ataque", tackle = "Combate", advAttack = "Apenas atacar", marking = "Homem a homem")
+        val c = TacticValidator.canonical(ai, base)
+        assertEquals("Contra-ataque", c.playStyle)
+        assertEquals("Normal", c.tackle)
+        assertEquals("Atacar apenas", c.advAttack)
+        assertEquals("Homem a homem", c.marking)
+    }
+
     @Test fun geminiRankingGivesFallbackModelsInOrder() {
         val r = ModelPicker.rankGemini(listOf("models/gemini-2.5-flash", "models/gemini-3-flash", "models/gemini-2.5-flash-lite", "models/gemini-3.8-flash"))
         assertEquals(listOf("gemini-3.8-flash", "gemini-3-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite"), r)

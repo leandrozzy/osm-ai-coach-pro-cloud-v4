@@ -36,7 +36,11 @@ object TacticEngine {
         val rivalAtk: Int?,
         val referee: String?,
         val home: Boolean?,
-        val history: List<HistRow>
+        val history: List<HistRow>,
+        val myAtk: Int? = null,
+        val myMid: Int? = null,
+        val rivalMid: Int? = null,
+        val rivalDef: Int? = null
     )
 
     private data class Sliders(val mentality: Int, val pressure: Int, val tempo: Int, val bucket: String)
@@ -92,10 +96,13 @@ object TacticEngine {
         return Pair(rows, sum)
     }
 
-    private fun bias(f: String, diff: Int?, rivalFw: Int?, history: List<HistRow>): Double {
+    private fun gap(a: Int, b: Int): Int = if (a >= b) a - b else b - a
+
+    private fun bias(f: String, diff: Int?, rivalFw: Int?, inp: Input): Double {
         val lines = Formations.lines(f)
         val d = lines.first()
         val k = lines.last()
+        val m = 10 - d - k
         var b = 0.0
         if (diff != null) {
             if (diff >= 15) {
@@ -107,17 +114,37 @@ object TacticEngine {
                 if (d < 4) b -= 6.0
                 if (k > 3) b -= 8.0
             } else if (diff >= -4) {
-                if (f == "4-2-3-1" || f == "4-4-2") b += 2.0
-                if (k > 3) b -= 6.0
-                if (d < 4) b -= 3.0
+                // parelho: formas equilibradas, sempre com 4 defensores
+                if (f == "4-3-3" || f == "4-4-2" || f == "4-2-3-1") b += 3.0
+                if (d != 4) b -= 8.0
+                if (k > 3) b -= 8.0
             } else if (diff >= -14) {
                 b += (d - 4) * 4.0 - (k - 2) * 3.0
+                if (d > 5) b -= 10.0
             } else {
                 b += (d - 4) * 6.0 - (k - 2) * 4.0
+                if (d > 5) b -= 10.0
             }
         }
-        if (rivalFw != null && rivalFw >= 3 && (diff ?: 0) < 15) b += (d - 4) * 2.0
-        val h = history.filter { it.formation == f && it.result != null }
+        // Confronto por setor (quando os setores do rival foram lidos).
+        if (inp.myMid != null && inp.rivalMid != null) {
+            val midEdge = inp.myMid - inp.rivalMid
+            if (midEdge >= 4) b += (m - 3) * 1.5 else if (midEdge <= -4) b -= (m - 3) * 1.0
+        }
+        if (inp.myAtk != null && inp.rivalDef != null) {
+            val atkEdge = inp.myAtk - inp.rivalDef
+            if (atkEdge >= 4) b += (k - 2) * 1.5
+        }
+        if (inp.rivalAtk != null && inp.myDef != null) {
+            val defRisk = inp.rivalAtk - inp.myDef
+            if (defRisk >= 4) b += (d - 4) * 2.0 else if (defRisk <= -4) b += (k - 2) * 1.0
+        }
+        // Formação do rival: contra 3 atacantes domina o meio; contra 1 atacante dá para atacar mais.
+        if (rivalFw != null) {
+            if (rivalFw >= 3 && (diff ?: 0) < 5) b += (m - 3) * 1.5
+            if (rivalFw <= 1 && (diff ?: 0) > -5) b += (k - 1) * 1.5
+        }
+        val h = inp.history.filter { it.formation == f && it.result != null }
         if (h.isNotEmpty()) {
             var pts = 0
             for (r in h) {
@@ -134,7 +161,7 @@ object TacticEngine {
         val scored = ArrayList<Triple<String, List<List<PlayerEntity?>>, Double>>()
         for (f in Formations.ALL) {
             val l = lineup(f, inp.players) ?: continue
-            scored.add(Triple(f, l.first, l.second + bias(f, diff, rivalFw, inp.history)))
+            scored.add(Triple(f, l.first, l.second + bias(f, diff, rivalFw, inp)))
         }
         if (scored.isEmpty()) return null
         scored.sortByDescending { it.third }
@@ -160,11 +187,10 @@ object TacticEngine {
 
         val ata = pool(inp.players, "ATA").take(3)
         val wingers = ata.count { it.posCode?.uppercase() in setOf("EE", "ED") }
-        val playStyle = when {
-            diff != null && diff >= 15 && wingers >= 2 -> "Jogar pelas alas"
-            diff != null && diff >= 15 -> "Remate à vista"
-            else -> "Jogo de passe"
-        }
+        val playStyle = if (diff != null && diff >= 15 && wingers >= 2) "Jogar pelas alas"
+        else if (diff != null && diff >= 15) "Remate à vista"
+        else if (diff != null && diff <= -5) "Contra-ataque"
+        else "Jogo de passe"
 
         val tackle = when {
             inp.referee == "Rigoroso" -> "Normal"
@@ -191,7 +217,13 @@ object TacticEngine {
         notes.add("Formação $formation: ${lines.first()} defensores, ${lines.last()} atacante(s); melhor XI soma ${best.second.flatten().map { it?.strength ?: 0 }.sum()} de força.")
         val second = scored.getOrNull(1)
         if (second != null) notes.add("Segunda opção: ${second.first} (${"%.0f".format(best.third - second.third)} pontos atrás).")
-        if (rivalFw != null && rivalFw >= 3) notes.add("Rival joga com $rivalFw atacantes: defesa reforçada na escolha.")
+        if (rivalFw != null && rivalFw >= 3) notes.add("Rival joga com $rivalFw atacantes: priorizei controle do meio-campo.")
+        if (inp.myMid != null && inp.rivalMid != null) {
+            notes.add("Meio-campo: ${inp.myMid} vs ${inp.rivalMid} do rival (${if (inp.myMid >= inp.rivalMid) "vantagem" else "desvantagem"} de ${gap(inp.myMid, inp.rivalMid)}).")
+        }
+        if (inp.myAtk != null && inp.rivalDef != null) {
+            notes.add("Ataque ${inp.myAtk} vs defesa rival ${inp.rivalDef} (${if (inp.myAtk >= inp.rivalDef) "+" else "-"}${gap(inp.myAtk, inp.rivalDef)}).")
+        }
         if (inp.referee == "Rigoroso") notes.add("Árbitro rigoroso: desarme em Normal para evitar cartões.")
         if (inp.referee == "Brando" && tackle == "Agressivo") notes.add("Árbitro brando e rival fraco: desarme Agressivo é seguro.")
         if (marking == "Homem a homem") notes.add("Ataque do rival (${inp.rivalAtk}) supera sua defesa (${inp.myDef}): marcação homem a homem.")

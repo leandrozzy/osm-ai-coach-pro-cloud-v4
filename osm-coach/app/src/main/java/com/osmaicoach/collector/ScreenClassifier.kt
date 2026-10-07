@@ -15,6 +15,10 @@ object ScreenClassifier {
         if (ocr.tokens.size < 4) return ScreenType.NOISE
         if (!osmTopBar) return ScreenType.NON_OSM
 
+        // Menu lateral aberto por cima de qualquer tela: tem "Lista de transferências" e "Olheiro" e engana o mercado.
+        val menuOpen = t.contains("plantel") && (t.contains("equipa inicial") || t.contains("especialistas") || t.contains("sala de imprensa"))
+        if (menuOpen) return ScreenType.OTHER_OSM
+
         if (t.contains("para treinar") || t.contains("treinador universal") || t.contains("treinador de ")) {
             return ScreenType.TRAINING
         }
@@ -24,6 +28,7 @@ object ScreenClassifier {
         if (t.contains("define a tua tatica") || (t.contains("temporizacao") && t.contains("pressao"))) {
             return ScreenType.TACTIC
         }
+        if (t.contains("capacidade") && t.contains("nivel")) return ScreenType.STADIUM
         if (jornada.findAll(t).count() >= 3) return ScreenType.CALENDAR
         if (t.contains("idade") && t.contains("valor") && t.contains("jogador")) return ScreenType.SQUAD
         // Lista rolada: o cabeçalho some, mas continuam as colunas de idade e valor.

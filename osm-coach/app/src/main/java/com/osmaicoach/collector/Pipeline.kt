@@ -152,6 +152,7 @@ class FramePipeline private constructor(private val ctx: Context) {
         ScreenType.CALENDAR -> Parsers.calendar(ocr, img)
         ScreenType.MARKET -> Parsers.market(ocr)
         ScreenType.REPORT -> Parsers.report(ocr)
+        ScreenType.STADIUM -> Parsers.stadium(ocr)
         else -> Extraction(type)
     }
 
@@ -164,6 +165,7 @@ class FramePipeline private constructor(private val ctx: Context) {
         ScreenType.TRAINING -> "Treinamento"
         ScreenType.TACTIC -> "Tática"
         ScreenType.REPORT -> "Relatório"
+        ScreenType.STADIUM -> "Estádio"
         else -> "Outra tela do OSM"
     }
 

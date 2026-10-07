@@ -176,6 +176,31 @@ class ParsersTest {
         assertNull(Money.fixLostComma("75M", 61))
     }
 
+    @Test fun sectorBubblesAreReadByPositionEvenIfLabelsAreWrong() {
+        val o = Fx.ocr(
+            Fx.line("Posição: 4", 0.08f, 0.149f, 0.1f),
+            Fx.line("Gr", 0.631f, 0.23f, 0.02f), Fx.line("88", 0.631f, 0.275f, 0.03f),
+            Fx.line("Dei", 0.676f, 0.23f, 0.02f), Fx.line("90", 0.676f, 0.275f, 0.03f),
+            Fx.line("Méd", 0.721f, 0.23f, 0.02f), Fx.line("89", 0.721f, 0.275f, 0.03f),
+            Fx.line("Ata", 0.766f, 0.23f, 0.02f), Fx.line("91", 0.766f, 0.275f, 0.03f)
+        )
+        val ex = Parsers.squad(o, null)
+        assertEquals("88", ex.fields["x.gol"]?.value)
+        assertEquals("90", ex.fields["x.def"]?.value)
+        assertEquals("89", ex.fields["x.mid"]?.value)
+        assertEquals("91", ex.fields["x.atk"]?.value)
+    }
+
+    @Test fun stadiumLevelAndRevenueAreRead() {
+        val o = Fx.ocr(
+            Fx.line("Capacidade", 0.5f, 0.30f, 0.12f), Fx.line("Nível 2", 0.5f, 0.35f, 0.08f),
+            Fx.line("+414K receitas de bilheteria", 0.5f, 0.42f, 0.3f)
+        )
+        val v = Parsers.stadium(o).fields[K.MY_STADIUM]?.value ?: ""
+        assertTrue(v.contains("Capacidade: Nível 2"))
+        assertTrue(v.contains("414K"))
+    }
+
     @Test fun rivalReportIsReadByLabelAndValue() {
         val o = Fx.ocr(
             Fx.line("Formação", 0.15f, 0.30f, 0.12f), Fx.line("4-4-2 B", 0.50f, 0.30f, 0.10f),

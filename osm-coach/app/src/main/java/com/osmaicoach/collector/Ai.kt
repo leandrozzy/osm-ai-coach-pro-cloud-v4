@@ -26,6 +26,7 @@ object Settings {
         if (get(ctx, "compat_model", "") == "llama-3.3-70b-versatile") put(ctx, "compat_model", "auto")
         put(ctx, "gemini_model_resolved", "")
         put(ctx, "compat_model_resolved", "")
+        put(ctx, "compat_vision_resolved", "")
         put(ctx, "settings_v3", "1")
     }
 
@@ -36,6 +37,7 @@ object Settings {
     const val COMPAT_BASE = "compat_base"
     const val COMPAT_MODEL = "compat_model"
     const val COMPAT_RESOLVED = "compat_model_resolved"
+    const val COMPAT_VISION = "compat_vision_resolved"
     const val CLAUDE_KEY = "claude_key"
     const val CLAUDE_MODEL = "claude_model"
     const val PREFERRED = "preferred_provider"
@@ -81,6 +83,16 @@ object ModelPicker {
         return cands.sortedWith(
             compareByDescending<Cand> { it.stable }.thenByDescending { !it.lite }.thenByDescending { it.version }
         ).map { it.id }
+    }
+
+    /** Modelo com visão (aceita imagem) entre os que o provedor lista; null se não houver. */
+    fun pickCompatVision(ids: List<String>): String? {
+        val prefs = listOf("llama-4-maverick", "llama-4-scout", "vision", "pixtral", "-vl")
+        for (p in prefs) {
+            val hit = ids.firstOrNull { it.contains(p, ignoreCase = true) && !it.contains("guard", ignoreCase = true) }
+            if (hit != null) return hit
+        }
+        return null
     }
 
     /** Escolhe um modelo de texto grande entre os que o provedor (Groq/xAI/OpenAI-compatível) lista. */
@@ -214,10 +226,10 @@ object AiClient {
         var withThinking = true
         var lastErr = "falha desconhecida"
         var idx = 0
+        val capErr = throttleGemini(ctx)
+        if (capErr != null) return@withContext Reply(false, null, capErr)
         while (idx < models.size) {
             val model = models[idx]
-            val capErr = throttleGemini(ctx)
-            if (capErr != null) return@withContext Reply(false, null, capErr)
             Diag.aiCalls.incrementAndGet()
             AiStatus.set("Gemini ($model) — modelo ${idx + 1} de ${models.size}")
             val parts = JSONArray().put(JSONObject().put("text", prompt))
@@ -287,26 +299,54 @@ object AiClient {
         }
     }
 
-    private suspend fun compat(ctx: Context, prompt: String): Reply = withContext(Dispatchers.IO) {
+    private suspend fun compatVisionModel(ctx: Context, base: String, key: String): String? {
+        val cached = Settings.get(ctx, Settings.COMPAT_VISION, "")
+        if (cached == "none") return null
+        if (cached.isNotBlank()) return cached
+        val picked = withContext(Dispatchers.IO) {
+            try { ModelPicker.pickCompatVision(listCompat(base, key)) } catch (e: Exception) { null }
+        }
+        Settings.put(ctx, Settings.COMPAT_VISION, picked ?: "none")
+        return picked
+    }
+
+    private suspend fun compat(ctx: Context, prompt: String, jpeg: ByteArray?): Reply = withContext(Dispatchers.IO) {
         val key = Settings.get(ctx, Settings.COMPAT_KEY, "")
         if (key.isBlank()) return@withContext Reply(false, null, "chave alternativa não configurada")
         val base = Settings.get(ctx, Settings.COMPAT_BASE, Settings.DEFAULT_COMPAT_BASE).trimEnd('/')
-        var model = compatModel(ctx, base, key, false)
+        var model: String
+        if (jpeg != null) {
+            model = compatVisionModel(ctx, base, key) ?: return@withContext Reply(false, null, "este provedor não lista modelo com visão")
+        } else {
+            model = compatModel(ctx, base, key, false)
+        }
         var rediscovered = false
         var lastErr = "falha desconhecida"
         for (attempt in 1..2) {
-            AiStatus.set("Provedor alternativo ($model)")
-            val body = JSONObject().put("model", model).put("temperature", 0.2)
-                .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", prompt)))
-                .put("response_format", JSONObject().put("type", "json_object")).toString()
+            AiStatus.set("Provedor alternativo ($model)" + (if (jpeg != null) " com imagem" else ""))
+            val messages = JSONArray()
+            if (jpeg != null) {
+                val content = JSONArray()
+                content.put(JSONObject().put("type", "text").put("text", prompt))
+                content.put(
+                    JSONObject().put("type", "image_url").put(
+                        "image_url", JSONObject().put("url", "data:image/jpeg;base64," + Base64.encodeToString(jpeg, Base64.NO_WRAP))
+                    )
+                )
+                messages.put(JSONObject().put("role", "user").put("content", content))
+            } else {
+                messages.put(JSONObject().put("role", "user").put("content", prompt))
+            }
+            val req = JSONObject().put("model", model).put("temperature", 0.2).put("messages", messages)
+            if (jpeg == null) req.put("response_format", JSONObject().put("type", "json_object"))
             try {
-                val r = request("POST", "$base/chat/completions", mapOf("Authorization" to "Bearer $key"), body)
+                val r = request("POST", "$base/chat/completions", mapOf("Authorization" to "Bearer $key"), req.toString())
                 if (r.code in 200..299) {
                     val t = JSONObject(r.body).optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content")
                     return@withContext if (t.isNullOrBlank()) Reply(false, null, "resposta vazia") else Reply(true, t, null)
                 }
                 lastErr = "HTTP ${r.code}: " + short(r.body)
-                if ((r.code == 404 || r.code == 400) && !rediscovered) {
+                if ((r.code == 404 || r.code == 400) && !rediscovered && jpeg == null) {
                     rediscovered = true
                     model = compatModel(ctx, base, key, true)
                     continue
@@ -327,7 +367,7 @@ object AiClient {
         val have = ArrayList<String>()
         if (Settings.get(ctx, Settings.GEMINI_KEY, "").isNotBlank()) have.add("gemini")
         if (Settings.get(ctx, Settings.CLAUDE_KEY, "").isNotBlank()) have.add("claude")
-        if (!hasImage && Settings.get(ctx, Settings.COMPAT_KEY, "").isNotBlank()) have.add("compat")
+        if (Settings.get(ctx, Settings.COMPAT_KEY, "").isNotBlank()) have.add("compat")
         val pref = Settings.get(ctx, Settings.PREFERRED, "gemini")
         val ordered = if (pref in have) listOf(pref) + have.filter { it != pref } else have
         // quem acabou de falhar vai para o fim da fila (evita esperar de novo um provedor sobrecarregado)
@@ -338,7 +378,7 @@ object AiClient {
     suspend fun askProvider(ctx: Context, provider: String, prompt: String, jpeg: ByteArray?): Reply = when (provider) {
         "gemini" -> gemini(ctx, prompt, jpeg)
         "claude" -> claude(ctx, prompt, jpeg)
-        else -> compat(ctx, prompt)
+        else -> compat(ctx, prompt, jpeg)
     }
 
     private fun label(p: String): String = when (p) {
@@ -496,8 +536,9 @@ object Processor {
     data class ReadResult(val state: String, val changed: Int, val note: String)
 
     private suspend fun readScreen(ctx: Context, repo: Repo, s: ScreenEntity): ReadResult {
-        val hasVision = Settings.get(ctx, Settings.GEMINI_KEY, "").isNotBlank() || Settings.get(ctx, Settings.CLAUDE_KEY, "").isNotBlank()
-        if (!hasVision) return ReadResult("skipped", 0, "sem chave de IA com leitura de imagem (Gemini ou Claude)")
+        val hasVision = Settings.get(ctx, Settings.GEMINI_KEY, "").isNotBlank() || Settings.get(ctx, Settings.CLAUDE_KEY, "").isNotBlank() ||
+            Settings.get(ctx, Settings.COMPAT_KEY, "").isNotBlank()
+        if (!hasVision) return ReadResult("skipped", 0, "sem chave de IA com leitura de imagem (Gemini, Claude ou Groq)")
         if (s.slotId == 0) return ReadResult("pending", 0, "aguardando identificação de slot")
         val path = s.imagePath
         val bytes = if (path != null) File(path).takeIf { it.exists() }?.readBytes() else null
