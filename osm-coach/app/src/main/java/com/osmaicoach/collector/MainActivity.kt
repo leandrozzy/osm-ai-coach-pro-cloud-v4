@@ -331,7 +331,7 @@ private suspend fun tacticFor(repo: Repo, slot: Int, round: Int?): Boolean {
     }
 }
 
-private fun until(ms: Long): String {
+private fun countdown(ms: Long): String {
     val d = ms - System.currentTimeMillis()
     if (d <= 0L) return "horário passou — releia o pré-jogo"
     val m = d / 60000L
@@ -507,7 +507,7 @@ private fun SlotCard(s: SlotSummary, onClick: () -> Unit) {
                 }
                 if (s.nextAt != null) {
                     Row(Modifier.padding(top = 2.dp)) {
-                        Pill("⏱ " + until(s.nextAt))
+                        Pill("⏱ " + countdown(s.nextAt))
                         Pill(if (s.tacticReady) "Tática ✔" else "Tática pendente", s.tacticReady)
                     }
                 }
@@ -594,7 +594,7 @@ private fun TodayTab(onGoSettings: () -> Unit, onOpenSlot: (Int) -> Unit) {
                     Row(Modifier.fillMaxWidth().clickable { onOpenSlot(u.slot) }.padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("S${u.slot} • ${u.title}" + (if (u.rival != null) " vs ${u.rival}" else ""), fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                            Text(until(u.nextAt!!), fontSize = 11.sp, color = C.MUTED)
+                            Text(countdown(u.nextAt!!), fontSize = 11.sp, color = C.MUTED)
                         }
                         Pill(if (u.tacticReady) "Tática ✔" else "Gerar tática", u.tacticReady)
                     }
@@ -1031,7 +1031,7 @@ private fun UnreadCard(round: Int, modifier: Modifier) {
 }
 
 @Composable
-private fun FilterChip(text: String, selected: Boolean, onClick: () -> Unit) {
+private fun FilterPill(text: String, selected: Boolean, onClick: () -> Unit) {
     Box(
         Modifier.padding(end = 6.dp).clip(RoundedCornerShape(50))
             .background(if (selected) C.PRIMARY else C.SURFACE2).clickable { onClick() }
@@ -1041,7 +1041,7 @@ private fun FilterChip(text: String, selected: Boolean, onClick: () -> Unit) {
 
 @Composable
 private fun SlotCalendar(d: SlotData) {
-    var filter by remember { mutableIntStateOf(0) }
+    var mode by remember { mutableIntStateOf(0) }
     if (d.matches.isEmpty()) {
         Text("Calendário ainda não lido neste slot. No jogo: menu → Calendário do SEU time (no topo da lista) e role devagar.", color = C.MUTED)
         return
@@ -1071,9 +1071,9 @@ private fun SlotCalendar(d: SlotData) {
         CountPill("${sorted.count { it.result == null }} a jogar", C.SURFACE2)
     }
     Row(Modifier.padding(bottom = 8.dp)) {
-        FilterChip("Todos", filter == 0) { filter = 0 }
-        FilterChip("Resultados", filter == 1) { filter = 1 }
-        FilterChip("Próximos", filter == 2) { filter = 2 }
+        FilterPill("Todos", mode == 0) { mode = 0 }
+        FilterPill("Resultados", mode == 1) { mode = 1 }
+        FilterPill("Próximos", mode == 2) { mode = 2 }
     }
     val nextRound = sorted.firstOrNull { it.result == null && it.round != null }?.round
     // Lista final: rodadas da liga em ordem (com "não lido" nos buracos), depois jogos de copa/outros.
@@ -1085,7 +1085,7 @@ private fun SlotCalendar(d: SlotData) {
     }
     for (m in sorted.filter { it.round == null }) cells.add(Pair(null, m))
     val shown = cells.filter { (_, m) ->
-        when (filter) {
+        when (mode) {
             1 -> m != null && m.result != null
             2 -> m == null || m.result == null
             else -> true

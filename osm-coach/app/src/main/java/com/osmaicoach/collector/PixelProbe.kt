@@ -142,15 +142,15 @@ object PixelProbe {
 
 /** Hash perceptual 32x18 (576 bits) para deduplicar capturas e detectar estabilidade. */
 object FrameHash {
-    const val W = 33
-    const val H = 18
+    const val W = 65
+    const val H = 36
 
     fun of(px: IntArray): LongArray {
         val gray = IntArray(W * H) { i ->
             val c = px[i]
             ((c shr 16 and 0xFF) * 299 + (c shr 8 and 0xFF) * 587 + (c and 0xFF) * 114) / 1000
         }
-        val out = LongArray(9)
+        val out = LongArray(((W - 1) * H + 63) / 64)
         var bit = 0
         for (y in 0 until H) {
             for (x in 0 until W - 1) {

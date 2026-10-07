@@ -71,9 +71,9 @@ class PixelProbeTest {
 
     @Test fun frameHashTellsDuplicatesFromDifferentScreens() {
         fun px(f: (Int, Int) -> Int) = IntArray(FrameHash.W * FrameHash.H) { f(it % FrameHash.W, it / FrameHash.W) }
-        val a = FrameHash.of(px { x, _ -> (255 - x * 7) * 0x010101 })
-        val same = FrameHash.of(px { x, _ -> (255 - x * 7) * 0x010101 })
-        val other = FrameHash.of(px { x, _ -> (x * 7) * 0x010101 })
+        val a = FrameHash.of(px { x, _ -> (255 - x * 3) * 0x010101 })
+        val same = FrameHash.of(px { x, _ -> (255 - x * 3) * 0x010101 })
+        val other = FrameHash.of(px { x, _ -> (x * 3) * 0x010101 })
         assertEquals(0, FrameHash.distance(a, same))
         assertTrue(FrameHash.distance(a, other) >= 12)
     }

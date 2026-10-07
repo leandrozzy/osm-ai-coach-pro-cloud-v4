@@ -362,13 +362,18 @@ object Parsers {
             )
         }
 
-        // Linha de times no topo (só existe com a lista no topo). Sem ela não dá para saber de quem é o calendário.
-        val topLines = o.lines.filter { it.yc in 0.24f..0.37f && Txt.letters(it.text) >= 2 }.sortedBy { it.xc }
-        val hasStrip = topLines.count { Txt.letters(it.text) >= 3 } >= 3
-        val ownerLine = if (!hasStrip) null else o.lines.filter {
+        // O título (time dono do calendário) só existe com a lista no topo: é texto grande, e nenhum rótulo
+        // "Jornada N" aparece acima dele. Rolando, nomes de adversários caem nessa região e NÃO são título.
+        val titleCand = o.lines.filter {
             it.xc in 0.35f..0.65f && it.yc in 0.45f..0.55f && Txt.letters(it.text) >= 3 &&
-                !Txt.norm(it.text).startsWith("jornada") && !RX_DATE.containsMatchIn(it.text)
+                !Txt.norm(it.text).startsWith("jornada") && !RX_DATE.containsMatchIn(it.text) && it.h >= 0.035f
         }.maxByOrNull { it.h }
+        val anchorYs = anchors.map { it.line.yc }
+        val ownerLine = if (titleCand != null && anchorYs.none { it > titleCand.yc - 0.32f && it < titleCand.yc + 0.04f }) titleCand else null
+        val hasStrip = ownerLine != null
+        val topLines = o.lines.filter {
+            it.yc in 0.24f..0.37f && Txt.letters(it.text) >= 2 && !Txt.norm(it.text).startsWith("jornada")
+        }.sortedBy { it.xc }
         val humans = LinkedHashMap<String, String?>()
         val used = HashSet<OcrLine>()
         for (ln in (if (hasStrip) topLines else emptyList())) {

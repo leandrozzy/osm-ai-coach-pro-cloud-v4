@@ -202,7 +202,7 @@ class FramePipeline private constructor(private val ctx: Context) {
             val h = FrameHash.of(tpx)
 
             val cand = candidate
-            if (cand != null && FrameHash.distance(cand, h) <= 20) {
+            if (cand != null && FrameHash.distance(cand, h) <= 60) {
                 stable++
                 unstable = 0
             } else {
@@ -217,7 +217,7 @@ class FramePipeline private constructor(private val ctx: Context) {
             }
             if (stable < 2) return
             val lp = lastProcessed
-            if (lp != null && FrameHash.distance(lp, h) < 30) {
+            if (lp != null && FrameHash.distance(lp, h) < 24) {
                 if (stable == 2) Diag.dedup.incrementAndGet()
                 return
             }
@@ -282,12 +282,18 @@ class FramePipeline private constructor(private val ctx: Context) {
 
             if (type == ScreenType.HUB) saveCrests(bmp, ex.hubCards.map { it.slot })
             val changed = repo.apply(asg.slot, ex, "ocr", now)
+            val counts = when (type) {
+                ScreenType.CALENDAR -> " [${ex.matches.size} cards" + (if (ex.ownerTeam == null) ", sem dono" else "") + "]"
+                ScreenType.SQUAD -> " [${ex.players.size} jogadores" + (if (ex.ownerTeam == null) ", sem dono" else "") + "]"
+                ScreenType.MARKET -> " [${ex.listings.size} jogadores à venda]"
+                else -> ""
+            }
             val hint = if (type == ScreenType.OTHER_OSM) {
                 " [" + ocr.lines.map { it.text.trim() }.filter { Txt.letters(it) >= 4 }.take(3).joinToString(" | ").take(70) + "]"
             } else ""
             Diag.log(
                 typeLabel(type) + " → " + (asg.slot?.let { "S$it" } ?: if (type == ScreenType.HUB) "central" else "sem slot") +
-                    (if (changed > 0) " (+$changed campos)" else "") + hint
+                    (if (changed > 0) " (+$changed campos)" else "") + counts + hint
             )
             if (changed > 0) {
                 Diag.extracted.addAndGet(changed)

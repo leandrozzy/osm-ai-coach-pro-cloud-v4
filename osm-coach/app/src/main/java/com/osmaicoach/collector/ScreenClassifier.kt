@@ -24,7 +24,7 @@ object ScreenClassifier {
         if (t.contains("define a tua tatica") || (t.contains("temporizacao") && t.contains("pressao"))) {
             return ScreenType.TACTIC
         }
-        if (jornada.findAll(t).count() >= 4) return ScreenType.CALENDAR
+        if (jornada.findAll(t).count() >= 3) return ScreenType.CALENDAR
         if (t.contains("idade") && t.contains("valor") && t.contains("jogador")) return ScreenType.SQUAD
         // Lista rolada: o cabeçalho some, mas continuam as colunas de idade e valor.
         val moneyRight = ocr.tokens.count { it.xc > 0.85f && Money.extract(it.text) != null }

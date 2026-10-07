@@ -39,6 +39,8 @@ object TacticEngine {
         val history: List<HistRow>
     )
 
+    private data class Sliders(val mentality: Int, val pressure: Int, val tempo: Int, val bucket: String)
+
     data class Result(
         val tactic: Tactic,
         val rows: List<List<PlayerEntity?>>,
@@ -73,23 +75,19 @@ object TacticEngine {
         rows.add(listOf(gk.firstOrNull()))
         var sum = gk.firstOrNull()?.strength ?: 0
         for ((i, n) in lines.withIndex()) {
-            val chosen: List<PlayerEntity?>
-            when (i) {
-                0 -> {
-                    chosen = (0 until n).map { def.getOrNull(di + it) }
-                    di += n
-                }
-                lines.size - 1 -> {
-                    chosen = (0 until n).map { ata.getOrNull(ai + it) }
-                    ai += n
-                }
-                else -> {
-                    chosen = (0 until n).map { mei.getOrNull(mi + it) }
-                    mi += n
-                }
+            val pick: List<PlayerEntity?>
+            if (i == 0) {
+                pick = (0 until n).map { def.getOrNull(di + it) }
+                di += n
+            } else if (i == lines.size - 1) {
+                pick = (0 until n).map { ata.getOrNull(ai + it) }
+                ai += n
+            } else {
+                pick = (0 until n).map { mei.getOrNull(mi + it) }
+                mi += n
             }
-            sum += chosen.sumOf { it?.strength ?: 0 }
-            rows.add(chosen.sortedBy { side(it) })
+            sum += pick.sumOf { it?.strength ?: 0 }
+            rows.add(pick.sortedBy { side(it) })
         }
         return Pair(rows, sum)
     }
@@ -99,25 +97,24 @@ object TacticEngine {
         val d = lines.first()
         val k = lines.last()
         var b = 0.0
-        when {
-            diff == null -> b += 0.0
-            diff >= 15 -> {
+        if (diff != null) {
+            if (diff >= 15) {
                 b += (k - 2) * 6.0
                 if (d < 4) b -= 8.0
                 if (k > 3) b -= 8.0
-            }
-            diff >= 5 -> {
+            } else if (diff >= 5) {
                 b += (k - 2) * 3.0
                 if (d < 4) b -= 6.0
                 if (k > 3) b -= 8.0
-            }
-            diff >= -4 -> {
+            } else if (diff >= -4) {
                 if (f == "4-2-3-1" || f == "4-4-2") b += 2.0
                 if (k > 3) b -= 6.0
                 if (d < 4) b -= 3.0
+            } else if (diff >= -14) {
+                b += (d - 4) * 4.0 - (k - 2) * 3.0
+            } else {
+                b += (d - 4) * 6.0 - (k - 2) * 4.0
             }
-            diff >= -14 -> b += (d - 4) * 4.0 - (k - 2) * 3.0
-            else -> b += (d - 4) * 6.0 - (k - 2) * 4.0
         }
         if (rivalFw != null && rivalFw >= 3 && (diff ?: 0) < 15) b += (d - 4) * 2.0
         val h = history.filter { it.formation == f && it.result != null }
@@ -150,18 +147,16 @@ object TacticEngine {
         val notes = ArrayList<String>()
 
         // Sliders pelo confronto de forças.
-        var mentality: Int
-        var pressure: Int
-        var tempo: Int
-        val bucket: String
-        when {
-            diff == null -> { mentality = 55; pressure = 50; tempo = 55; bucket = "força do rival desconhecida" }
-            diff >= 15 -> { mentality = 80; pressure = 70; tempo = 75; bucket = "rival bem mais fraco" }
-            diff >= 5 -> { mentality = 68; pressure = 62; tempo = 65; bucket = "rival mais fraco" }
-            diff >= -4 -> { mentality = 55; pressure = 50; tempo = 55; bucket = "confronto parelho" }
-            diff >= -14 -> { mentality = 42; pressure = 40; tempo = 55; bucket = "rival mais forte" }
-            else -> { mentality = 30; pressure = 30; tempo = 60; bucket = "rival bem mais forte" }
-        }
+        val sl: Sliders = if (diff == null) Sliders(55, 50, 55, "força do rival desconhecida")
+        else if (diff >= 15) Sliders(80, 70, 75, "rival bem mais fraco")
+        else if (diff >= 5) Sliders(68, 62, 65, "rival mais fraco")
+        else if (diff >= -4) Sliders(55, 50, 55, "confronto parelho")
+        else if (diff >= -14) Sliders(42, 40, 55, "rival mais forte")
+        else Sliders(30, 30, 60, "rival bem mais forte")
+        var mentality = sl.mentality
+        val pressure = sl.pressure
+        val tempo = sl.tempo
+        val bucket = sl.bucket
         if (inp.home == true) mentality += 3
         if (inp.home == false) mentality -= 3
         mentality = mentality.coerceIn(0, 100)
@@ -182,15 +177,13 @@ object TacticEngine {
         val marking = if (inp.rivalAtk != null && inp.myDef != null && inp.rivalAtk - inp.myDef >= 5) "Homem a homem" else "À zona"
         val offside = if (inp.rivalAtk != null && inp.myDef != null && inp.myDef - inp.rivalAtk >= 5) "Sim" else "Não"
 
-        val advAttack: String
-        val advMid: String
+        val roles: Pair<String, String> = if (diff != null && diff >= 15) Pair("Atacar apenas", "Pressionar à frente")
+        else if (diff != null && diff >= 5) Pair("Atacar apenas", "Manter posições")
+        else if (diff != null && diff <= -5) Pair("Ajudar a defender", "Ajudar a defesa")
+        else Pair("Atacar apenas", "Manter posições")
+        val advAttack = roles.first
+        val advMid = roles.second
         val advDef = "Defender atrás"
-        when {
-            diff != null && diff >= 15 -> { advAttack = "Atacar apenas"; advMid = "Pressionar à frente" }
-            diff != null && diff >= 5 -> { advAttack = "Atacar apenas"; advMid = "Manter posições" }
-            diff != null && diff <= -5 -> { advAttack = "Ajudar a defender"; advMid = "Ajudar a defesa" }
-            else -> { advAttack = "Atacar apenas"; advMid = "Manter posições" }
-        }
 
         // Explicação com números.
         if (diff != null) {
@@ -217,6 +210,8 @@ object TacticEngine {
         return Result(tactic, best.second, diff, scored.take(4).map { Pair(it.first, it.third) })
     }
 }
+
+private data class BuyCand(val l: ListingEntity, val price: Double, val ref: PlayerEntity?, val gain: Int, val score: Double)
 
 object MarketEngine {
     data class SellItem(val name: String, val cat: String, val strength: Int?, val valueM: Double?, val reason: String)
@@ -262,7 +257,6 @@ object MarketEngine {
         val have = cats.associateWith { (byCat[it]?.size ?: 0) - sells.count { s -> s.cat == it } }.toMutableMap()
         val buys = ArrayList<BuyItem>()
         val cands = listings.filter { it.cat in cats && it.strength != null && Money.parse(it.priceText) != null }
-        data class Cand(val l: ListingEntity, val price: Double, val ref: PlayerEntity?, val gain: Int, val score: Double)
         val ranked = cands.mapNotNull { l ->
             val c = l.cat ?: return@mapNotNull null
             val list = byCat[c] ?: emptyList()
@@ -272,7 +266,7 @@ object MarketEngine {
             if (gain < 2) return@mapNotNull null
             val price = Money.parse(l.priceText) ?: return@mapNotNull null
             val ageBonus = (28 - (l.age ?: 28)).coerceIn(-6, 6)
-            Cand(l, price, ref, gain, gain * 10.0 + ageBonus - price * 0.4)
+            BuyCand(l, price, ref, gain, gain * 10.0 + ageBonus - price * 0.4)
         }.sortedByDescending { it.score }
 
         var shortfall: Double? = null

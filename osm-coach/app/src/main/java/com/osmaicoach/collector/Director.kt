@@ -20,7 +20,7 @@ data class Tactic(
 )
 
 object TacticValidator {
-    val FORMATIONS: Set<String> get() = Formations.ALL.toSet()
+    val FORMATIONS: Set<String> = Formations.ALL.toSet()
 
     private fun slider(j: JSONObject, key: String): Int? {
         if (!j.has(key) || j.isNull(key)) return null
@@ -290,7 +290,7 @@ object Director {
         val now = System.currentTimeMillis()
         val json = tacticPlanJson(res, round, rival, false)
         repo.dao.putPlan(PlanEntity(slot, "tactic", json.toString(), now))
-        repo.dao.putPlan(PlanEntity(slot, "tlog:R${round ?: 0}", logJson(res.tactic, round, rival, inp).toString(), now))
+        repo.dao.putPlan(PlanEntity(slot, "tlog_R${round ?: 0}", logJson(res.tactic, round, rival, inp).toString(), now))
         return Outcome(true, json.toString(), null)
     }
 
@@ -330,7 +330,7 @@ object Director {
         val out = tacticPlanJson(merged, round, rival, true)
         val now = System.currentTimeMillis()
         repo.dao.putPlan(PlanEntity(slot, "tactic", out.toString(), now))
-        repo.dao.putPlan(PlanEntity(slot, "tlog:R${round ?: 0}", logJson(tactic, round, rival, inp).toString(), now))
+        repo.dao.putPlan(PlanEntity(slot, "tlog_R${round ?: 0}", logJson(tactic, round, rival, inp).toString(), now))
         return Outcome(true, out.toString(), null)
     }
 

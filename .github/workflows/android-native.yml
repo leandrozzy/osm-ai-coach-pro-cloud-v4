@@ -51,7 +51,9 @@ jobs:
       - name: Testes unitários
         id: tests
         continue-on-error: true
-        run: gradle --no-daemon :app:testDebugUnitTest
+        run: |
+          set -o pipefail
+          gradle --no-daemon :app:testDebugUnitTest 2>&1 | tee "$GITHUB_WORKSPACE/tests.log"
 
       - name: Lint
         id: lint
@@ -80,7 +82,20 @@ jobs:
 
       - name: APK debug
         id: debug
-        run: gradle --no-daemon :app:assembleDebug
+        run: |
+          set -o pipefail
+          gradle --no-daemon :app:assembleDebug 2>&1 | tee "$GITHUB_WORKSPACE/debug.log"
+
+      - name: Erros de compilação e de testes no resumo
+        if: always()
+        run: |
+          {
+            echo "## Erros de compilação (APK debug)"
+            grep -E "^e: " "$GITHUB_WORKSPACE/debug.log" 2>/dev/null | head -40 || true
+            echo ""
+            echo "## Testes que falharam"
+            grep -E -A3 "FAILED$" "$GITHUB_WORKSPACE/tests.log" 2>/dev/null | head -60 || true
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: APK release
         id: release

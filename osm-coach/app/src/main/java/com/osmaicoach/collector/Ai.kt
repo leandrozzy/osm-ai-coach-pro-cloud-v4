@@ -186,7 +186,7 @@ object AiClient {
         val cached = Settings.get(ctx, Settings.GEMINI_RESOLVED, "").split(",").filter { it.isNotBlank() }
         if (cached.isNotEmpty() && !forceDiscover) return cached
         val ranked = withContext(Dispatchers.IO) {
-            try { ModelPicker.rankGemini(listGemini(key)) } catch (e: Exception) { emptyList() }
+            try { ModelPicker.rankGemini(listGemini(key)) } catch (e: Exception) { emptyList<String>() }
         }.take(3)
         if (ranked.isNotEmpty()) Settings.put(ctx, Settings.GEMINI_RESOLVED, ranked.joinToString(","))
         return ranked.ifEmpty { cached.ifEmpty { listOf("gemini-2.5-flash") } }
