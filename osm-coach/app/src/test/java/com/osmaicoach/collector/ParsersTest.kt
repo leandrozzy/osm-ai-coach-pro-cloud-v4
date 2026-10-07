@@ -176,6 +176,30 @@ class ParsersTest {
         assertNull(Money.fixLostComma("75M", 61))
     }
 
+    @Test fun rivalReportIsReadByLabelAndValue() {
+        val o = Fx.ocr(
+            Fx.line("Formação", 0.15f, 0.30f, 0.12f), Fx.line("4-4-2 B", 0.50f, 0.30f, 0.10f),
+            Fx.line("Estilo de jogo", 0.15f, 0.40f, 0.18f), Fx.line("Jogar pelas alas", 0.55f, 0.40f, 0.18f),
+            Fx.line("Marcação", 0.15f, 0.50f, 0.12f), Fx.line("À zona", 0.50f, 0.50f, 0.08f),
+            Fx.line("Impedimento", 0.15f, 0.60f, 0.14f), Fx.line("Não", 0.50f, 0.60f, 0.05f),
+            Fx.line("Desarme", 0.15f, 0.70f, 0.12f), Fx.line("Agressivo", 0.50f, 0.70f, 0.10f)
+        )
+        val ex = Parsers.report(o)
+        assertEquals(ScreenType.REPORT, ex.type)
+        assertEquals("4-4-2 B", ex.fields[K.RIVAL_FORMATION]?.value)
+        assertEquals("Jogar pelas alas", ex.fields[K.RIVAL_PLAN]?.value)
+        assertEquals("À zona", ex.fields[K.RIVAL_MARKING]?.value)
+        assertEquals("Não", ex.fields[K.RIVAL_OFFSIDE]?.value)
+        assertEquals("Agressivo", ex.fields[K.RIVAL_TACKLE]?.value)
+        assertFalse(ex.needsAi)
+    }
+
+    @Test fun reportWithoutLabelsReadsNothingAndAsksForAi() {
+        val ex = Parsers.report(Fx.ocr(Fx.line("Mercado", 0.5f, 0.5f)))
+        assertTrue(ex.fields.isEmpty())
+        assertTrue(ex.needsAi)
+    }
+
     @Test fun moneyIsFoundInsideNoisyTokens() {
         assertEquals("7,6M", Money.extract("©7,6M"))
         assertEquals("1,7M", Money.extract("S 1,7M"))

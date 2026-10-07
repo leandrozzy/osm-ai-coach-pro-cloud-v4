@@ -554,6 +554,33 @@ object Processor {
         ProcessState.finish("Telas reprocessadas: $fixed • IA: $applied campos aplicados, $noData sem dados do rival, $failed falhas, $skipped ignoradas")
     }
 
+    /** Lê as últimas telas guardadas do slot até achar o relatório do rival. */
+    suspend fun readLatest(ctx: Context, slot: Int) {
+        val repo = Repo(ctx)
+        val list = repo.dao.savedForSlot(slot, 6)
+        if (list.isEmpty()) {
+            ProcessState.begin("Procurando telas do rival…", 0)
+            ProcessState.finish("Nenhuma tela guardada deste slot. No jogo, abra a análise/relatório do rival, deixe parada por 3 segundos e tente de novo.")
+            return
+        }
+        ProcessState.begin("Lendo telas do rival com IA…", list.size)
+        var applied = 0
+        var tried = 0
+        for ((i, s) in list.withIndex()) {
+            ProcessState.label("Lendo tela ${i + 1} de ${list.size} com IA…")
+            val r = readScreen(ctx, repo, s)
+            repo.dao.updateScreenAi(s.id, r.state, s.extracted + r.changed, r.note)
+            tried++
+            applied += r.changed
+            ProcessState.tick()
+            if (r.changed > 0) break
+        }
+        ProcessState.finish(
+            if (applied > 0) "IA aplicou $applied campo(s) do relatório do rival."
+            else "Li $tried tela(s); nenhuma trazia dados novos do relatório do rival. Abra o relatório do rival no jogo e tente de novo."
+        )
+    }
+
     suspend fun readOne(ctx: Context, id: Long) {
         val repo = Repo(ctx)
         val s = repo.dao.screen(id) ?: return

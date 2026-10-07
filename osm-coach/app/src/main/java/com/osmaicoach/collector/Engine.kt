@@ -86,7 +86,7 @@ object TacticEngine {
                 pick = (0 until n).map { mei.getOrNull(mi + it) }
                 mi += n
             }
-            sum += pick.sumOf { it?.strength ?: 0 }
+            sum += pick.map { it?.strength ?: 0 }.sum()
             rows.add(pick.sortedBy { side(it) })
         }
         return Pair(rows, sum)
@@ -119,12 +119,9 @@ object TacticEngine {
         if (rivalFw != null && rivalFw >= 3 && (diff ?: 0) < 15) b += (d - 4) * 2.0
         val h = history.filter { it.formation == f && it.result != null }
         if (h.isNotEmpty()) {
-            val pts = h.sumOf { r ->
-                when (r.result) {
-                    "V" -> 3
-                    "E" -> 0
-                    else -> -3
-                }
+            var pts = 0
+            for (r in h) {
+                if (r.result == "V") pts += 3 else if (r.result == "D") pts -= 3
             }
             b += pts.coerceIn(-9, 9) * (minOf(h.size, 3) / 3.0)
         }
@@ -191,7 +188,7 @@ object TacticEngine {
         } else {
             notes.add("Força do rival ainda não lida: tática equilibrada. Leia o pré-jogo para eu ajustar.")
         }
-        notes.add("Formação $formation: ${lines.first()} defensores, ${lines.last()} atacante(s); melhor XI soma ${best.second.flatten().sumOf { it?.strength ?: 0 }} de força.")
+        notes.add("Formação $formation: ${lines.first()} defensores, ${lines.last()} atacante(s); melhor XI soma ${best.second.flatten().map { it?.strength ?: 0 }.sum()} de força.")
         val second = scored.getOrNull(1)
         if (second != null) notes.add("Segunda opção: ${second.first} (${"%.0f".format(best.third - second.third)} pontos atrás).")
         if (rivalFw != null && rivalFw >= 3) notes.add("Rival joga com $rivalFw atacantes: defesa reforçada na escolha.")
@@ -217,6 +214,7 @@ object MarketEngine {
     data class SellItem(val name: String, val cat: String, val strength: Int?, val valueM: Double?, val reason: String)
     data class BuyItem(val name: String, val cat: String, val strength: Int, val priceM: Double, val gain: Int, val replaces: String?, val reason: String)
     data class TrainItem(val name: String, val trainer: String, val reason: String)
+    data class RadarItem(val name: String, val cat: String, val strength: Int, val priceM: Double, val gain: Int, val affordable: Boolean)
     data class Plan(
         val sell: List<SellItem>,
         val buy: List<BuyItem>,
@@ -224,7 +222,8 @@ object MarketEngine {
         val steps: List<String>,
         val summary: String,
         val cashM: Double?,
-        val budgetM: Double?
+        val budgetM: Double?,
+        val radar: List<RadarItem> = emptyList()
     )
 
     private val CORE = mapOf("GOL" to 1, "DEF" to 4, "MEI" to 4, "ATA" to 3)
@@ -250,7 +249,7 @@ object MarketEngine {
                 }
             }
         }
-        val proceeds = sells.sumOf { it.valueM ?: 0.0 }
+        val proceeds = sells.map { it.valueM ?: 0.0 }.sum()
         var budget = (cashM ?: 0.0) + proceeds
 
         // 2) Compras e trocas por ganho no time titular.
@@ -320,7 +319,13 @@ object MarketEngine {
                 else "Nenhuma melhoria clara no mercado lido. Role mais a Lista de transferências para eu ver outros jogadores."
             )
         }
+        val radar = ArrayList<RadarItem>()
+        val totalBudget = (cashM ?: 0.0) + proceeds
+        for (c in cats) {
+            val top = ranked.firstOrNull { it.l.cat == c } ?: continue
+            radar.add(RadarItem(top.l.name, c, top.l.strength ?: 0, top.price, top.gain, top.price <= totalBudget))
+        }
         val summary = "Caixa ${fmt(cashM)} • vendas previstas ≈ ${fmt(proceeds)} • ${sells.size} venda(s), ${buys.size} compra(s), ${trains.size} treino(s)."
-        return Plan(sells, buys, trains, steps, summary, cashM, budget)
+        return Plan(sells, buys, trains, steps, summary, cashM, budget, radar)
     }
 }

@@ -113,6 +113,19 @@ class EngineTest {
         assertTrue(plan.steps.any { it.contains("ocupado com Foden") })
     }
 
+    @Test fun radarShowsBestTargetPerPositionAndWhetherItFits() {
+        val listings = listOf(
+            ListingEntity(1, "star", "Star", 24, "MC", "MEI", 93, "8,0M", "Clube", null, 0L),
+            ListingEntity(1, "gk", "Keeper", 27, "GR", "GOL", 95, "90,0M", "Clube", null, 0L)
+        )
+        val plan = MarketEngine.plan(squad(), listings, 2.0, 3)
+        val mei = plan.radar.first { it.cat == "MEI" }
+        assertEquals("Star", mei.name)
+        assertTrue(mei.affordable)
+        val gol = plan.radar.first { it.cat == "GOL" }
+        assertFalse(gol.affordable)
+    }
+
     @Test fun noAffordableUpgradeExplainsTheShortfall() {
         val tight = squad().filter { it.name != "Zirkzee" }
         val listings = listOf(ListingEntity(1, "star", "Star", 24, "MC", "MEI", 93, "20,0M", "Clube", null, 0L))

@@ -133,6 +133,18 @@ fun startReadOne(ctx: Context, id: Long) {
     }
 }
 
+fun startReadLatest(ctx: Context, slot: Int) {
+    val app = ctx.applicationContext
+    if (ProcessState.running) return
+    AppScope.scope.launch(Dispatchers.IO) {
+        try {
+            Processor.readLatest(app, slot)
+        } catch (e: Exception) {
+            ProcessState.finish("Erro: " + (e.message ?: e.javaClass.simpleName))
+        }
+    }
+}
+
 object AiTest {
     @Volatile var running = false
     @Volatile var result = ""

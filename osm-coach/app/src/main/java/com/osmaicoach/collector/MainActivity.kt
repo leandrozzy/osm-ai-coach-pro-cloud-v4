@@ -779,7 +779,7 @@ private fun SlotScreen(slot: Int, startTab: Int, onBack: () -> Unit) {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
             when (tab) {
                 0 -> SlotSummaryTab(data)
-                1 -> SlotPregame(data)
+                1 -> SlotPregame(slot, data)
                 2 -> SlotSquad(data)
                 3 -> SlotCalendar(data)
                 4 -> SlotTactic(slot, data)
@@ -865,7 +865,8 @@ private fun ForceBox(label: String, value: String, color: Color) {
 }
 
 @Composable
-private fun SlotPregame(d: SlotData) {
+private fun SlotPregame(slot: Int, d: SlotData) {
+    val ctx = LocalContext.current
     val at = fv(d, K.MATCH_AT).toLongOrNull()
     Section(
         "Jogo",
@@ -887,7 +888,8 @@ private fun SlotPregame(d: SlotData) {
             "Valor do meu elenco" to fv(d, K.MY_VALUE),
             "Valor do elenco rival" to fv(d, K.RIVAL_VALUE),
             "Meus setores (GOL/DEF/MEI/ATA)" to listOf(K.MY_GOL, K.MY_DEF, K.MY_MID, K.MY_ATK).joinToString(" / ") { fv(d, it) },
-            "Formação rival (elenco)" to fv(d, K.RIVAL_FORMATION)
+            "Setores do rival (GOL/DEF/MEI/ATA)" to listOf(K.RIVAL_GOL, K.RIVAL_DEF, K.RIVAL_MID, K.RIVAL_ATK).joinToString(" / ") { fv(d, it) },
+            "Formação do rival" to fv(d, K.RIVAL_FORMATION)
         )
     )
     Section(
@@ -904,9 +906,15 @@ private fun SlotPregame(d: SlotData) {
             "Bônus de estádio" to fv(d, K.STADIUM_BONUS)
         )
     )
+    OutlinedButton(
+        onClick = { startReadLatest(ctx, slot) },
+        enabled = !ProcessState.running,
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+    ) { Text("Ler a análise do rival com IA agora") }
+    ProcessCard()
     Text(
-        "NI = ainda não lido. O relatório do rival é lido pela IA ao encerrar a captura: abra o relatório do adversário no jogo e deixe a tela parada por alguns segundos.",
-        fontSize = 12.sp, color = C.MUTED
+        "NI = ainda não lido. Formação, força e setores do rival vêm do elenco dele. Plano, marcação, impedimento e desarme vêm da análise do rival: abra-a no jogo, deixe a tela parada por 3 segundos e toque no botão acima (ou ao encerrar a captura).",
+        fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 6.dp)
     )
 }
 
@@ -1342,6 +1350,38 @@ private fun SlotTactic(slot: Int, d: SlotData) {
         LineupPitch(j)
         Text("Os números são a força de cada titular escolhido. Setas: ciano = ataque/pressão, laranja = apoio/recuo.", fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 6.dp))
     }
+    val lineupArr = j.optJSONArray("lineup")
+    if (lineupArr != null && lineupArr.length() > 1) {
+        Panel {
+            Text("Escalação sugerida", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            for (i in 0 until lineupArr.length()) {
+                val row = lineupArr.optJSONArray(i) ?: continue
+                val label = if (i == 0) "GOL" else if (i == 1) "DEF" else if (i == lineupArr.length() - 1) "ATA" else "MEI"
+                val names = ArrayList<String>()
+                for (k in 0 until row.length()) {
+                    val o = row.optJSONObject(k) ?: continue
+                    names.add(o.optString("n") + " (" + o.optInt("s") + ")")
+                }
+                Row(Modifier.fillMaxWidth().padding(top = 6.dp)) {
+                    Text(label, color = C.MUTED, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(44.dp))
+                    Text(names.joinToString("  •  "), fontSize = 13.sp, modifier = Modifier.weight(1f))
+                }
+            }
+        }
+    }
+    Panel {
+        Text("Como colocar no jogo", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+        val steps = listOf(
+            "Tática → Formação: " + j.optString("formation"),
+            "Estilo de jogo: " + j.optString("playStyle"),
+            "Pressão " + j.optInt("pressure") + "  •  Mentalidade/Estilo " + j.optInt("mentality") + "  •  Temporização " + j.optInt("tempo"),
+            "Marcação: " + j.optString("marking") + "  •  Fora de jogo: " + j.optString("offside") + "  •  Desarme: " + j.optString("tackle"),
+            "Avançadas → Ataque: " + j.optString("advAttack") + "  •  Meio: " + j.optString("advMid") + "  •  Defesa: " + j.optString("advDef")
+        )
+        for ((i, t) in steps.withIndex()) {
+            Text("${i + 1}. $t", fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
+        }
+    }
     Panel {
         Text("Controles", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
         TacticBar("Pressão", j.optInt("pressure"))
@@ -1426,6 +1466,21 @@ private fun SlotDirector(slot: Int, d: SlotData) {
             for (t in plan.train) {
                 Text("${t.name}  →  treinador de ${t.trainer}", fontWeight = FontWeight.SemiBold)
                 Text(t.reason, fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(bottom = 8.dp))
+            }
+        }
+    }
+    if (plan.radar.isNotEmpty()) {
+        Title("📡 Radar de mercado")
+        Panel {
+            Text("Melhor alvo por posição no que já foi lido na lista de transferências:", fontSize = 12.sp, color = C.MUTED)
+            for (r in plan.radar) {
+                Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("${r.cat}: ${r.name} (${r.strength})", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                        Text("%.1fM".format(r.priceM).replace('.', ',') + " • ganho +${r.gain} no setor", fontSize = 11.sp, color = C.MUTED)
+                    }
+                    Pill(if (r.affordable) "cabe no caixa" else "falta caixa", r.affordable)
+                }
             }
         }
     }

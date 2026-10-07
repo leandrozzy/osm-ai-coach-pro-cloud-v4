@@ -151,7 +151,7 @@ class FramePipeline private constructor(private val ctx: Context) {
         ScreenType.SQUAD -> Parsers.squad(ocr, img)
         ScreenType.CALENDAR -> Parsers.calendar(ocr, img)
         ScreenType.MARKET -> Parsers.market(ocr)
-        ScreenType.REPORT -> Extraction(type, needsAi = true)
+        ScreenType.REPORT -> Parsers.report(ocr)
         else -> Extraction(type)
     }
 
@@ -250,6 +250,11 @@ class FramePipeline private constructor(private val ctx: Context) {
             Diag.parsed.incrementAndGet()
 
             // Rolando a lista o cabeçalho some: reaproveita o dono lido por último (mesmo tipo e slot, até 10 min).
+            if (type == ScreenType.REPORT) {
+                val rn = machine.current?.let { repo.fieldMap(it)[K.RIVAL_TEAM]?.value }
+                val mentions = rn != null && Txt.key(rn).length >= 4 && Txt.key(ocr.fullText).contains(Txt.key(rn))
+                if (!mentions) ex = Extraction(ScreenType.REPORT, needsAi = true, note = "sem nome do rival")
+            }
             if (ex.ownerTeam == null && (type == ScreenType.SQUAD || type == ScreenType.CALENDAR)) {
                 val lo = lastOwners[type]
                 if (lo != null && now - lo.third < 600000L && lo.first == (machine.current ?: -1)) {
