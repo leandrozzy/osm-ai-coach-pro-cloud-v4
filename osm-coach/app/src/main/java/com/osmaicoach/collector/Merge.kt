@@ -58,24 +58,42 @@ object Completeness {
         Item(K.RIVAL_SECRET, "Treino secreto rival"),
         Item(K.RIVAL_CAMP, "Campo de treinamento rival"),
         Item(K.REFEREE, "Árbitro"),
-        Item(K.STADIUM_BONUS, "Bônus de estádio")
+        Item(K.STADIUM_BONUS, "Bônus de estádio"),
+        Item(K.RIVAL_LOGIN_BONUS, "Bônus de login rival"),
+        Item(K.STADIUM, "Estádio rival"),
+        Item(K.MY_STADIUM, "Meu estádio"),
+        Item(K.MY_GOL, "Meu setor GOL"),
+        Item(K.MY_DEF, "Meu setor DEF"),
+        Item(K.MY_MID, "Meu setor MEI"),
+        Item(K.MY_ATK, "Meu setor ATA"),
+        Item(K.RIVAL_GOL, "Setor GOL do rival"),
+        Item(K.RIVAL_DEF, "Setor DEF do rival"),
+        Item(K.RIVAL_MID, "Setor MEI do rival"),
+        Item(K.RIVAL_ATK, "Setor ATA do rival"),
+        Item(K.RIVAL_PRESSURE, "Pressão do rival"),
+        Item(K.RIVAL_MENTALITY, "Estilo do rival"),
+        Item(K.RIVAL_TEMPO, "Temporização do rival")
     )
 
-    data class Result(val known: List<String>, val missing: List<String>, val percent: Int)
+    data class Result(val known: List<String>, val missing: List<String>, val percent: Int, val missingItems: List<Item> = emptyList())
 
     /** Calculado somente por campos realmente preenchidos; nunca por quantidade de frames. */
     fun compute(fields: Map<String, StoredField>, squadCount: Int, calendarCount: Int, marketSeen: Boolean): Result {
         val known = ArrayList<String>()
         val missing = ArrayList<String>()
+        val missingItems = ArrayList<Item>()
         for (it in ITEMS) {
-            if (FieldMerge.known(fields[it.key]?.value)) known.add(it.label) else missing.add(it.label)
+            if (FieldMerge.known(fields[it.key]?.value)) known.add(it.label) else {
+                missing.add(it.label)
+                missingItems.add(it)
+            }
         }
         if (squadCount >= 16) known.add("Meu elenco (16+ jogadores)") else missing.add("Meu elenco (16+ jogadores)")
         if (calendarCount >= 6) known.add("Calendário (6+ jogos)") else missing.add("Calendário (6+ jogos)")
         if (marketSeen) known.add("Mercado") else missing.add("Mercado")
         val total = known.size + missing.size
         val pct = if (total == 0) 0 else (known.size * 100) / total
-        return Result(known, missing, pct)
+        return Result(known, missing, pct, missingItems)
     }
 }
 

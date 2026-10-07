@@ -13,11 +13,33 @@ object Formations {
     }
 }
 
-data class HistRow(val formation: String, val playStyle: String, val result: String?)
+data class HistRow(val formation: String, val playStyle: String, val result: String?, val human: Boolean? = null, val home: Boolean? = null)
 
 data class FormStat(val formation: String, val games: Int, val v: Int, val e: Int, val d: Int)
 
 object Learning {
+    fun points(s: FormStat): Int = s.v * 3 + s.e - s.d * 3
+
+    /** Resultado por estilo de jogo (reaproveita FormStat: o campo formation guarda o nome do estilo). */
+    fun byStyle(history: List<HistRow>): List<FormStat> =
+        history.filter { it.result != null && it.playStyle.isNotBlank() }.groupBy { it.playStyle }.map { (st, rows) ->
+            FormStat(st, rows.size, rows.count { it.result == "V" }, rows.count { it.result == "E" }, rows.count { it.result == "D" })
+        }.sortedByDescending { it.games }
+
+    /** Resultado por contexto: contra humano/CPU e em casa/fora. */
+    fun byContext(history: List<HistRow>): List<FormStat> {
+        val done = history.filter { it.result != null }
+        val groups = listOf(
+            "Contra humano" to done.filter { it.human == true },
+            "Contra CPU" to done.filter { it.human == false },
+            "Em casa" to done.filter { it.home == true },
+            "Fora" to done.filter { it.home == false }
+        )
+        return groups.filter { it.second.isNotEmpty() }.map { (name, rows) ->
+            FormStat(name, rows.size, rows.count { it.result == "V" }, rows.count { it.result == "E" }, rows.count { it.result == "D" })
+        }
+    }
+
     /** Resultado das táticas já usadas, por formação. Só conta jogos com resultado conhecido. */
     fun stats(history: List<HistRow>): List<FormStat> =
         history.filter { it.result != null }.groupBy { it.formation }.map { (f, rows) ->
@@ -187,10 +209,21 @@ object TacticEngine {
 
         val ata = pool(inp.players, "ATA").take(3)
         val wingers = ata.count { it.posCode?.uppercase() in setOf("EE", "ED") }
-        val playStyle = if (diff != null && diff >= 15 && wingers >= 2) "Jogar pelas alas"
+        val defaultStyle = if (diff != null && diff >= 15 && wingers >= 2) "Jogar pelas alas"
         else if (diff != null && diff >= 15) "Remate à vista"
         else if (diff != null && diff <= -5) "Contra-ataque"
         else "Jogo de passe"
+        // Aprendizado: se outro estilo já deu resultado claramente melhor (2+ jogos), usa o que funcionou.
+        val styleStats = Learning.byStyle(inp.history)
+        val allowedStyles = listOf("Jogo de passe", "Jogar pelas alas", "Remate à vista", "Contra-ataque")
+        val curPts = styleStats.firstOrNull { it.formation == defaultStyle }?.let { Learning.points(it) } ?: 0
+        val bestStyle = styleStats.filter { it.games >= 2 && it.formation in allowedStyles }.maxByOrNull { Learning.points(it) }
+        var playStyle = defaultStyle
+        var styleNote: String? = null
+        if (bestStyle != null && bestStyle.formation != defaultStyle && Learning.points(bestStyle) >= curPts + 4) {
+            playStyle = bestStyle.formation
+            styleNote = "Estilo ${bestStyle.formation} escolhido pelo histórico: ${bestStyle.v}V ${bestStyle.e}E ${bestStyle.d}D em ${bestStyle.games} jogos."
+        }
 
         val tackle = when {
             inp.referee == "Rigoroso" -> "Normal"
@@ -227,6 +260,7 @@ object TacticEngine {
         if (inp.referee == "Rigoroso") notes.add("Árbitro rigoroso: desarme em Normal para evitar cartões.")
         if (inp.referee == "Brando" && tackle == "Agressivo") notes.add("Árbitro brando e rival fraco: desarme Agressivo é seguro.")
         if (marking == "Homem a homem") notes.add("Ataque do rival (${inp.rivalAtk}) supera sua defesa (${inp.myDef}): marcação homem a homem.")
+        if (styleNote != null) notes.add(styleNote)
         val stat = Learning.stats(inp.history).firstOrNull { it.formation == formation }
         if (stat != null) notes.add("Histórico de $formation: ${stat.v}V ${stat.e}E ${stat.d}D em ${stat.games} jogo(s) registrados.")
         if (inp.rivalHuman == true) notes.add("Rival humano: ele pode mudar a tática; confira o relatório antes do jogo.")

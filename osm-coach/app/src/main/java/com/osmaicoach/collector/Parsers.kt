@@ -417,6 +417,18 @@ object Parsers {
         return null
     }
 
+    private fun numberFor(o: OcrResult, label: Regex): Int? {
+        for (ln in o.lines) {
+            if (!label.containsMatchIn(Txt.norm(ln.text))) continue
+            val near = o.tokens.filter {
+                val n = intTok(it)
+                n != null && n in 0..100 && it.xc > ln.xc && it.yc >= ln.yc - 0.03f && it.yc <= ln.yc + 0.08f
+            }.minByOrNull { abs(it.yc - ln.yc) }
+            if (near != null) return intTok(near)
+        }
+        return null
+    }
+
     /** Relatório do adversário por rótulo:valor. Só aceita valores do vocabulário conhecido. */
     fun report(o: OcrResult): Extraction {
         val f = LinkedHashMap<String, Reading>()
@@ -456,6 +468,12 @@ object Parsers {
             if (n.contains("nao")) f[K.RIVAL_CAMP] = Reading("Não", conf)
             else if (n.contains("estagio") || n == "sim") f[K.RIVAL_CAMP] = Reading("Sim", conf)
         }
+        val pr = numberFor(o, Regex("^pressao"))
+        if (pr != null) f[K.RIVAL_PRESSURE] = Reading(pr.toString(), 0.6)
+        val me = numberFor(o, Regex("^estilo$"))
+        if (me != null) f[K.RIVAL_MENTALITY] = Reading(me.toString(), 0.6)
+        val tp = numberFor(o, Regex("^temporizacao"))
+        if (tp != null) f[K.RIVAL_TEMPO] = Reading(tp.toString(), 0.6)
         val std = valueFor(o, Regex("estadio"))
         if (std != null) {
             val m = Regex("nivel\\s*(\\d)").find(Txt.norm(std))

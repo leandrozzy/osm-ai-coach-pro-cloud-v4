@@ -259,6 +259,28 @@ class Repo(private val ctx: Context) {
         return changed
     }
 
+    /** Valor digitado pelo usuário: confiança acima de qualquer leitura (nada da leitura automática sobrescreve). */
+    suspend fun setManual(slot: Int, key: String, value: String) {
+        dao.putField(FieldEntity(slot, key, value.trim(), 2.0, System.currentTimeMillis(), "manual"))
+    }
+
+    suspend fun clearField(slot: Int, key: String) {
+        dao.deleteField(slot, key)
+    }
+
+    suspend fun setManualMatch(slot: Int, round: Int, opponent: String?, mine: Int?, opp: Int?, home: Boolean?) {
+        val key = "L$round"
+        val old = dao.match(slot, key)
+        val result = if (mine != null && opp != null) (if (mine > opp) "V" else if (mine == opp) "E" else "D") else null
+        val name = opponent?.trim()?.ifBlank { null } ?: old?.opponent
+        dao.putMatch(
+            MatchEntity(
+                slot, key, old?.label ?: "Jornada $round", round, old?.date, old?.time, home ?: old?.home,
+                mine, opp, result, name, old?.opponentNick, System.currentTimeMillis()
+            )
+        )
+    }
+
     private fun looksGarbled(name: String): Boolean =
         Regex("^[a-z][A-Z]").containsMatchIn(name) || Txt.letters(name) < 3
 

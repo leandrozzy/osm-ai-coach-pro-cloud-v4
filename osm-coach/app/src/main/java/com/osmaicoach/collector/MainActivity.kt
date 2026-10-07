@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -45,6 +46,7 @@ import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -193,6 +195,168 @@ private fun rememberTick(ms: Long = 1500L): Int {
     return t
 }
 
+object UiBus {
+    var version by mutableIntStateOf(0)
+}
+
+data class EditRow(val label: String, val key: String?, val display: String? = null)
+
+@Composable
+private fun ManualDialog(slot: Int, spec: ManualFields.Spec, current: String, onDone: () -> Unit) {
+    val ctx = LocalContext.current
+    var text by remember { mutableStateOf(if (current == NI) "" else current) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val opts = spec.options
+    val buttonsOnly = opts != null && opts.size <= 6
+    fun save(raw: String) {
+        val n = ManualFields.normalize(spec.key, raw)
+        if (n == null) {
+            error = "Valor inválido. Exemplo: ${spec.example}"
+            return
+        }
+        AppScope.scope.launch(Dispatchers.IO) {
+            Repo(ctx).setManual(slot, spec.key, n)
+            UiBus.version++
+        }
+        onDone()
+    }
+    AlertDialog(
+        onDismissRequest = onDone,
+        containerColor = C.SURFACE,
+        title = { Text(spec.label, fontWeight = FontWeight.Bold) },
+        text = {
+            Column {
+                if (spec.hint.isNotBlank()) Text("Onde ver no jogo: ${spec.hint}", fontSize = 12.sp, color = C.MUTED)
+                if (buttonsOnly && opts != null) {
+                    for (o in opts) {
+                        OutlinedButton(onClick = { save(o) }, modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) { Text(o) }
+                    }
+                } else {
+                    OutlinedTextField(
+                        value = text, onValueChange = { text = it; error = null }, singleLine = true,
+                        label = { Text("Valor (ex.: ${spec.example})") }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                    )
+                    if (opts != null) Text("Formações: " + opts.joinToString(", "), fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
+                }
+                val e = error
+                if (e != null) Text(e, color = C.BAD, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+                Text("O que você digita nunca é sobrescrito pela leitura automática.", fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 8.dp))
+            }
+        },
+        confirmButton = { if (!buttonsOnly) TextButton(onClick = { save(text) }) { Text("Salvar") } },
+        dismissButton = {
+            Row {
+                TextButton(onClick = {
+                    AppScope.scope.launch(Dispatchers.IO) {
+                        Repo(ctx).clearField(slot, spec.key)
+                        UiBus.version++
+                    }
+                    onDone()
+                }) { Text("Limpar") }
+                TextButton(onClick = onDone) { Text("Cancelar") }
+            }
+        }
+    )
+}
+
+@Composable
+private fun EditSection(slot: Int, d: SlotData, title: String, rows: List<EditRow>) {
+    var editing by remember { mutableStateOf<EditRow?>(null) }
+    Panel {
+        Text(title, color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp, modifier = Modifier.padding(bottom = 4.dp))
+        for (r in rows) {
+            val v = r.display ?: (if (r.key != null) fv(d, r.key) else NI)
+            val manual = r.key != null && (d.fields[r.key]?.conf ?: 0.0) >= 1.5
+            Row(
+                Modifier.fillMaxWidth().clickable(enabled = r.key != null) { editing = r }.padding(vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(r.label, color = C.MUTED, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                Text(v + (if (manual) " ✎" else ""), fontWeight = FontWeight.SemiBold, color = if (v == NI) C.WARN else Color.White)
+                if (v == NI && r.key != null) Text("  ＋", color = C.PRIMARY, fontWeight = FontWeight.Bold)
+            }
+        }
+        Text("Toque em um valor para corrigir ou preencher à mão.", fontSize = 10.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
+    }
+    val e = editing
+    if (e != null && e.key != null) ManualDialog(slot, ManualFields.spec(e.key, e.label), fv(d, e.key)) { editing = null }
+}
+
+@Composable
+private fun MatchDialog(slot: Int, round: Int, existing: MatchEntity?, onDone: () -> Unit) {
+    val ctx = LocalContext.current
+    var opp by remember { mutableStateOf(existing?.opponent ?: "") }
+    var a by remember { mutableStateOf(existing?.scoreMine?.toString() ?: "") }
+    var b by remember { mutableStateOf(existing?.scoreOpp?.toString() ?: "") }
+    var home by remember { mutableStateOf(existing?.home) }
+    AlertDialog(
+        onDismissRequest = onDone,
+        containerColor = C.SURFACE,
+        title = { Text("Rodada $round", fontWeight = FontWeight.Bold) },
+        text = {
+            Column {
+                OutlinedTextField(value = opp, onValueChange = { opp = it }, singleLine = true, label = { Text("Adversário") }, modifier = Modifier.fillMaxWidth())
+                Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(value = a, onValueChange = { a = it.filter { c -> c.isDigit() }.take(2) }, singleLine = true, label = { Text("Meus gols") }, modifier = Modifier.weight(1f))
+                    OutlinedTextField(value = b, onValueChange = { b = it.filter { c -> c.isDigit() }.take(2) }, singleLine = true, label = { Text("Gols rival") }, modifier = Modifier.weight(1f))
+                }
+                Row(Modifier.padding(top = 10.dp)) {
+                    FilterPill("🏠 Casa", home == true) { home = true }
+                    FilterPill("✈ Fora", home == false) { home = false }
+                }
+                Text("Deixe os gols vazios se o jogo ainda não foi disputado. O resultado entra no aprendizado da IA.", fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 8.dp))
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val ma = a.toIntOrNull()
+                val mb = b.toIntOrNull()
+                AppScope.scope.launch(Dispatchers.IO) {
+                    Repo(ctx).setManualMatch(slot, round, opp, ma, mb, home)
+                    UiBus.version++
+                }
+                onDone()
+            }) { Text("Salvar") }
+        },
+        dismissButton = { TextButton(onClick = onDone) { Text("Cancelar") } }
+    )
+}
+
+@Composable
+private fun ResultDialog(slot: Int, kind: String, title: String, onDone: () -> Unit) {
+    val ctx = LocalContext.current
+    var a by remember { mutableStateOf("") }
+    var b by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDone,
+        containerColor = C.SURFACE,
+        title = { Text("Resultado do jogo", fontWeight = FontWeight.Bold) },
+        text = {
+            Column {
+                Text(title, fontSize = 12.sp, color = C.MUTED)
+                Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(value = a, onValueChange = { a = it.filter { c -> c.isDigit() }.take(2) }, singleLine = true, label = { Text("Meus gols") }, modifier = Modifier.weight(1f))
+                    OutlinedTextField(value = b, onValueChange = { b = it.filter { c -> c.isDigit() }.take(2) }, singleLine = true, label = { Text("Gols rival") }, modifier = Modifier.weight(1f))
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val ma = a.toIntOrNull()
+                val mb = b.toIntOrNull()
+                if (ma != null && mb != null) {
+                    AppScope.scope.launch(Dispatchers.IO) {
+                        Director.setLogResult(Repo(ctx), slot, kind, ma, mb)
+                        UiBus.version++
+                    }
+                    onDone()
+                }
+            }) { Text("Salvar") }
+        },
+        dismissButton = { TextButton(onClick = onDone) { Text("Cancelar") } }
+    )
+}
+
 @Composable
 private fun <T> rememberLoaded(initial: T, tick: Int, key: Any?, loader: suspend () -> T): T {
     var state by remember { mutableStateOf(initial) }
@@ -277,7 +441,8 @@ data class SlotSummary(
     val pct: Int,
     val updated: Long,
     val nextAt: Long? = null,
-    val tacticReady: Boolean = false
+    val tacticReady: Boolean = false,
+    val missing: Int = 0
 )
 
 data class TodayData(val active: Boolean = false, val slots: List<SlotSummary> = emptyList())
@@ -358,6 +523,7 @@ private suspend fun loadToday(ctx: Context): TodayData {
                 roundDone = known(f, K.ROUND_DONE), roundTotal = known(f, K.ROUND_TOTAL),
                 rival = known(f, K.RIVAL_TEAM), human = known(f, K.RIVAL_HUMAN),
                 pct = c.percent, updated = f.values.maxOfOrNull { it.updatedAt } ?: 0L,
+                missing = c.missing.size,
                 nextAt = known(f, K.MATCH_AT)?.toLongOrNull(),
                 tacticReady = tacticFor(repo, slot, known(f, K.ROUND)?.toIntOrNull())
             )
@@ -522,6 +688,9 @@ private fun SlotCard(s: SlotSummary, onClick: () -> Unit, onTactic: () -> Unit) 
                         Box(Modifier.clickable { onTactic() }) { Pill(if (s.tacticReady) "Tática ✔" else "Gerar tática →", s.tacticReady) }
                     }
                 }
+                if (s.missing > 0) {
+                    Box(Modifier.clickable { onClick() }.padding(top = 4.dp)) { Pill("faltam ${s.missing} campos — toque para ver/preencher") }
+                }
                 Spacer(Modifier.height(6.dp))
                 Bar(s.pct)
                 Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -538,7 +707,7 @@ private fun TodayTab(onGoSettings: () -> Unit, onOpenSlot: (Int, Int) -> Unit) {
     val ctx = LocalContext.current
     val tick = rememberTick(1000L)
     val scope = rememberCoroutineScope()
-    val data = rememberLoaded(TodayData(), tick, null) { loadToday(ctx) }
+    val data = rememberLoaded(TodayData(), tick, UiBus.version) { loadToday(ctx) }
     var msg by remember { mutableStateOf("") }
     var showDiag by remember { mutableStateOf(false) }
     val enabled = serviceEnabled(ctx)
@@ -670,7 +839,7 @@ private fun Thumb(path: String?) {
 @Composable
 private fun SavedScreens(tick: Int) {
     val ctx = LocalContext.current
-    val list = rememberLoaded(emptyList<ScreenEntity>(), tick, null) { Repo(ctx).dao.savedScreens(12) }
+    val list = rememberLoaded(emptyList<ScreenEntity>(), tick, UiBus.version) { Repo(ctx).dao.savedScreens(12) }
     Title("Telas guardadas para a IA ler")
     Text(
         "Telas que o app não leu sozinho (por exemplo, o relatório do rival) ficam aqui. Toque em “Ler com IA” para extrair os dados.",
@@ -746,7 +915,7 @@ private fun SessionsTab() {
 private fun SlotsTab(onOpen: (Int, Int) -> Unit) {
     val ctx = LocalContext.current
     val tick = rememberTick()
-    val data = rememberLoaded(TodayData(), tick, null) { loadToday(ctx) }
+    val data = rememberLoaded(TodayData(), tick, UiBus.version) { loadToday(ctx) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
         Text("Slots", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
         for (s in data.slots) SlotCard(s, { onOpen(s.slot, 0) }, { onOpen(s.slot, 4) })
@@ -799,7 +968,7 @@ private suspend fun loadDirector(ctx: Context): List<DirSlot> {
 private fun DirectorTab(onOpen: (Int, Int) -> Unit) {
     val ctx = LocalContext.current
     val tick = rememberTick(3000L)
-    val list = rememberLoaded(emptyList<DirSlot>(), tick, null) { loadDirector(ctx) }
+    val list = rememberLoaded(emptyList<DirSlot>(), tick, UiBus.version) { loadDirector(ctx) }
     val now = System.currentTimeMillis()
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
         Text("Diretor", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
@@ -863,7 +1032,7 @@ private fun DirectorTab(onOpen: (Int, Int) -> Unit) {
 private fun SlotScreen(slot: Int, startTab: Int, onBack: () -> Unit) {
     val ctx = LocalContext.current
     val tick = rememberTick(2000L)
-    val data = rememberLoaded(SlotData(), tick, slot) { loadSlot(ctx, slot) }
+    val data = rememberLoaded(SlotData(), tick, Pair(slot, UiBus.version)) { loadSlot(ctx, slot) }
     var tab by remember { mutableIntStateOf(startTab) }
     val tabs = listOf("Resumo", "Pré-jogo", "Elenco", "Calendário", "Tática", "Diretor", "Aprendizado")
     val title = known(data.fields, K.TEAM) ?: known(data.fields, K.HUB_TITLE) ?: "Slot $slot ainda não lido"
@@ -883,13 +1052,13 @@ private fun SlotScreen(slot: Int, startTab: Int, onBack: () -> Unit) {
         }
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
             when (tab) {
-                0 -> SlotSummaryTab(data)
+                0 -> SlotSummaryTab(slot, data)
                 1 -> SlotPregame(slot, data)
                 2 -> SlotSquad(data)
-                3 -> SlotCalendar(data)
+                3 -> SlotCalendar(slot, data)
                 4 -> SlotTactic(slot, data)
                 5 -> SlotDirector(slot, data)
-                else -> SlotLearning(data)
+                else -> SlotLearning(slot, data)
             }
         }
     }
@@ -906,7 +1075,8 @@ private fun Section(title: String, rows: List<Pair<String, String>>) {
 }
 
 @Composable
-private fun SlotSummaryTab(d: SlotData) {
+private fun SlotSummaryTab(slot: Int, d: SlotData) {
+    var missingEdit by remember { mutableStateOf<Completeness.Item?>(null) }
     val c = d.completeness
     val at = fv(d, K.MATCH_AT).toLongOrNull()
     Panel {
@@ -927,18 +1097,19 @@ private fun SlotSummaryTab(d: SlotData) {
             ForceBox("Rival", fv(d, K.RIVAL_STRENGTH), C.LOSS)
         }
     }
-    Section(
-        "Competição",
+    EditSection(
+        slot, d, "Competição",
         listOf(
-            "Time" to fv(d, K.TEAM).let { if (it == NI) fv(d, K.HUB_TITLE) else it },
-            "Competição" to fv(d, K.COMPETITION),
-            "Tipo" to fv(d, K.COMP_TYPE),
-            "Rodadas concluídas/total" to (fv(d, K.ROUND_DONE).let { done -> if (done == NI) NI else "$done/${fv(d, K.ROUND_TOTAL)}" }),
-            "Próxima rodada" to fv(d, K.ROUND),
-            "Posição na liga" to fv(d, K.LEAGUE_POS),
-            "Pontos" to fv(d, K.POINTS),
-            "Caixa" to fv(d, K.CASH),
-            "Meu estádio" to fv(d, K.MY_STADIUM)
+            EditRow("Time", K.TEAM, fv(d, K.TEAM).let { if (it == NI) fv(d, K.HUB_TITLE) else it }),
+            EditRow("Competição", K.COMPETITION),
+            EditRow("Tipo", K.COMP_TYPE),
+            EditRow("Rodadas concluídas", K.ROUND_DONE),
+            EditRow("Total de rodadas", K.ROUND_TOTAL),
+            EditRow("Próxima rodada", K.ROUND),
+            EditRow("Posição na liga", K.LEAGUE_POS),
+            EditRow("Pontos", K.POINTS),
+            EditRow("Caixa", K.CASH),
+            EditRow("Meu estádio", K.MY_STADIUM)
         )
     )
     if (c != null) {
@@ -948,10 +1119,28 @@ private fun SlotSummaryTab(d: SlotData) {
             Bar(c.percent)
             Spacer(Modifier.height(8.dp))
             Text("Conhecidos: " + c.known.joinToString(", ").ifBlank { "nenhum" }, fontSize = 12.sp)
-            Spacer(Modifier.height(6.dp))
-            Text("Faltantes: " + c.missing.joinToString(", ").ifBlank { "nenhum" }, fontSize = 12.sp, color = C.WARN)
+        }
+        Panel {
+            Text("Faltando — toque para preencher à mão", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            if (c.missing.isEmpty()) Text("Nada faltando ✔", color = C.OK, modifier = Modifier.padding(top = 4.dp))
+            for (mi in c.missingItems) {
+                Row(Modifier.fillMaxWidth().clickable { missingEdit = mi }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(mi.label, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Text("onde ver: " + ManualFields.spec(mi.key, mi.label).hint, fontSize = 11.sp, color = C.MUTED)
+                    }
+                    Text("＋ preencher", color = C.PRIMARY, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+            for (m in c.missing) {
+                if (c.missingItems.none { x -> x.label == m }) {
+                    Text("• $m — abra essa tela no jogo e role até o fim", fontSize = 12.sp, color = C.WARN, modifier = Modifier.padding(top = 4.dp))
+                }
+            }
         }
     }
+    val me = missingEdit
+    if (me != null) ManualDialog(slot, ManualFields.spec(me.key, me.label), fv(d, me.key)) { missingEdit = null }
     Panel {
         Text("Última atualização por seção", fontWeight = FontWeight.Bold)
         for (t in listOf("PREGAME", "SQUAD", "CALENDAR", "MARKET", "REPORT")) {
@@ -981,42 +1170,46 @@ private fun SlotPregame(slot: Int, d: SlotData) {
         modifier = Modifier.fillMaxWidth()
     ) { Text("🤖 Ler a análise do rival com IA agora") }
     ProcessCard()
-    Section(
-        "Jogo",
+    EditSection(
+        slot, d, "Jogo",
         listOf(
-            "Rodada" to fv(d, K.ROUND),
-            "Data/hora do jogo" to (if (at != null) fmtTime(at) else NI),
-            "Casa/fora" to fv(d, K.HOME),
-            "Adversário" to fv(d, K.RIVAL_TEAM),
-            "Humano/CPU" to fv(d, K.RIVAL_HUMAN),
-            "Apelido do rival" to fv(d, K.RIVAL_NICK),
-            "Árbitro (termômetro)" to fv(d, K.REFEREE)
+            EditRow("Rodada", K.ROUND),
+            EditRow("Data/hora do jogo", K.MATCH_AT, if (at != null) fmtTime(at) else NI),
+            EditRow("Casa/fora", K.HOME),
+            EditRow("Adversário", K.RIVAL_TEAM),
+            EditRow("Humano/CPU", K.RIVAL_HUMAN),
+            EditRow("Apelido do rival", K.RIVAL_NICK),
+            EditRow("Árbitro (termômetro)", K.REFEREE)
         )
     )
-    Section(
-        "Forças",
+    EditSection(
+        slot, d, "Forças",
         listOf(
-            "Minha força" to fv(d, K.MY_STRENGTH),
-            "Força do rival" to fv(d, K.RIVAL_STRENGTH),
-            "Valor do meu elenco" to fv(d, K.MY_VALUE),
-            "Valor do elenco rival" to fv(d, K.RIVAL_VALUE),
-            "Meus setores (GOL/DEF/MEI/ATA)" to listOf(K.MY_GOL, K.MY_DEF, K.MY_MID, K.MY_ATK).joinToString(" / ") { fv(d, it) },
-            "Setores do rival (GOL/DEF/MEI/ATA)" to listOf(K.RIVAL_GOL, K.RIVAL_DEF, K.RIVAL_MID, K.RIVAL_ATK).joinToString(" / ") { fv(d, it) },
-            "Formação do rival" to fv(d, K.RIVAL_FORMATION)
+            EditRow("Minha força", K.MY_STRENGTH),
+            EditRow("Força do rival", K.RIVAL_STRENGTH),
+            EditRow("Valor do meu elenco", K.MY_VALUE),
+            EditRow("Valor do elenco rival", K.RIVAL_VALUE),
+            EditRow("Meu GOL", K.MY_GOL), EditRow("Meu DEF", K.MY_DEF), EditRow("Meu MEI", K.MY_MID), EditRow("Meu ATA", K.MY_ATK),
+            EditRow("GOL do rival", K.RIVAL_GOL), EditRow("DEF do rival", K.RIVAL_DEF),
+            EditRow("MEI do rival", K.RIVAL_MID), EditRow("ATA do rival", K.RIVAL_ATK),
+            EditRow("Formação do rival", K.RIVAL_FORMATION)
         )
     )
-    Section(
-        "Relatório do rival",
+    EditSection(
+        slot, d, "Relatório do rival",
         listOf(
-            "Plano de jogo" to fv(d, K.RIVAL_PLAN),
-            "Marcação" to fv(d, K.RIVAL_MARKING),
-            "Impedimento" to fv(d, K.RIVAL_OFFSIDE),
-            "Desarme" to fv(d, K.RIVAL_TACKLE),
-            "Treino secreto" to fv(d, K.RIVAL_SECRET),
-            "Campo de treinamento" to fv(d, K.RIVAL_CAMP),
-            "Bônus de login" to fv(d, K.RIVAL_LOGIN_BONUS),
-            "Estádio" to fv(d, K.STADIUM),
-            "Bônus de estádio" to fv(d, K.STADIUM_BONUS)
+            EditRow("Plano de jogo", K.RIVAL_PLAN),
+            EditRow("Marcação", K.RIVAL_MARKING),
+            EditRow("Impedimento", K.RIVAL_OFFSIDE),
+            EditRow("Desarme", K.RIVAL_TACKLE),
+            EditRow("Pressão", K.RIVAL_PRESSURE),
+            EditRow("Estilo / mentalidade", K.RIVAL_MENTALITY),
+            EditRow("Temporização", K.RIVAL_TEMPO),
+            EditRow("Treino secreto", K.RIVAL_SECRET),
+            EditRow("Campo de treinamento", K.RIVAL_CAMP),
+            EditRow("Bônus de login", K.RIVAL_LOGIN_BONUS),
+            EditRow("Estádio", K.STADIUM),
+            EditRow("Bônus de estádio", K.STADIUM_BONUS)
         )
     )
     Text(
@@ -1099,7 +1292,7 @@ private fun ResultBadge(result: String?) {
 }
 
 @Composable
-private fun MatchCard(m: MatchEntity, modifier: Modifier, highlight: Boolean) {
+private fun MatchCard(m: MatchEntity, modifier: Modifier, highlight: Boolean, onClick: () -> Unit) {
     val tint = when (m.result) {
         "V" -> Color(0xFF12351F)
         "E" -> Color(0xFF3A3210)
@@ -1115,7 +1308,7 @@ private fun MatchCard(m: MatchEntity, modifier: Modifier, highlight: Boolean) {
     val shape = RoundedCornerShape(12.dp)
     val frame = if (highlight) modifier.border(2.dp, C.GOLD, shape) else modifier
     Column(
-        frame.height(128.dp).clip(shape).background(tint).padding(8.dp),
+        frame.clickable { onClick() }.height(128.dp).clip(shape).background(tint).padding(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -1133,15 +1326,15 @@ private fun MatchCard(m: MatchEntity, modifier: Modifier, highlight: Boolean) {
 }
 
 @Composable
-private fun UnreadCard(round: Int, modifier: Modifier) {
+private fun UnreadCard(round: Int, modifier: Modifier, onClick: () -> Unit) {
     Column(
-        modifier.height(128.dp).clip(RoundedCornerShape(12.dp)).border(1.dp, C.SURFACE2, RoundedCornerShape(12.dp)).padding(8.dp),
+        modifier.clickable { onClick() }.height(128.dp).clip(RoundedCornerShape(12.dp)).border(1.dp, C.SURFACE2, RoundedCornerShape(12.dp)).padding(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
         Text("J$round", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = C.MUTED)
         Text("não lido", fontSize = 11.sp, color = C.MUTED)
-        Text("role o jogo até aqui", fontSize = 9.sp, color = C.MUTED, textAlign = TextAlign.Center)
+        Text("role o jogo ou toque para preencher", fontSize = 9.sp, color = C.MUTED, textAlign = TextAlign.Center)
     }
 }
 
@@ -1155,10 +1348,16 @@ private fun FilterPill(text: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun SlotCalendar(d: SlotData) {
+private fun SlotCalendar(slot: Int, d: SlotData) {
     var mode by remember { mutableIntStateOf(0) }
-    if (d.matches.isEmpty()) {
-        Text("Calendário ainda não lido neste slot. No jogo: menu → Calendário do SEU time (no topo da lista) e role devagar.", color = C.MUTED)
+    var editRound by remember { mutableStateOf<Int?>(null) }
+    if (d.matches.isEmpty() && fv(d, K.ROUND_TOTAL).toIntOrNull() == null) {
+        Text("Calendário ainda não lido neste slot. No jogo: menu → Calendário do SEU time (no topo da lista) e role. Ou informe à mão:", color = C.MUTED)
+        OutlinedButton(onClick = { editRound = fv(d, K.ROUND).toIntOrNull() ?: 1 }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+            Text("＋ Informar uma rodada")
+        }
+        val e0 = editRound
+        if (e0 != null) MatchDialog(slot, e0, null) { editRound = null }
         return
     }
     val sorted = d.matches.sortedBy { it.round ?: 999 }
@@ -1210,11 +1409,14 @@ private fun SlotCalendar(d: SlotData) {
         Row(Modifier.fillMaxWidth()) {
             for ((r, m) in row) {
                 val mod = Modifier.weight(1f).padding(3.dp)
-                if (m != null) MatchCard(m, mod, m.round != null && m.round == nextRound) else UnreadCard(r ?: 0, mod)
+                if (m != null) MatchCard(m, mod, m.round != null && m.round == nextRound) { if (m.round != null) editRound = m.round }
+                else UnreadCard(r ?: 0, mod) { if (r != null) editRound = r }
             }
             repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
         }
     }
+    val er = editRound
+    if (er != null) MatchDialog(slot, er, byRound[er]) { editRound = null }
 }
 
 private fun formationLines(f: String): List<Int> = Formations.lines(f)
@@ -1611,33 +1813,68 @@ private fun SlotDirector(slot: Int, d: SlotData) {
 }
 
 @Composable
-private fun SlotLearning(d: SlotData) {
-    data class Row2(val round: Int, val formation: String, val style: String, val rival: String, val result: String?, val score: String)
+private fun SlotLearning(slot: Int, d: SlotData) {
+    data class Row2(
+        val kind: String, val round: Int, val formation: String, val style: String, val rival: String,
+        val result: String?, val score: String, val human: Boolean?, val home: Boolean?
+    )
+    var resultFor by remember { mutableStateOf<Row2?>(null) }
     val rows = d.logs.mapNotNull { p ->
         try {
             val j = JSONObject(p.json)
             Row2(
-                j.optInt("round", -1), j.optString("formation"), j.optString("playStyle"), j.optString("rival"),
+                p.kind, j.optInt("round", -1), j.optString("formation"), j.optString("playStyle"), j.optString("rival"),
                 if (j.isNull("result")) null else j.optString("result"),
-                if (j.isNull("scoreMine")) "" else "${j.optInt("scoreMine")}-${j.optInt("scoreOpp")}"
+                if (j.isNull("scoreMine")) "" else "${j.optInt("scoreMine")}-${j.optInt("scoreOpp")}",
+                if (j.isNull("human")) null else j.optBoolean("human"),
+                if (j.isNull("home")) null else j.optBoolean("home")
             )
         } catch (e: Exception) {
             null
         }
     }.sortedByDescending { it.round }
+    val hist = rows.map { HistRow(it.formation, it.style, it.result, it.human, it.home) }
+
+    // Resultados do campeonato (lidos do calendário): é daqui que a IA aprende.
+    val played = d.matches.filter { it.result != null && it.round != null }.sortedBy { it.round }
+    if (played.isNotEmpty()) {
+        val gf = played.fold(0) { acc, m -> acc + (m.scoreMine ?: 0) }
+        val ga = played.fold(0) { acc, m -> acc + (m.scoreOpp ?: 0) }
+        Panel {
+            Text("Resultados lidos do calendário", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Row(Modifier.padding(top = 6.dp)) {
+                CountPill("V ${played.count { it.result == "V" }}", C.WIN)
+                CountPill("E ${played.count { it.result == "E" }}", C.DRAW)
+                CountPill("D ${played.count { it.result == "D" }}", C.LOSS)
+                CountPill("gols $gf-$ga", C.SURFACE2)
+            }
+            Text(
+                "Últimos: " + played.takeLast(8).joinToString("  ") { "J${it.round} ${it.result}" },
+                fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 6.dp)
+            )
+        }
+    }
     Panel {
         Text("O que o app aprendeu com as suas táticas", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
         if (rows.isEmpty()) {
-            Text("Ainda sem histórico. Gere a tática antes de cada jogo: quando o resultado aparecer no calendário, ele entra aqui e passa a pesar na escolha da próxima formação.", fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
+            Text("Ainda sem histórico. Gere a tática antes de cada jogo: quando o resultado aparecer no calendário (ou você informar), ele entra aqui e passa a pesar na escolha da formação e do estilo.", fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
         }
-        val stats = Learning.stats(rows.map { HistRow(it.formation, it.style, it.result) })
-        for (s in stats) {
-            Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(s.formation, fontWeight = FontWeight.Bold, modifier = Modifier.width(80.dp))
-                CountPill("${s.v}V", C.WIN)
-                CountPill("${s.e}E", C.DRAW)
-                CountPill("${s.d}D", C.LOSS)
-                Text("${s.games} jogo(s)", fontSize = 11.sp, color = C.MUTED)
+        val groups = listOf(
+            "Por formação" to Learning.stats(hist),
+            "Por estilo de jogo" to Learning.byStyle(hist),
+            "Por contexto" to Learning.byContext(hist)
+        )
+        for ((title, list) in groups) {
+            if (list.isEmpty()) continue
+            Text(title, fontSize = 12.sp, color = C.MUTED, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 10.dp))
+            for (st in list) {
+                Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(st.formation, fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.width(120.dp))
+                    CountPill("${st.v}V", C.WIN)
+                    CountPill("${st.e}E", C.DRAW)
+                    CountPill("${st.d}D", C.LOSS)
+                    Text("${st.games} jogo(s)", fontSize = 11.sp, color = C.MUTED)
+                }
             }
         }
     }
@@ -1645,14 +1882,23 @@ private fun SlotLearning(d: SlotData) {
         Panel {
             Text("Táticas usadas e resultado", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
             for (r in rows.take(12)) {
-                Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    Modifier.fillMaxWidth().clickable(enabled = r.result == null) { resultFor = r }.padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     ResultBadge(r.result)
                     Spacer(Modifier.width(8.dp))
-                    Text("J${r.round} • ${r.formation} • ${r.style} vs ${r.rival}" + (if (r.score.isNotBlank()) " • ${r.score}" else " • aguardando resultado"), fontSize = 12.sp)
+                    Text(
+                        "J${r.round} • ${r.formation} • ${r.style} vs ${r.rival}" +
+                            (if (r.score.isNotBlank()) " • ${r.score}" else " • toque para informar o resultado"),
+                        fontSize = 12.sp
+                    )
                 }
             }
         }
     }
+    val rf = resultFor
+    if (rf != null) ResultDialog(slot, rf.kind, "J${rf.round} • ${rf.formation} vs ${rf.rival}") { resultFor = null }
     if (d.learning.isNotEmpty()) {
         Title("Eventos de leitura")
         Panel {

@@ -225,7 +225,10 @@ object Director {
         repo.dao.tacticLogs(slot).mapNotNull { p ->
             runCatching {
                 val j = JSONObject(p.json)
-                HistRow(j.getString("formation"), j.optString("playStyle"), if (j.isNull("result")) null else j.optString("result"))
+                HistRow(
+                    j.getString("formation"), j.optString("playStyle"), if (j.isNull("result")) null else j.optString("result"),
+                    if (j.isNull("human")) null else j.optBoolean("human"), if (j.isNull("home")) null else j.optBoolean("home")
+                )
             }.getOrNull()
         }
 
@@ -265,7 +268,23 @@ object Director {
             j.put("scoreMine", m.scoreMine ?: JSONObject.NULL)
             j.put("scoreOpp", m.scoreOpp ?: JSONObject.NULL)
             repo.dao.putPlan(PlanEntity(slot, p.kind, j.toString(), p.at))
+            repo.learn(
+                slot, "resultado",
+                "Tática ${j.optString("formation")} (${j.optString("playStyle")}) na J$r contra ${j.optString("rival")} → ${m.result} ${m.scoreMine}-${m.scoreOpp}"
+            )
         }
+    }
+
+    /** Resultado informado à mão para uma tática ainda sem resultado (ex.: o calendário não foi lido). */
+    suspend fun setLogResult(repo: Repo, slot: Int, kind: String, mine: Int, opp: Int) {
+        val p = repo.dao.tacticLogs(slot).firstOrNull { it.kind == kind } ?: return
+        val j = try { JSONObject(p.json) } catch (e: Exception) { return }
+        val res = if (mine > opp) "V" else if (mine == opp) "E" else "D"
+        j.put("result", res)
+        j.put("scoreMine", mine)
+        j.put("scoreOpp", opp)
+        repo.dao.putPlan(PlanEntity(slot, p.kind, j.toString(), p.at))
+        repo.learn(slot, "resultado", "Tática ${j.optString("formation")} (${j.optString("playStyle")}) contra ${j.optString("rival")} → $res $mine-$opp (informado)")
     }
 
     private fun lineupJson(rows: List<List<PlayerEntity?>>): JSONArray {
@@ -297,6 +316,7 @@ object Director {
         JSONObject().put("round", round ?: -1).put("rival", rival ?: NI).put("formation", t.formation)
             .put("playStyle", t.playStyle).put("pressure", t.pressure).put("mentality", t.mentality).put("tempo", t.tempo)
             .put("myStrength", inp.myStrength ?: JSONObject.NULL).put("rivalStrength", inp.rivalStrength ?: JSONObject.NULL)
+            .put("human", inp.rivalHuman ?: JSONObject.NULL).put("home", inp.home ?: JSONObject.NULL)
             .put("result", JSONObject.NULL)
 
     /** Tática calculada por regras e números: instantânea, não depende de IA nem de internet. */
@@ -340,7 +360,11 @@ object Director {
         val round = f[K.ROUND]?.value?.toIntOrNull()
         val rival = f[K.RIVAL_TEAM]?.value
         val draft = tacticPlanJson(res, round, rival, false)
-        val stats = Learning.stats(inp.history).joinToString("\n") { "${it.formation}: ${it.v}V ${it.e}E ${it.d}D" }.ifBlank { "sem jogos registrados ainda" }
+        val statLines = ArrayList<String>()
+        for (x in Learning.stats(inp.history)) statLines.add("formação ${x.formation}: ${x.v}V ${x.e}E ${x.d}D")
+        for (x in Learning.byStyle(inp.history)) statLines.add("estilo ${x.formation}: ${x.v}V ${x.e}E ${x.d}D")
+        for (x in Learning.byContext(inp.history)) statLines.add("${x.formation}: ${x.v}V ${x.e}E ${x.d}D")
+        val stats = statLines.joinToString("\n").ifBlank { "sem jogos registrados ainda" }
         val allowed = res.ranking.take(3).map { it.first }
         val reply = AiClient.ask(ctx, tacticRefinePrompt(context(repo, slot), draft, stats, allowed), null)
         val json = AiClient.parseJson(reply.text)

@@ -75,9 +75,13 @@ class FramePipeline private constructor(private val ctx: Context) {
     private var candidate: LongArray? = null
     private var stable = 0
     private var unstable = 0
+    private var lastProcessedAt = 0L
+    private var dupCounted = false
     private var lastProcessed: LongArray? = null
     private val lastOwners = HashMap<ScreenType, Triple<Int, String, Long>>()
     private var reportCandidates = 0
+    private var tacticSaved = 0
+    private var calendarSaved = 0
     private var lastOsmAcceptedAt = 0L
     private var imagesThisSession = 0
     private val mutex = Mutex()
@@ -102,6 +106,8 @@ class FramePipeline private constructor(private val ctx: Context) {
         lastProcessed = null
         lastOwners.clear()
         reportCandidates = 0
+        tacticSaved = 0
+        calendarSaved = 0
         imagesThisSession = 0
         val p = ctx.getSharedPreferences("machine", Context.MODE_PRIVATE)
         if (p.getString("session", null) == sessionId) {
@@ -203,31 +209,28 @@ class FramePipeline private constructor(private val ctx: Context) {
             if (tiny !== bmp) tiny.recycle()
             val h = FrameHash.of(tpx)
 
-            val cand = candidate
-            if (cand != null && FrameHash.distance(cand, h) <= 60) {
-                stable++
-                unstable = 0
-            } else {
-                candidate = h
-                stable = 1
-                unstable++
-            }
-            // tela sempre animada: depois de ~5 amostras instáveis, processa mesmo assim
-            if (unstable >= 5 && stable < 2) {
-                stable = 2
-                unstable = 0
-            }
-            if (stable < 2) return
+            // O screenshot é nítido mesmo durante a rolagem: processa todo quadro que mudou o bastante.
+            // Perto do último processamento (< 2,5 s) exige mudança maior, para não repetir OCR em tela animada.
+            val nowGate = System.currentTimeMillis()
             val lp = lastProcessed
-            if (lp != null && FrameHash.distance(lp, h) < 24) {
-                if (stable == 2) Diag.dedup.incrementAndGet()
+            val dist = if (lp == null) Int.MAX_VALUE else FrameHash.distance(lp, h)
+            val need = if (nowGate - lastProcessedAt < 2500L) 60 else 24
+            if (dist < need) {
+                if (!dupCounted) {
+                    Diag.dedup.incrementAndGet()
+                    dupCounted = true
+                }
                 return
             }
+            dupCounted = false
 
             val now = System.currentTimeMillis()
             val img = ImageIo.toImg(bmp)
             val topBar = PixelProbe.isOsmTopBar(img)
-            if (!topBar && !PixelProbe.hubBackdrop(img)) {
+            // Telas cheias do jogo sem a barra superior (ex.: análise do rival) ainda são do OSM: se o jogo estava
+            // em primeiro plano há pouco, lê o texto e decide por ele (anúncios não têm o vocabulário do jogo).
+            val recentlyOsm = now - lastOsmAcceptedAt < 90000L
+            if (!topBar && !PixelProbe.hubBackdrop(img) && !recentlyOsm) {
                 Diag.discarded.incrementAndGet()
                 Diag.currentType = ScreenType.NON_OSM.name
                 Diag.log("Descartada: não é tela do OSM (anúncio ou outro app)")
@@ -236,6 +239,7 @@ class FramePipeline private constructor(private val ctx: Context) {
             }
 
             val ocr = OcrEngine.read(bmp)
+            lastProcessedAt = now
             Diag.ocr.incrementAndGet()
             val type = ScreenClassifier.classify(ocr, topBar)
             Diag.currentType = type.name
@@ -293,9 +297,10 @@ class FramePipeline private constructor(private val ctx: Context) {
                 ScreenType.CALENDAR -> " [${ex.matches.size} cards" + (if (ex.ownerTeam == null) ", sem dono" else "") + "]"
                 ScreenType.SQUAD -> " [${ex.players.size} jogadores" + (if (ex.ownerTeam == null) ", sem dono" else "") + "]"
                 ScreenType.MARKET -> " [${ex.listings.size} jogadores à venda]"
+                ScreenType.REPORT -> " [${ex.fields.size} campos do relatório]"
                 else -> ""
             }
-            val hint = if (type == ScreenType.OTHER_OSM) {
+            val hint = if (type == ScreenType.OTHER_OSM || type == ScreenType.TACTIC || type == ScreenType.REPORT || type == ScreenType.STADIUM) {
                 " [" + ocr.lines.map { it.text.trim() }.filter { Txt.letters(it) >= 4 }.take(3).joinToString(" | ").take(70) + "]"
             } else ""
             Diag.log(
@@ -317,8 +322,13 @@ class FramePipeline private constructor(private val ctx: Context) {
                 Txt.key(ocr.fullText).contains(Txt.key(rivalName))
             val reportHint = type == ScreenType.OTHER_OSM && asg.slot != null &&
                 reportCandidates < 12 && (Parsers.hasReportHint(ocr) || mentionsRival)
+            // Diagnóstico: guarda poucas telas de tática e calendários "sem novidade" para eu ver o que o app viu.
+            val diagTactic = type == ScreenType.TACTIC && asg.slot != null && tacticSaved < 6
+            val diagCalendar = type == ScreenType.CALENDAR && changed == 0 && ex.matches.isNotEmpty() && calendarSaved < 4
             var path: String? = null
-            if (((unassigned && dataType) || ex.needsAi || reportHint) && imagesThisSession < 60) {
+            if (((unassigned && dataType) || ex.needsAi || reportHint || diagTactic || diagCalendar) && imagesThisSession < 60) {
+                if (diagTactic) tacticSaved++
+                if (diagCalendar) calendarSaved++
                 path = ImageIo.saveJpeg(ctx, bmp, sessionId, now)
                 imagesThisSession++
                 if (reportHint) reportCandidates++

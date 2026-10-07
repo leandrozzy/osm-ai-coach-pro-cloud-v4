@@ -90,6 +90,28 @@ class EngineTest {
         assertTrue(r.tactic.notes.any { it.contains("Meio-campo") })
     }
 
+    @Test fun styleThatKeepsWinningIsChosenByTheHistory() {
+        val hist = listOf(
+            HistRow("4-4-2", "Remate à vista", "V"), HistRow("4-4-2", "Remate à vista", "V"), HistRow("4-4-2", "Remate à vista", "V")
+        )
+        val r = TacticEngine.recommend(input(74, 73, history = hist))!!
+        assertEquals("Remate à vista", r.tactic.playStyle)
+        assertTrue(r.tactic.notes.any { it.contains("pelo histórico") })
+    }
+
+    @Test fun contextStatsSeparateHumanAndHomeResults() {
+        val h = listOf(
+            HistRow("4-3-3", "a", "V", human = true, home = true),
+            HistRow("4-3-3", "a", "D", human = true, home = false),
+            HistRow("4-3-3", "a", "V", human = false, home = true)
+        )
+        val ctx = Learning.byContext(h)
+        assertEquals(2, ctx.first { it.formation == "Contra humano" }.games)
+        assertEquals(1, ctx.first { it.formation == "Contra CPU" }.games)
+        assertEquals(2, ctx.first { it.formation == "Em casa" }.v)
+        assertEquals(1, Learning.byStyle(h).size)
+    }
+
     @Test fun underdogPlaysCounterAttack() {
         assertEquals("Contra-ataque", TacticEngine.recommend(input(70, 90))!!.tactic.playStyle)
     }
