@@ -47,7 +47,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -173,6 +172,15 @@ private fun rememberTick(ms: Long = 1500L): Int {
         }
     }
     return t
+}
+
+@Composable
+private fun <T> rememberLoaded(initial: T, tick: Int, key: Any?, loader: suspend () -> T): T {
+    var state by remember { mutableStateOf(initial) }
+    LaunchedEffect(tick, key) {
+        state = withContext(Dispatchers.IO) { loader() }
+    }
+    return state
 }
 
 // ------------------------------------------------------------------ componentes visuais
@@ -435,7 +443,7 @@ private fun TodayTab(onGoSettings: () -> Unit, onOpenSlot: (Int) -> Unit) {
     val ctx = LocalContext.current
     val tick = rememberTick(1000L)
     val scope = rememberCoroutineScope()
-    val data by produceState(TodayData(), tick) { value = withContext(Dispatchers.IO) { loadToday(ctx) } }
+    val data = rememberLoaded(TodayData(), tick, null) { loadToday(ctx) }
     var msg by remember { mutableStateOf("") }
     var showDiag by remember { mutableStateOf(false) }
     val enabled = serviceEnabled(ctx)
@@ -534,13 +542,11 @@ private fun SessionsTab() {
     val tick = rememberTick(3000L)
     val scope = rememberCoroutineScope()
     var msg by remember { mutableStateOf("") }
-    val rows by produceState(emptyList<SessionRow>(), tick) {
-        value = withContext(Dispatchers.IO) {
-            val dao = Repo(ctx).dao
-            dao.sessions().map { s ->
-                val counts = dao.typeCounts(s.id).joinToString(" • ") { "${typeLabel(it.type)} ${it.c}" }
-                SessionRow(s, counts, dao.unassignedCount(s.id))
-            }
+    val rows = rememberLoaded(emptyList<SessionRow>(), tick, null) {
+        val dao = Repo(ctx).dao
+        dao.sessions().map { sess ->
+            val counts = dao.typeCounts(sess.id).joinToString(" • ") { "${typeLabel(it.type)} ${it.c}" }
+            SessionRow(sess, counts, dao.unassignedCount(sess.id))
         }
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
@@ -578,7 +584,7 @@ private fun SessionsTab() {
 private fun SlotsTab(onOpen: (Int) -> Unit) {
     val ctx = LocalContext.current
     val tick = rememberTick()
-    val data by produceState(TodayData(), tick) { value = withContext(Dispatchers.IO) { loadToday(ctx) } }
+    val data = rememberLoaded(TodayData(), tick, null) { loadToday(ctx) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
         Text("Slots", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
         for (s in data.slots) SlotCard(s) { onOpen(s.slot) }
@@ -589,7 +595,7 @@ private fun SlotsTab(onOpen: (Int) -> Unit) {
 private fun DirectorTab(onOpen: (Int) -> Unit) {
     val ctx = LocalContext.current
     val tick = rememberTick(3000L)
-    val data by produceState(TodayData(), tick) { value = withContext(Dispatchers.IO) { loadToday(ctx) } }
+    val data = rememberLoaded(TodayData(), tick, null) { loadToday(ctx) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
         Text("Diretor", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
         Text("Escolha o slot para gerar a tática e o plano de mercado. A IA só usa dados já lidos; o que for NI não é presumido.", color = C.MUTED, fontSize = 12.sp)
@@ -601,7 +607,7 @@ private fun DirectorTab(onOpen: (Int) -> Unit) {
 private fun SlotScreen(slot: Int, startTab: Int, onBack: () -> Unit) {
     val ctx = LocalContext.current
     val tick = rememberTick(2000L)
-    val data by produceState(SlotData(), tick, slot) { value = withContext(Dispatchers.IO) { loadSlot(ctx, slot) } }
+    val data = rememberLoaded(SlotData(), tick, slot) { loadSlot(ctx, slot) }
     var tab by remember { mutableIntStateOf(startTab) }
     val tabs = listOf("Resumo", "Pré-jogo", "Elenco", "Calendário", "Tática", "Diretor", "Aprendizado")
     val title = known(data.fields, K.TEAM) ?: known(data.fields, K.HUB_TITLE) ?: "Slot $slot ainda não lido"
