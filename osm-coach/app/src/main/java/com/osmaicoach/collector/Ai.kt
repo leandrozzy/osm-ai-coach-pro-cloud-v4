@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Base64
 import java.io.File
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -18,134 +19,361 @@ object Settings {
     fun get(ctx: Context, key: String, def: String): String = p(ctx).getString(key, def) ?: def
     fun put(ctx: Context, key: String, value: String) { p(ctx).edit().putString(key, value.trim()).apply() }
 
+    /** Versões antigas gravaram nomes de modelo que travam ou não existem mais: volta para detecção automática. */
+    fun migrate(ctx: Context) {
+        if (get(ctx, "settings_v2", "") == "1") return
+        if (get(ctx, "gemini_model", "") == "gemini-flash-latest") put(ctx, "gemini_model", "auto")
+        if (get(ctx, "compat_model", "") == "llama-3.3-70b-versatile") put(ctx, "compat_model", "auto")
+        put(ctx, "settings_v2", "1")
+    }
+
     const val GEMINI_KEY = "gemini_key"
     const val GEMINI_MODEL = "gemini_model"
+    const val GEMINI_RESOLVED = "gemini_model_resolved"
     const val COMPAT_KEY = "compat_key"
     const val COMPAT_BASE = "compat_base"
     const val COMPAT_MODEL = "compat_model"
+    const val COMPAT_RESOLVED = "compat_model_resolved"
+    const val CLAUDE_KEY = "claude_key"
+    const val CLAUDE_MODEL = "claude_model"
+    const val PREFERRED = "preferred_provider"
     const val DAILY_CAP = "daily_cap"
 
-    const val DEFAULT_GEMINI_MODEL = "gemini-flash-latest"
+    /** "auto" = o app pergunta à API quais modelos existem e escolhe um válido. */
+    const val DEFAULT_GEMINI_MODEL = "auto"
     const val DEFAULT_COMPAT_BASE = "https://api.groq.com/openai/v1"
-    const val DEFAULT_COMPAT_MODEL = "llama-3.3-70b-versatile"
+    const val DEFAULT_COMPAT_MODEL = "auto"
+    const val DEFAULT_CLAUDE_MODEL = "claude-haiku-4-5-20251001"
+}
+
+/** Etapa atual da chamada de IA (para a interface mostrar o que está acontecendo). */
+object AiStatus {
+    @Volatile var stage: String = ""
+    @Volatile var since: Long = 0L
+
+    fun set(s: String) {
+        stage = s
+        since = System.currentTimeMillis()
+    }
+}
+
+object ModelPicker {
+    private data class Cand(val id: String, val stable: Boolean, val version: Double, val lite: Boolean)
+
+    /** Escolhe o Flash estável mais novo (sem lite/preview/imagem/áudio) entre os modelos que a chave enxerga. */
+    fun pickGemini(names: List<String>): String? {
+        val banned = listOf("image", "tts", "live", "audio", "embedding", "robotics", "computer", "exp", "thinking", "8b")
+        val cands = names.map { it.removePrefix("models/") }
+            .filter { n -> n.startsWith("gemini") && n.contains("flash") && banned.none { n.contains(it) } }
+            .map { n ->
+                Cand(
+                    n,
+                    !n.contains("preview") && !n.contains("latest"),
+                    Regex("gemini-(\\d+(?:\\.\\d+)?)").find(n)?.groupValues?.get(1)?.toDoubleOrNull() ?: 0.0,
+                    n.contains("lite")
+                )
+            }
+        return cands.sortedWith(
+            compareByDescending<Cand> { it.stable }.thenByDescending { !it.lite }.thenByDescending { it.version }
+        ).firstOrNull()?.id
+    }
+
+    /** Escolhe um modelo de texto grande entre os que o provedor (Groq/xAI/OpenAI-compatível) lista. */
+    fun pickCompat(ids: List<String>): String? {
+        val bad = listOf("whisper", "tts", "guard", "embed", "playai", "orpheus", "distil", "moderation", "image")
+        val ok = ids.filter { id -> bad.none { id.contains(it, ignoreCase = true) } }
+        val prefs = listOf("llama-3.3-70b", "gpt-oss-120b", "llama-3.1-70b", "gpt-oss-20b", "qwen", "grok", "llama-3.1-8b", "llama")
+        for (p in prefs) {
+            val hit = ok.firstOrNull { it.contains(p, ignoreCase = true) }
+            if (hit != null) return hit
+        }
+        return ok.firstOrNull()
+    }
 }
 
 object AiClient {
     data class Reply(val ok: Boolean, val text: String?, val error: String?)
 
-    private val gate = Mutex()
-    private var lastCallAt = 0L
+    private class HttpResult(val code: Int, val body: String)
 
-    private fun post(urlStr: String, headers: Map<String, String>, body: String): Pair<Int, String> {
+    private val gate = Mutex()
+    private var lastGeminiAt = 0L
+    private const val CONNECT_MS = 15000
+    private const val READ_MS = 45000
+
+    private fun request(method: String, urlStr: String, headers: Map<String, String>, body: String?): HttpResult {
         val c = URL(urlStr).openConnection() as HttpURLConnection
         try {
-            c.requestMethod = "POST"
-            c.connectTimeout = 20000
-            c.readTimeout = 70000
-            c.doOutput = true
-            c.setRequestProperty("Content-Type", "application/json")
+            c.requestMethod = method
+            c.connectTimeout = CONNECT_MS
+            c.readTimeout = READ_MS
             for ((k, v) in headers) c.setRequestProperty(k, v)
-            c.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            if (body != null) {
+                c.doOutput = true
+                c.setRequestProperty("Content-Type", "application/json")
+                c.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            }
             val code = c.responseCode
             val stream = if (code in 200..299) c.inputStream else c.errorStream
             val txt = stream?.bufferedReader()?.use { it.readText() } ?: ""
-            return Pair(code, txt)
+            return HttpResult(code, txt)
         } finally {
             c.disconnect()
         }
     }
 
-    /** Respeita limites do plano gratuito: intervalo mínimo entre chamadas e teto diário. */
-    private suspend fun throttle(ctx: Context): String? = gate.withLock {
-        val p = ctx.getSharedPreferences("ai_usage", Context.MODE_PRIVATE)
-        val today = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US).format(java.util.Date())
-        val used = if (p.getString("day", "") == today) p.getInt("count", 0) else 0
-        val cap = Settings.get(ctx, Settings.DAILY_CAP, "80").toIntOrNull() ?: 80
-        if (used >= cap) return@withLock "Teto diário de IA atingido ($cap chamadas)."
-        val wait = 13000L - (System.currentTimeMillis() - lastCallAt)
-        if (wait > 0) delay(wait)
-        lastCallAt = System.currentTimeMillis()
-        p.edit().putString("day", today).putInt("count", used + 1).apply()
-        null
-    }
+    private fun short(s: String): String = s.replace("\n", " ").take(180)
+
+    private fun today(): String = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US).format(java.util.Date())
 
     fun usedToday(ctx: Context): Int {
         val p = ctx.getSharedPreferences("ai_usage", Context.MODE_PRIVATE)
-        val today = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US).format(java.util.Date())
-        return if (p.getString("day", "") == today) p.getInt("count", 0) else 0
+        return if (p.getString("day", "") == today()) p.getInt("count", 0) else 0
     }
+
+    /** Plano gratuito do Gemini: respeita intervalo mínimo e teto diário (só vale para o Gemini). */
+    private suspend fun throttleGemini(ctx: Context): String? = gate.withLock {
+        val p = ctx.getSharedPreferences("ai_usage", Context.MODE_PRIVATE)
+        val used = if (p.getString("day", "") == today()) p.getInt("count", 0) else 0
+        val cap = Settings.get(ctx, Settings.DAILY_CAP, "80").toIntOrNull() ?: 80
+        if (used >= cap) return@withLock "teto diário de $cap chamadas atingido"
+        val wait = 7000L - (System.currentTimeMillis() - lastGeminiAt)
+        if (wait > 0) delay(wait)
+        lastGeminiAt = System.currentTimeMillis()
+        p.edit().putString("day", today()).putInt("count", used + 1).apply()
+        null
+    }
+
+    // ---------------------------------------------------------------- descoberta de modelos
+
+    private fun listGemini(key: String): List<String> {
+        val r = request("GET", "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200", mapOf("x-goog-api-key" to key), null)
+        if (r.code !in 200..299) return emptyList()
+        val arr = JSONObject(r.body).optJSONArray("models") ?: return emptyList()
+        val out = ArrayList<String>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val methods = o.optJSONArray("supportedGenerationMethods")
+            var gen = methods == null
+            if (methods != null) for (j in 0 until methods.length()) if (methods.optString(j) == "generateContent") gen = true
+            if (gen) out.add(o.optString("name"))
+        }
+        return out
+    }
+
+    private fun listCompat(base: String, key: String): List<String> {
+        val r = request("GET", "$base/models", mapOf("Authorization" to "Bearer $key"), null)
+        if (r.code !in 200..299) return emptyList()
+        val arr = JSONObject(r.body).optJSONArray("data") ?: return emptyList()
+        val out = ArrayList<String>()
+        for (i in 0 until arr.length()) arr.optJSONObject(i)?.optString("id")?.let { out.add(it) }
+        return out
+    }
+
+    private suspend fun geminiModel(ctx: Context, key: String, forceDiscover: Boolean): String {
+        val setting = Settings.get(ctx, Settings.GEMINI_MODEL, Settings.DEFAULT_GEMINI_MODEL)
+        if (setting.isNotBlank() && !setting.equals("auto", true)) return setting
+        val cached = Settings.get(ctx, Settings.GEMINI_RESOLVED, "")
+        if (cached.isNotBlank() && !forceDiscover) return cached
+        val picked = withContext(Dispatchers.IO) {
+            try { ModelPicker.pickGemini(listGemini(key)) } catch (e: Exception) { null }
+        }
+        if (picked != null) Settings.put(ctx, Settings.GEMINI_RESOLVED, picked)
+        return picked ?: cached.ifBlank { "gemini-2.5-flash" }
+    }
+
+    private suspend fun compatModel(ctx: Context, base: String, key: String, forceDiscover: Boolean): String {
+        val setting = Settings.get(ctx, Settings.COMPAT_MODEL, Settings.DEFAULT_COMPAT_MODEL)
+        if (setting.isNotBlank() && !setting.equals("auto", true) && !forceDiscover) return setting
+        val cached = Settings.get(ctx, Settings.COMPAT_RESOLVED, "")
+        if (cached.isNotBlank() && !forceDiscover) return cached
+        val picked = withContext(Dispatchers.IO) {
+            try { ModelPicker.pickCompat(listCompat(base, key)) } catch (e: Exception) { null }
+        }
+        if (picked != null) Settings.put(ctx, Settings.COMPAT_RESOLVED, picked)
+        return picked ?: cached.ifBlank { "llama-3.3-70b-versatile" }
+    }
+
+    // ---------------------------------------------------------------- provedores
 
     private suspend fun gemini(ctx: Context, prompt: String, jpeg: ByteArray?): Reply = withContext(Dispatchers.IO) {
         val key = Settings.get(ctx, Settings.GEMINI_KEY, "")
-        if (key.isBlank()) return@withContext Reply(false, null, "Chave do Gemini não configurada.")
-        val model = Settings.get(ctx, Settings.GEMINI_MODEL, Settings.DEFAULT_GEMINI_MODEL)
-        val parts = JSONArray().put(JSONObject().put("text", prompt))
-        if (jpeg != null) {
-            parts.put(
-                JSONObject().put(
-                    "inline_data",
-                    JSONObject().put("mime_type", "image/jpeg").put("data", Base64.encodeToString(jpeg, Base64.NO_WRAP))
-                )
-            )
-        }
-        val body = JSONObject()
-            .put("contents", JSONArray().put(JSONObject().put("parts", parts)))
-            .put("generationConfig", JSONObject().put("temperature", 0.1).put("responseMimeType", "application/json"))
-            .toString()
+        if (key.isBlank()) return@withContext Reply(false, null, "chave do Gemini não configurada")
+        var model = geminiModel(ctx, key, false)
+        var withThinking = true
+        var rediscovered = false
         var lastErr = "falha desconhecida"
-        for (attempt in 1..3) {
-            val capErr = throttle(ctx)
+        var attempt = 1
+        while (attempt <= 2) {
+            val capErr = throttleGemini(ctx)
             if (capErr != null) return@withContext Reply(false, null, capErr)
             Diag.aiCalls.incrementAndGet()
-            try {
-                val (code, txt) = post(
-                    "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent",
-                    mapOf("x-goog-api-key" to key), body
-                )
-                if (code in 200..299) {
-                    val t = JSONObject(txt).optJSONArray("candidates")?.optJSONObject(0)
-                        ?.optJSONObject("content")?.optJSONArray("parts")?.optJSONObject(0)?.optString("text")
-                    return@withContext if (t.isNullOrBlank()) Reply(false, null, "Resposta vazia do Gemini.") else Reply(true, t, null)
-                }
-                lastErr = "Gemini HTTP $code: " + txt.take(160).replace("\n", " ")
-                if (code != 429 && code != 503) break
-                delay(20000L)
-            } catch (e: Exception) {
-                lastErr = "Gemini: " + (e.message ?: e.javaClass.simpleName)
-                delay(5000L)
+            AiStatus.set("Gemini ($model) — tentativa $attempt/2")
+            val parts = JSONArray().put(JSONObject().put("text", prompt))
+            if (jpeg != null) {
+                parts.put(JSONObject().put("inline_data", JSONObject().put("mime_type", "image/jpeg").put("data", Base64.encodeToString(jpeg, Base64.NO_WRAP))))
             }
+            val gen = JSONObject().put("temperature", 0.1).put("responseMimeType", "application/json").put("maxOutputTokens", 2048)
+            if (withThinking) gen.put("thinkingConfig", JSONObject().put("thinkingBudget", 0))
+            val body = JSONObject().put("contents", JSONArray().put(JSONObject().put("parts", parts))).put("generationConfig", gen).toString()
+            try {
+                val r = request("POST", "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent", mapOf("x-goog-api-key" to key), body)
+                if (r.code in 200..299) {
+                    val t = JSONObject(r.body).optJSONArray("candidates")?.optJSONObject(0)
+                        ?.optJSONObject("content")?.optJSONArray("parts")?.optJSONObject(0)?.optString("text")
+                    return@withContext if (t.isNullOrBlank()) Reply(false, null, "resposta vazia") else Reply(true, t, null)
+                }
+                lastErr = "HTTP ${r.code}: " + short(r.body)
+                if (r.code == 400 && withThinking && r.body.contains("thinking", true)) {
+                    withThinking = false
+                    continue
+                }
+                if ((r.code == 404 || r.code == 400) && !rediscovered && r.body.contains("model", true)) {
+                    rediscovered = true
+                    model = geminiModel(ctx, key, true)
+                    continue
+                }
+                if (r.code != 429 && r.code != 503 && r.code != 500) break
+            } catch (e: SocketTimeoutException) {
+                lastErr = "tempo esgotado (${READ_MS / 1000}s) no modelo $model"
+            } catch (e: Exception) {
+                lastErr = e.message ?: e.javaClass.simpleName
+            }
+            attempt++
+            if (attempt <= 2) delay(4000L)
         }
         Reply(false, null, lastErr)
     }
 
-    private suspend fun compat(ctx: Context, prompt: String): Reply = withContext(Dispatchers.IO) {
-        val key = Settings.get(ctx, Settings.COMPAT_KEY, "")
-        if (key.isBlank()) return@withContext Reply(false, null, "Chave do provedor alternativo não configurada.")
-        val base = Settings.get(ctx, Settings.COMPAT_BASE, Settings.DEFAULT_COMPAT_BASE).trimEnd('/')
-        val model = Settings.get(ctx, Settings.COMPAT_MODEL, Settings.DEFAULT_COMPAT_MODEL)
-        val body = JSONObject()
-            .put("model", model)
-            .put("temperature", 0.2)
-            .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", prompt)))
-            .put("response_format", JSONObject().put("type", "json_object"))
-            .toString()
+    private suspend fun claude(ctx: Context, prompt: String, jpeg: ByteArray?): Reply = withContext(Dispatchers.IO) {
+        val key = Settings.get(ctx, Settings.CLAUDE_KEY, "")
+        if (key.isBlank()) return@withContext Reply(false, null, "chave do Claude não configurada")
+        val model = Settings.get(ctx, Settings.CLAUDE_MODEL, Settings.DEFAULT_CLAUDE_MODEL).ifBlank { Settings.DEFAULT_CLAUDE_MODEL }
+        AiStatus.set("Claude ($model)")
+        Diag.aiCalls.incrementAndGet()
+        val content = JSONArray()
+        if (jpeg != null) {
+            content.put(
+                JSONObject().put("type", "image").put(
+                    "source",
+                    JSONObject().put("type", "base64").put("media_type", "image/jpeg").put("data", Base64.encodeToString(jpeg, Base64.NO_WRAP))
+                )
+            )
+        }
+        content.put(JSONObject().put("type", "text").put("text", prompt))
+        val body = JSONObject().put("model", model).put("max_tokens", 2048)
+            .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", content))).toString()
         try {
-            val (code, txt) = post("$base/chat/completions", mapOf("Authorization" to "Bearer $key"), body)
-            if (code in 200..299) {
-                val t = JSONObject(txt).optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content")
-                if (t.isNullOrBlank()) Reply(false, null, "Resposta vazia do provedor.") else Reply(true, t, null)
-            } else Reply(false, null, "Provedor HTTP $code: " + txt.take(160).replace("\n", " "))
+            val r = request("POST", "https://api.anthropic.com/v1/messages", mapOf("x-api-key" to key, "anthropic-version" to "2023-06-01"), body)
+            if (r.code in 200..299) {
+                val t = JSONObject(r.body).optJSONArray("content")?.optJSONObject(0)?.optString("text")
+                if (t.isNullOrBlank()) Reply(false, null, "resposta vazia") else Reply(true, t, null)
+            } else Reply(false, null, "HTTP ${r.code}: " + short(r.body))
+        } catch (e: SocketTimeoutException) {
+            Reply(false, null, "tempo esgotado (${READ_MS / 1000}s)")
         } catch (e: Exception) {
-            Reply(false, null, "Provedor: " + (e.message ?: e.javaClass.simpleName))
+            Reply(false, null, e.message ?: e.javaClass.simpleName)
         }
     }
 
-    /** Gemini primeiro; sem imagem, cai para o provedor alternativo (Groq/xAI etc.) se o Gemini falhar. */
-    suspend fun ask(ctx: Context, prompt: String, jpeg: ByteArray?): Reply {
-        val g = gemini(ctx, prompt, jpeg)
-        if (g.ok || jpeg != null) return g
-        val c = compat(ctx, prompt)
-        return if (c.ok) c else Reply(false, null, (g.error ?: "") + " | " + (c.error ?: ""))
+    private suspend fun compat(ctx: Context, prompt: String): Reply = withContext(Dispatchers.IO) {
+        val key = Settings.get(ctx, Settings.COMPAT_KEY, "")
+        if (key.isBlank()) return@withContext Reply(false, null, "chave alternativa não configurada")
+        val base = Settings.get(ctx, Settings.COMPAT_BASE, Settings.DEFAULT_COMPAT_BASE).trimEnd('/')
+        var model = compatModel(ctx, base, key, false)
+        var rediscovered = false
+        var lastErr = "falha desconhecida"
+        for (attempt in 1..2) {
+            AiStatus.set("Provedor alternativo ($model)")
+            val body = JSONObject().put("model", model).put("temperature", 0.2)
+                .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", prompt)))
+                .put("response_format", JSONObject().put("type", "json_object")).toString()
+            try {
+                val r = request("POST", "$base/chat/completions", mapOf("Authorization" to "Bearer $key"), body)
+                if (r.code in 200..299) {
+                    val t = JSONObject(r.body).optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content")
+                    return@withContext if (t.isNullOrBlank()) Reply(false, null, "resposta vazia") else Reply(true, t, null)
+                }
+                lastErr = "HTTP ${r.code}: " + short(r.body)
+                if ((r.code == 404 || r.code == 400) && !rediscovered) {
+                    rediscovered = true
+                    model = compatModel(ctx, base, key, true)
+                    continue
+                }
+                if (r.code != 429 && r.code != 503) break
+            } catch (e: SocketTimeoutException) {
+                lastErr = "tempo esgotado (${READ_MS / 1000}s)"
+            } catch (e: Exception) {
+                lastErr = e.message ?: e.javaClass.simpleName
+            }
+            if (attempt == 1) delay(3000L)
+        }
+        Reply(false, null, lastErr)
+    }
+
+    /** Ordem: o provedor preferido primeiro; só entram os que têm chave. Imagem só vai para Gemini/Claude. */
+    fun providerOrder(ctx: Context, hasImage: Boolean): List<String> {
+        val have = ArrayList<String>()
+        if (Settings.get(ctx, Settings.GEMINI_KEY, "").isNotBlank()) have.add("gemini")
+        if (Settings.get(ctx, Settings.CLAUDE_KEY, "").isNotBlank()) have.add("claude")
+        if (!hasImage && Settings.get(ctx, Settings.COMPAT_KEY, "").isNotBlank()) have.add("compat")
+        val pref = Settings.get(ctx, Settings.PREFERRED, "gemini")
+        return if (pref in have) listOf(pref) + have.filter { it != pref } else have
+    }
+
+    suspend fun askProvider(ctx: Context, provider: String, prompt: String, jpeg: ByteArray?): Reply = when (provider) {
+        "gemini" -> gemini(ctx, prompt, jpeg)
+        "claude" -> claude(ctx, prompt, jpeg)
+        else -> compat(ctx, prompt)
+    }
+
+    private fun label(p: String): String = when (p) {
+        "gemini" -> "Gemini"
+        "claude" -> "Claude"
+        else -> "Alternativo"
+    }
+
+    /** Tenta cada provedor com chave, em ordem, com orçamento total de tempo. Nunca fica preso. */
+    suspend fun ask(ctx: Context, prompt: String, jpeg: ByteArray?, budgetMs: Long = 150000L): Reply {
+        val deadline = System.currentTimeMillis() + budgetMs
+        val order = providerOrder(ctx, jpeg != null)
+        if (order.isEmpty()) return Reply(false, null, "Nenhuma chave de IA configurada. Abra Ajustes e cole a chave do Google AI Studio.")
+        val errors = ArrayList<String>()
+        for (p in order) {
+            if (System.currentTimeMillis() > deadline) {
+                errors.add("tempo total esgotado")
+                break
+            }
+            val started = System.currentTimeMillis()
+            val r = askProvider(ctx, p, prompt, jpeg)
+            if (r.ok) {
+                AiStatus.set("")
+                return r
+            }
+            errors.add(label(p) + " (" + ((System.currentTimeMillis() - started) / 1000) + "s): " + (r.error ?: "erro"))
+        }
+        AiStatus.set("")
+        return Reply(false, null, errors.joinToString(" | "))
+    }
+
+    /** Teste rápido de cada provedor configurado: mostra se responde e quanto tempo leva. */
+    suspend fun test(ctx: Context): String {
+        val order = providerOrder(ctx, false)
+        if (order.isEmpty()) return "Nenhuma chave configurada."
+        val lines = ArrayList<String>()
+        for (p in order) {
+            val t0 = System.currentTimeMillis()
+            val r = askProvider(ctx, p, "Responda somente com o JSON {\"ok\": true}", null)
+            val secs = (System.currentTimeMillis() - t0) / 100 / 10.0
+            val model = when (p) {
+                "gemini" -> Settings.get(ctx, Settings.GEMINI_RESOLVED, "").ifBlank { Settings.get(ctx, Settings.GEMINI_MODEL, "auto") }
+                "claude" -> Settings.get(ctx, Settings.CLAUDE_MODEL, Settings.DEFAULT_CLAUDE_MODEL)
+                else -> Settings.get(ctx, Settings.COMPAT_RESOLVED, "").ifBlank { Settings.get(ctx, Settings.COMPAT_MODEL, "auto") }
+            }
+            lines.add(if (r.ok) "✔ ${label(p)} ($model): respondeu em ${secs}s" else "✘ ${label(p)} ($model): ${r.error}")
+        }
+        AiStatus.set("")
+        return lines.joinToString("\n")
     }
 
     fun parseJson(raw: String?): JSONObject? {
@@ -246,53 +474,77 @@ object AiMapper {
 }
 
 /** Roda ao encerrar a captura: reprocessa quadros sem slot e consulta a IA só para o que o OCR local não resolveu. */
+
+/** Roda ao encerrar a captura (e sob demanda): reprocessa quadros sem slot e consulta a IA só para o que o OCR local não resolveu. */
 object Processor {
+    data class ReadResult(val state: String, val changed: Int, val note: String)
+
+    private suspend fun readScreen(ctx: Context, repo: Repo, s: ScreenEntity): ReadResult {
+        val hasVision = Settings.get(ctx, Settings.GEMINI_KEY, "").isNotBlank() || Settings.get(ctx, Settings.CLAUDE_KEY, "").isNotBlank()
+        if (!hasVision) return ReadResult("skipped", 0, "sem chave de IA com leitura de imagem (Gemini ou Claude)")
+        if (s.slotId == 0) return ReadResult("pending", 0, "aguardando identificação de slot")
+        val path = s.imagePath
+        val bytes = if (path != null) File(path).takeIf { it.exists() }?.readBytes() else null
+        if (bytes == null) return ReadResult("failed", 0, "imagem ausente")
+        val type = runCatching { ScreenType.valueOf(s.type) }.getOrDefault(ScreenType.OTHER_OSM)
+        val prompt = if (type == ScreenType.SQUAD) AiPrompts.squad() else AiPrompts.report()
+        val reply = AiClient.ask(ctx, prompt, bytes, 100000L)
+        val json = AiClient.parseJson(reply.text)
+        if (!reply.ok || json == null) {
+            val err = reply.error ?: "IA devolveu JSON inválido"
+            Diag.lastError = err
+            return ReadResult("failed", 0, err.take(200))
+        }
+        val now = System.currentTimeMillis()
+        if (type != ScreenType.SQUAD && AiMapper.reportKind(json) != "rival_report") {
+            return ReadResult("done", 0, "IA: não é o relatório do rival (" + AiMapper.reportKind(json).ifBlank { "?" } + ")")
+        }
+        val changed = if (type == ScreenType.SQUAD) {
+            val (team, players) = AiMapper.squad(json)
+            repo.apply(s.slotId, Extraction(ScreenType.SQUAD, players = players, ownerTeam = team), "ai", now)
+        } else {
+            repo.apply(s.slotId, Extraction(ScreenType.REPORT, fields = AiMapper.report(json)), "ai", now)
+        }
+        if (changed > 0) {
+            Diag.extracted.addAndGet(changed)
+            Diag.lastUpdateAt = now
+        }
+        return ReadResult("done", changed, "IA aplicou $changed campos")
+    }
+
     suspend fun run(ctx: Context, sessionId: String) {
         val repo = Repo(ctx)
         val dao = repo.dao
-        FramePipeline.get(ctx).reprocessUnassigned()
-
-        val hasKey = Settings.get(ctx, Settings.GEMINI_KEY, "").isNotBlank()
-        for (s in dao.pendingAi(8)) {
-            if (!hasKey) {
-                dao.updateScreenAi(s.id, "skipped", s.extracted, "sem chave de IA")
-                continue
+        val unassignedN = dao.unassignedWithImage(40).size
+        val pending = dao.pendingAi(8)
+        ProcessState.begin("Reprocessando telas sem slot…", unassignedN + pending.size)
+        val fixed = FramePipeline.get(ctx).reprocessUnassigned(40) { ProcessState.tick() }
+        var applied = 0
+        var failed = 0
+        var skipped = 0
+        var noData = 0
+        for ((i, s) in pending.withIndex()) {
+            ProcessState.label("Lendo tela ${i + 1} de ${pending.size} com IA…")
+            val r = readScreen(ctx, repo, s)
+            dao.updateScreenAi(s.id, r.state, s.extracted + r.changed, r.note)
+            when {
+                r.state == "failed" -> failed++
+                r.state == "skipped" -> skipped++
+                r.changed > 0 -> applied += r.changed
+                else -> noData++
             }
-            if (s.slotId == 0) {
-                dao.updateScreenAi(s.id, "pending", s.extracted, "aguardando identificação de slot")
-                continue
-            }
-            val path = s.imagePath
-            val bytes = if (path != null) File(path).takeIf { it.exists() }?.readBytes() else null
-            if (bytes == null) {
-                dao.updateScreenAi(s.id, "failed", s.extracted, "imagem ausente")
-                continue
-            }
-            val type = runCatching { ScreenType.valueOf(s.type) }.getOrDefault(ScreenType.OTHER_OSM)
-            val prompt = if (type == ScreenType.SQUAD) AiPrompts.squad() else AiPrompts.report()
-            val reply = AiClient.ask(ctx, prompt, bytes)
-            val json = AiClient.parseJson(reply.text)
-            if (!reply.ok || json == null) {
-                Diag.lastError = reply.error ?: "IA devolveu JSON inválido"
-                dao.updateScreenAi(s.id, "failed", s.extracted, (reply.error ?: "JSON inválido").take(120))
-                continue
-            }
-            val now = System.currentTimeMillis()
-            if (type != ScreenType.SQUAD && AiMapper.reportKind(json) != "rival_report") {
-                dao.updateScreenAi(s.id, "done", s.extracted, "IA: não é relatório do rival (" + AiMapper.reportKind(json) + ")")
-                continue
-            }
-            val changed = if (type == ScreenType.SQUAD) {
-                val (team, players) = AiMapper.squad(json)
-                repo.apply(s.slotId, Extraction(ScreenType.SQUAD, players = players, ownerTeam = team), "ai", now)
-            } else {
-                repo.apply(s.slotId, Extraction(ScreenType.REPORT, fields = AiMapper.report(json)), "ai", now)
-            }
-            if (changed > 0) {
-                Diag.extracted.addAndGet(changed)
-                Diag.lastUpdateAt = now
-            }
-            dao.updateScreenAi(s.id, "done", s.extracted + changed, "IA aplicou $changed campos")
+            ProcessState.tick()
         }
+        ProcessState.finish("Telas reprocessadas: $fixed • IA: $applied campos aplicados, $noData sem dados do rival, $failed falhas, $skipped ignoradas")
+    }
+
+    suspend fun readOne(ctx: Context, id: Long) {
+        val repo = Repo(ctx)
+        val s = repo.dao.screen(id) ?: return
+        ProcessState.begin("Lendo tela com IA…", 1)
+        val r = readScreen(ctx, repo, s)
+        repo.dao.updateScreenAi(s.id, r.state, s.extracted + r.changed, r.note)
+        ProcessState.tick()
+        ProcessState.finish(r.note)
     }
 }

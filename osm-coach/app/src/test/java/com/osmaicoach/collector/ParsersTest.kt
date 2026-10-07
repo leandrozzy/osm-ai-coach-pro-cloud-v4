@@ -176,6 +176,14 @@ class ParsersTest {
         assertNull(Money.fixLostComma("75M", 61))
     }
 
+    @Test fun moneyIsFoundInsideNoisyTokens() {
+        assertEquals("7,6M", Money.extract("©7,6M"))
+        assertEquals("1,7M", Money.extract("S 1,7M"))
+        assertEquals("942K", Money.extract("942K"))
+        assertNull(Money.extract("Jogador"))
+        assertNull(Money.extract("73"))
+    }
+
     @Test fun moneyRequiresSuffix() {
         assertEquals(7.3, Money.parse("7,3M")!!, 0.001)
         assertEquals(0.942, Money.parse("942K")!!, 0.001)

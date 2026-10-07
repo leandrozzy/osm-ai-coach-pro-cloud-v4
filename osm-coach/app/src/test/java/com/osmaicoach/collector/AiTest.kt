@@ -48,6 +48,23 @@ class AiTest {
         assertEquals("", AiMapper.reportKind(JSONObject("""{"formation":"4-4-2"}""")))
     }
 
+    @Test fun geminiModelIsPickedFromWhatTheKeyCanSee() {
+        val names = listOf(
+            "models/gemini-2.5-pro", "models/gemini-2.5-flash-image", "models/gemini-flash-latest",
+            "models/gemini-3-flash-preview", "models/gemini-2.5-flash-lite", "models/gemini-2.5-flash"
+        )
+        assertEquals("gemini-2.5-flash", ModelPicker.pickGemini(names))
+        assertEquals("gemini-3-flash", ModelPicker.pickGemini(names + "models/gemini-3-flash"))
+        assertNull(ModelPicker.pickGemini(listOf("models/gemini-2.5-pro", "models/text-embedding-004")))
+    }
+
+    @Test fun compatModelSkipsAudioAndPrefersBigLlama() {
+        assertEquals("llama-3.3-70b-versatile", ModelPicker.pickCompat(listOf("whisper-large-v3", "llama-3.1-8b-instant", "llama-3.3-70b-versatile")))
+        assertEquals("openai/gpt-oss-120b", ModelPicker.pickCompat(listOf("whisper-large-v3", "openai/gpt-oss-120b", "llama-guard-4")))
+        assertEquals("grok-4", ModelPicker.pickCompat(listOf("grok-4", "grok-3-mini")))
+        assertNull(ModelPicker.pickCompat(listOf("whisper-large-v3", "playai-tts")))
+    }
+
     @Test fun jsonFencesAreStripped() {
         val j = AiClient.parseJson("```json\n{\"a\":1}\n```")
         assertNotNull(j)

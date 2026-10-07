@@ -299,8 +299,11 @@ class FramePipeline private constructor(private val ctx: Context) {
             if (unassigned) Diag.unassigned.incrementAndGet()
 
             // Tela desconhecida do OSM com cara de relatório do rival: guarda a imagem para a IA confirmar e ler.
+            val rivalName = asg.slot?.let { repo.fieldMap(it)[K.RIVAL_TEAM]?.value }
+            val mentionsRival = rivalName != null && Txt.key(rivalName).length >= 4 &&
+                Txt.key(ocr.fullText).contains(Txt.key(rivalName))
             val reportHint = type == ScreenType.OTHER_OSM && asg.slot != null &&
-                reportCandidates < 10 && Parsers.hasReportHint(ocr)
+                reportCandidates < 12 && (Parsers.hasReportHint(ocr) || mentionsRival)
             var path: String? = null
             if (((unassigned && dataType) || ex.needsAi || reportHint) && imagesThisSession < 60) {
                 path = ImageIo.saveJpeg(ctx, bmp, sessionId, now)
@@ -319,7 +322,7 @@ class FramePipeline private constructor(private val ctx: Context) {
     }
 
     /** Reprocessa quadros sem slot (idempotente): tenta identificar pelo dono do cabeçalho/pré-jogo. */
-    suspend fun reprocessUnassigned(limit: Int = 40): Int {
+    suspend fun reprocessUnassigned(limit: Int = 40, onStep: () -> Unit = {}): Int {
         var fixed = 0
         val now = System.currentTimeMillis()
         for (s in dao.unassignedWithImage(limit)) {
@@ -345,6 +348,7 @@ class FramePipeline private constructor(private val ctx: Context) {
                 }
             } finally {
                 bmp.recycle()
+                onStep()
             }
         }
         return fixed

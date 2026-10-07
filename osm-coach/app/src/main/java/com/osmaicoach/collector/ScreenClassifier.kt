@@ -27,7 +27,7 @@ object ScreenClassifier {
         if (jornada.findAll(t).count() >= 4) return ScreenType.CALENDAR
         if (t.contains("idade") && t.contains("valor") && t.contains("jogador")) return ScreenType.SQUAD
         // Lista rolada: o cabeçalho some, mas continuam as colunas de idade e valor.
-        val moneyRight = ocr.tokens.count { it.xc > 0.90f && Money.valid(it.text) }
+        val moneyRight = ocr.tokens.count { it.xc > 0.85f && Money.extract(it.text) != null }
         val ages = ocr.tokens.count { tk ->
             val n = tk.text.toIntOrNull()
             n != null && n in 15..45 && tk.xc in 0.50f..0.60f

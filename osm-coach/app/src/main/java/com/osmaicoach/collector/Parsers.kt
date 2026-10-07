@@ -84,8 +84,8 @@ object Parsers {
         }
         if (roundRead != null) f[K.ROUND] = Reading(roundRead.toString(), 0.9)
 
-        o.tokens.firstOrNull { it.yc < 0.09f && it.xc in 0.10f..0.22f && Money.valid(it.text) }
-            ?.let { f[K.CASH] = Reading(it.text.trim(), 0.85) }
+        o.tokens.filter { it.yc < 0.09f && it.xc in 0.10f..0.22f }.mapNotNull { Money.extract(it.text) }.firstOrNull()
+            ?.let { f[K.CASH] = Reading(it, 0.85) }
 
         val teamLines = o.lines.filter {
             it.yc in 0.33f..0.395f && Txt.letters(it.text) >= 3 && !Txt.norm(it.text).contains("arbitro")
@@ -198,8 +198,8 @@ object Parsers {
             Regex("posicao:?\\s*(\\d{1,2})").find(n)?.let { f["x.pos"] = Reading(it.groupValues[1], 0.85) }
             Regex("objetivo:?\\s*(\\d{1,2})").find(n)?.let { f["x.objective"] = Reading(it.groupValues[1], 0.8) }
         }
-        o.tokens.firstOrNull { it.xc > 0.88f && it.yc in 0.12f..0.18f && Money.valid(it.text) }
-            ?.let { f["x.value"] = Reading(it.text.trim(), 0.85) }
+        o.tokens.filter { it.xc > 0.85f && it.yc in 0.12f..0.18f }.mapNotNull { Money.extract(it.text) }.firstOrNull()
+            ?.let { f["x.value"] = Reading(it, 0.85) }
 
         if (!hasHeader) f.clear()
 
@@ -234,7 +234,7 @@ object Parsers {
                 "DEF", "GOL" -> col(defX)
                 else -> null
             }?.takeIf { it in 30..120 }
-            val value = band.firstOrNull { it.xc > 0.88f && Money.valid(it.text) }?.text?.trim()
+            val value = band.filter { it.xc > 0.85f }.mapNotNull { Money.extract(it.text) }.firstOrNull()
             if (strength == null && value == null) continue
             players.add(
                 PlayerRead(
@@ -414,7 +414,7 @@ object Parsers {
             val club = clubToks.filter { it.yc <= a.yc + 0.012f }.sortedBy { it.l }.joinToString(" ") { it.text.trim() }.trim()
             val nick = clubToks.filter { it.yc > a.yc + 0.012f }.sortedBy { it.l }.joinToString(" ") { it.text.trim() }.trim()
             val nums = band.filter { it.xc in 0.79f..0.92f && intTok(it) != null }.sortedBy { it.xc }.mapNotNull { intTok(it) }
-            val price = band.firstOrNull { it.xc > 0.925f && Money.valid(it.text) }?.text?.trim()
+            val price = band.filter { it.xc > 0.90f }.mapNotNull { Money.extract(it.text) }.firstOrNull()
             if (price == null) continue
             val cat = Pos.cat(posTok?.text)
             // Ordem das colunas: Ata, Def, Med.

@@ -200,6 +200,9 @@ interface CoachDao {
     @Query("SELECT * FROM screens WHERE slotId = 0 AND imagePath IS NOT NULL AND aiState != 'done' ORDER BY at ASC LIMIT :limit")
     suspend fun unassignedWithImage(limit: Int): List<ScreenEntity>
 
+    @Query("SELECT * FROM screens WHERE imagePath IS NOT NULL ORDER BY at DESC LIMIT :limit")
+    suspend fun savedScreens(limit: Int): List<ScreenEntity>
+
     @Query("SELECT type, COUNT(*) AS c FROM screens WHERE sessionId = :id GROUP BY type")
     suspend fun typeCounts(id: String): List<TypeStat>
 

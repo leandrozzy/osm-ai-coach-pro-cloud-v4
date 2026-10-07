@@ -183,6 +183,16 @@ object Money {
 
     fun valid(s: String?): Boolean = parse(s) != null
 
+    private val reFind = Regex("(\\d{1,3}(?:[.,]\\d{1,2})?)\\s*([MKmk])(?![A-Za-z])")
+
+    /** Acha dinheiro dentro de um token sujo pelo ícone da moeda (ex.: "©7,6M" -> "7,6M"). */
+    fun extract(s: String?): String? {
+        if (s == null) return null
+        val m = reFind.find(s) ?: return null
+        val t = m.groupValues[1] + m.groupValues[2].uppercase()
+        return if (valid(t)) t else null
+    }
+
     /**
      * O OCR às vezes perde a vírgula ("27,5M" vira "275M"). Para times fracos (força <= 80),
      * um valor de 3 dígitos em M é implausível: reinsere a vírgula antes do último dígito.

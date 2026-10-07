@@ -116,7 +116,7 @@ object MarketValidator {
 object Director {
     data class Outcome(val ok: Boolean, val json: String?, val error: String?)
 
-    suspend fun context(repo: Repo, slot: Int): JSONObject {
+    suspend fun context(repo: Repo, slot: Int, forMarket: Boolean = false): JSONObject {
         val dao = repo.dao
         val f = repo.fieldMap(slot)
         val ctx = JSONObject()
@@ -141,7 +141,9 @@ object Director {
         }
         ctx.put("elenco_rival_lido", rival)
 
-        val matches = dao.matchesOf(slot).sortedBy { it.round ?: 999 }
+        val matches = dao.matchesOf(slot).sortedBy { it.round ?: 999 }.let { all ->
+            all.filter { it.result != null }.takeLast(8) + all.filter { it.result == null }.take(3)
+        }
         val played = JSONArray()
         val future = JSONArray()
         for (m in matches) {
@@ -162,7 +164,7 @@ object Director {
         ctx.put("vagas_para_vender", MarketPlanner.sellSlotsLeft(f[K.SELLING]?.value))
 
         val listings = JSONArray()
-        for (l in dao.listingsOf(slot).sortedByDescending { it.strength ?: 0 }.take(40)) {
+        for (l in (if (forMarket) dao.listingsOf(slot).sortedByDescending { it.strength ?: 0 }.take(40) else emptyList())) {
             listings.put(
                 JSONObject().put("nome", l.name).put("cat", l.cat ?: NI).put("idade", l.age ?: NI)
                     .put("forca", l.strength ?: NI).put("preco", l.priceText ?: NI)
@@ -214,7 +216,7 @@ object Director {
     }
 
     suspend fun generateMarket(ctx: Context, repo: Repo, slot: Int): Outcome {
-        val c = context(repo, slot)
+        val c = context(repo, slot, true)
         val f = repo.fieldMap(slot)
         val squadCount = c.getJSONArray("meu_elenco").length()
         if (squadCount < 8) {

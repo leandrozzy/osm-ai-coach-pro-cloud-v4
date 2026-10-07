@@ -16,6 +16,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -95,6 +96,7 @@ private object C {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Settings.migrate(applicationContext)
         AppScope.scope.launch { Repo(applicationContext).purgeLegacy() }
         setContent {
             MaterialTheme(
@@ -361,50 +363,83 @@ private fun App() {
 }
 
 @Composable
-private fun Step(n: Int, title: String, ok: Boolean?, content: @Composable () -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(top = 12.dp)) {
-        Box(
-            Modifier.size(28.dp).clip(RoundedCornerShape(50)).background(if (ok == true) Color(0xFF14532D) else C.SURFACE2),
-            contentAlignment = Alignment.Center
-        ) { Text(if (ok == true) "✔" else n.toString(), fontWeight = FontWeight.Bold, fontSize = 13.sp) }
-        Spacer(Modifier.width(10.dp))
-        Column(Modifier.weight(1f)) {
-            Text(title, fontWeight = FontWeight.SemiBold)
-            if (ok != true) content()
+private fun PendingRow(text: String, button: String, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(text, fontSize = 12.sp, color = C.MUTED, modifier = Modifier.weight(1f))
+        OutlinedButton(
+            onClick = onClick,
+            modifier = Modifier.height(32.dp),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+        ) { Text(button, fontSize = 11.sp) }
+    }
+}
+
+/** Faixa compacta: só mostra o que ainda falta configurar e fica recolhida quando a leitura já está ativa. */
+@Composable
+private fun SetupBanner(ctx: Context, enabled: Boolean, connected: Boolean, batteryOk: Boolean, hasKey: Boolean, onGoSettings: () -> Unit) {
+    val ready = enabled && connected
+    var open by remember { mutableStateOf(!ready) }
+    val pending = (if (ready) 0 else 1) + (if (batteryOk) 0 else 1) + (if (hasKey) 0 else 1)
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).clickable { open = !open },
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = C.SURFACE)
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("⚙ Configuração: $pending pendente(s)", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = C.WARN)
+                Text(if (open) "▲" else "▼", fontSize = 11.sp, color = C.MUTED)
+            }
+            if (open) {
+                if (!ready) {
+                    PendingRow("1. Ativar a leitura automática (Acessibilidade → OSM AI Coach)", "Abrir") {
+                        openSettings(ctx, android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                    }
+                    if (!enabled) {
+                        PendingRow("Chave cinza? Info do app → ⋮ → Permitir configurações restritas", "Info do app") {
+                            openSettings(ctx, android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, true)
+                        }
+                    } else {
+                        Text("Ativado; aguardando o Android conectar o serviço…", fontSize = 11.sp, color = C.WARN, modifier = Modifier.padding(top = 4.dp))
+                    }
+                }
+                if (!batteryOk) {
+                    PendingRow("Bateria sem restrição (evita o Android desligar a leitura)", "Bateria") {
+                        openSettings(ctx, android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                    }
+                }
+                if (!hasKey) PendingRow("Chave de IA (Google AI Studio) para tática e mercado", "Ajustes", onGoSettings)
+            }
         }
     }
 }
 
 @Composable
-private fun SetupCard(ctx: Context, enabled: Boolean, connected: Boolean, batteryOk: Boolean, hasKey: Boolean, onGoSettings: () -> Unit) {
+private fun ProcessCard() {
+    val tick = rememberTick(500L)
+    val now = System.currentTimeMillis()
+    val show = ProcessState.running || (ProcessState.finishedAt > 0L && now - ProcessState.finishedAt < 180000L)
+    if (!show || tick < 0) return
     Panel {
-        Text("Configuração inicial", fontSize = 18.sp, fontWeight = FontWeight.Bold)
-        Text("Faltam poucos passos para o app ler o jogo sozinho.", color = C.MUTED, fontSize = 13.sp)
-        Step(1, "Ativar a leitura automática", enabled && connected) {
-            Text(
-                "Toque no botão, procure “OSM AI Coach — leitura automática” (pode estar em “Apps instalados” ou “Serviços baixados”) e ligue a chave.",
-                color = C.MUTED, fontSize = 12.sp, modifier = Modifier.padding(vertical = 4.dp)
-            )
-            if (enabled && !connected) Text("Ativado, aguardando o Android conectar o serviço…", color = C.WARN, fontSize = 12.sp)
-            Button(onClick = { openSettings(ctx, android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS) }) { Text("Abrir acessibilidade") }
-        }
-        Step(2, "Se o Android bloquear (chave cinza ou “configuração restrita”)", null) {
-            Text(
-                "Abra as informações do app → menu ⋮ no canto superior → “Permitir configurações restritas”. Depois volte ao passo 1.",
-                color = C.MUTED, fontSize = 12.sp, modifier = Modifier.padding(vertical = 4.dp)
-            )
-            OutlinedButton(onClick = { openSettings(ctx, android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, true) }) {
-                Text("Abrir informações do app")
+        if (ProcessState.running) {
+            val secs = (now - ProcessState.startedAt) / 1000
+            Text("⏳ " + ProcessState.title, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(6.dp))
+            if (ProcessState.total > 0) {
+                LinearProgressIndicator(
+                    progress = { (ProcessState.done.toFloat() / ProcessState.total.toFloat()).coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50)),
+                    color = C.PRIMARY, trackColor = C.SURFACE2
+                )
+                Text("${ProcessState.done} de ${ProcessState.total} • ${secs}s", fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
+            } else {
+                LinearProgressIndicator(Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50)), color = C.PRIMARY, trackColor = C.SURFACE2)
+                Text("${secs}s", fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
             }
-        }
-        Step(3, "Bateria sem restrição (evita o Android desligar a leitura)", batteryOk) {
-            Text("Na lista, procure OSM AI Coach e escolha “Não otimizar”.", color = C.MUTED, fontSize = 12.sp, modifier = Modifier.padding(vertical = 4.dp))
-            OutlinedButton(onClick = { openSettings(ctx, android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS) }) {
-                Text("Abrir ajustes de bateria")
-            }
-        }
-        Step(4, "Chave de IA do Google AI Studio (pode fazer depois)", hasKey) {
-            OutlinedButton(onClick = onGoSettings, modifier = Modifier.padding(top = 4.dp)) { Text("Ir para Ajustes") }
+            if (AiStatus.stage.isNotBlank()) Text("IA: " + AiStatus.stage, fontSize = 12.sp, color = C.WARN)
+        } else {
+            Text("✔ Processamento concluído", fontWeight = FontWeight.Bold, color = C.OK)
+            Text(ProcessState.summary, fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
         }
     }
 }
@@ -469,12 +504,15 @@ private fun TodayTab(onGoSettings: () -> Unit, onOpenSlot: (Int) -> Unit) {
         }
         Text("Jogue normalmente: o app lê as telas, guarda por slot e a IA monta a tática.", color = C.MUTED, fontSize = 12.sp)
 
-        if (!ready || !batteryOk) SetupCard(ctx, enabled, connected, batteryOk, hasKey, onGoSettings)
+        if (!ready || !batteryOk || !hasKey) SetupBanner(ctx, enabled, connected, batteryOk, hasKey, onGoSettings)
 
         Spacer(Modifier.height(8.dp))
         if (data.active) {
             Button(
-                onClick = { scope.launch { Control.end(ctx); msg = "Captura encerrada. Processando em segundo plano…" } },
+                onClick = {
+                    AppScope.scope.launch { Control.end(ctx.applicationContext) }
+                    msg = "Captura encerrada. Processando em segundo plano…"
+                },
                 modifier = Modifier.fillMaxWidth().height(84.dp),
                 shape = RoundedCornerShape(20.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = C.BAD)
@@ -505,6 +543,7 @@ private fun TodayTab(onGoSettings: () -> Unit, onOpenSlot: (Int) -> Unit) {
             if (!ready) Text("Conclua o passo 1 da configuração para liberar o botão.", color = C.WARN, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
         }
         if (msg.isNotBlank()) Text(msg, color = C.WARN, modifier = Modifier.padding(top = 8.dp))
+        ProcessCard()
 
         Title("Seus slots")
         for (s in data.slots) SlotCard(s) { onOpenSlot(s.slot) }
@@ -545,11 +584,55 @@ private fun TodayTab(onGoSettings: () -> Unit, onOpenSlot: (Int) -> Unit) {
 }
 
 @Composable
+private fun Thumb(path: String?) {
+    val bmp = remember(path) {
+        if (path != null && File(path).exists()) {
+            val o = BitmapFactory.Options()
+            o.inSampleSize = 4
+            BitmapFactory.decodeFile(path, o)?.asImageBitmap()
+        } else null
+    }
+    if (bmp != null) {
+        Image(bmp, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.width(110.dp).height(62.dp).clip(RoundedCornerShape(8.dp)))
+    } else {
+        Box(Modifier.width(110.dp).height(62.dp).clip(RoundedCornerShape(8.dp)).background(C.SURFACE2))
+    }
+}
+
+@Composable
+private fun SavedScreens(tick: Int) {
+    val ctx = LocalContext.current
+    val list = rememberLoaded(emptyList<ScreenEntity>(), tick, null) { Repo(ctx).dao.savedScreens(12) }
+    Title("Telas guardadas para a IA ler")
+    Text(
+        "Telas que o app não leu sozinho (por exemplo, o relatório do rival) ficam aqui. Toque em “Ler com IA” para extrair os dados.",
+        fontSize = 12.sp, color = C.MUTED
+    )
+    if (list.isEmpty()) Text("Nenhuma tela guardada ainda.", color = C.MUTED, modifier = Modifier.padding(top = 8.dp))
+    for (s in list) {
+        Panel {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Thumb(s.imagePath)
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(typeLabel(s.type) + " • " + (if (s.slotId > 0) "S${s.slotId}" else "sem slot"), fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                    Text(fmtTime(s.at) + " • " + s.aiState, fontSize = 11.sp, color = C.MUTED)
+                    if (s.note.isNotBlank()) Text(s.note, fontSize = 11.sp, color = C.MUTED, maxLines = 3)
+                }
+            }
+            OutlinedButton(
+                onClick = { startReadOne(ctx, s.id) },
+                enabled = !ProcessState.running && s.slotId > 0,
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+            ) { Text(if (s.slotId > 0) "Ler com IA" else "Sem slot — não dá para aplicar") }
+        }
+    }
+}
+
+@Composable
 private fun SessionsTab() {
     val ctx = LocalContext.current
-    val tick = rememberTick(3000L)
-    val scope = rememberCoroutineScope()
-    var msg by remember { mutableStateOf("") }
+    val tick = rememberTick(2000L)
     val rows = rememberLoaded(emptyList<SessionRow>(), tick, null) {
         val dao = Repo(ctx).dao
         dao.sessions().map { sess ->
@@ -559,22 +642,25 @@ private fun SessionsTab() {
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
         Text("Sessões", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
+        ProcessCard()
         OutlinedButton(
             onClick = {
-                scope.launch(Dispatchers.IO) {
-                    msg = "Reprocessando…"
-                    try {
-                        Processor.run(ctx, "manual")
-                        msg = "Reprocessamento concluído."
-                    } catch (e: Exception) {
-                        msg = "Erro: " + (e.message ?: "?")
+                if (!ProcessState.running) {
+                    val app = ctx.applicationContext
+                    AppScope.scope.launch(Dispatchers.IO) {
+                        try {
+                            Processor.run(app, "manual")
+                        } catch (e: Exception) {
+                            ProcessState.finish("Erro: " + (e.message ?: "?"))
+                        }
                     }
                 }
             },
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
         ) { Text("Reprocessar quadros sem slot e fila de IA") }
-        if (msg.isNotBlank()) Text(msg, modifier = Modifier.padding(top = 6.dp), color = C.WARN)
-        if (rows.isEmpty()) Text("Nenhuma sessão ainda.", color = C.MUTED, modifier = Modifier.padding(top = 12.dp))
+        SavedScreens(tick)
+        Title("Histórico")
+        if (rows.isEmpty()) Text("Nenhuma sessão ainda.", color = C.MUTED)
         for (r in rows) {
             Panel {
                 Text(r.s.id, fontWeight = FontWeight.Bold)
@@ -876,6 +962,18 @@ private fun SlotCalendar(d: SlotData) {
         return
     }
     val sorted = d.matches.sortedBy { it.round ?: 999 }
+    val total = fv(d, K.ROUND_TOTAL).toIntOrNull()
+    if (total != null && total > 0) {
+        val read = sorted.count { it.round != null }
+        Panel {
+            Text("Calendário lido: $read de $total rodadas", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            Spacer(Modifier.height(6.dp))
+            Bar(read * 100 / total)
+            if (read < total) {
+                Text("Role o calendário do jogo até o fim para ler as rodadas que faltam.", fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
+            }
+        }
+    }
     Row(Modifier.padding(bottom = 8.dp)) {
         CountPill("V ${sorted.count { it.result == "V" }}", C.WIN)
         CountPill("E ${sorted.count { it.result == "E" }}", C.DRAW)
@@ -939,26 +1037,45 @@ private fun TacticBar(label: String, value: Int) {
 }
 
 @Composable
-private fun SlotTactic(slot: Int, d: SlotData) {
-    val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var msg by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
+private fun GenPanel(kind: String, slot: Int, label: String, onStart: () -> Unit) {
+    val tick = rememberTick(1000L)
+    val job = GenState.get(kind, slot)
+    val running = job != null && job.ok == null
     Button(
-        enabled = !busy,
-        onClick = {
-            busy = true
-            msg = "Gerando tática…"
-            scope.launch(Dispatchers.IO) {
-                val r = Director.generateTactic(ctx, Repo(ctx), slot)
-                msg = if (r.ok) "Tática gerada." else (r.error ?: "Falhou.")
-                busy = false
-            }
-        },
+        enabled = !running,
+        onClick = onStart,
         modifier = Modifier.fillMaxWidth().height(56.dp),
         shape = RoundedCornerShape(16.dp)
-    ) { Text("Gerar tática para o próximo jogo", fontWeight = FontWeight.Bold) }
-    if (msg.isNotBlank()) Text(msg, modifier = Modifier.padding(vertical = 6.dp), color = C.WARN)
+    ) { Text(if (running) "Gerando… (continua em segundo plano)" else label, fontWeight = FontWeight.Bold) }
+    if (job == null || tick < 0) return
+    val end = if (job.ok == null) System.currentTimeMillis() else job.finishedAt
+    val secs = (end - job.startedAt) / 1000
+    val time = if (secs >= 60) "${secs / 60} min ${secs % 60}s" else "${secs}s"
+    Panel {
+        when (job.ok) {
+            null -> {
+                Text("⏳ Gerando… $time", fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(6.dp))
+                LinearProgressIndicator(Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50)), color = C.PRIMARY, trackColor = C.SURFACE2)
+                Text(
+                    if (AiStatus.stage.isNotBlank()) AiStatus.stage else "Montando os dados e consultando a IA…",
+                    fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp)
+                )
+                Text("Pode trocar de aba ou sair do app: a geração continua.", fontSize = 11.sp, color = C.MUTED)
+            }
+            true -> Text("✔ Pronto em $time", color = C.OK, fontWeight = FontWeight.Bold)
+            false -> {
+                Text("✘ Falhou após $time", color = C.BAD, fontWeight = FontWeight.Bold)
+                Text(job.error ?: "erro desconhecido", fontSize = 12.sp, color = C.WARN, modifier = Modifier.padding(top = 4.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun SlotTactic(slot: Int, d: SlotData) {
+    val ctx = LocalContext.current
+    GenPanel("tactic", slot, "Gerar tática para o próximo jogo") { startGeneration(ctx, "tactic", slot) }
     val plan = d.tactic
     if (plan == null) {
         Text("Nenhuma tática gerada ainda.", color = C.MUTED, modifier = Modifier.padding(top = 8.dp))
@@ -1005,26 +1122,9 @@ private fun SlotTactic(slot: Int, d: SlotData) {
 @Composable
 private fun SlotDirector(slot: Int, d: SlotData) {
     val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var msg by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
     Title("Plano local (sem IA)")
     Panel { for (l in d.baseline) Text("• $l", fontSize = 13.sp, modifier = Modifier.padding(vertical = 2.dp)) }
-    Button(
-        enabled = !busy,
-        onClick = {
-            busy = true
-            msg = "Gerando plano de mercado…"
-            scope.launch(Dispatchers.IO) {
-                val r = Director.generateMarket(ctx, Repo(ctx), slot)
-                msg = if (r.ok) "Plano gerado." else (r.error ?: "Falhou.")
-                busy = false
-            }
-        },
-        modifier = Modifier.fillMaxWidth().height(56.dp),
-        shape = RoundedCornerShape(16.dp)
-    ) { Text("Gerar plano de mercado e treino (IA)", fontWeight = FontWeight.Bold) }
-    if (msg.isNotBlank()) Text(msg, modifier = Modifier.padding(vertical = 6.dp), color = C.WARN)
+    GenPanel("market", slot, "Gerar plano de mercado e treino (IA)") { startGeneration(ctx, "market", slot) }
     val plan = d.market ?: return
     val j = try {
         JSONObject(plan.json)
@@ -1070,10 +1170,13 @@ private fun SettingsTab() {
     val tick = rememberTick(2000L)
     var gKey by remember { mutableStateOf(Settings.get(ctx, Settings.GEMINI_KEY, "")) }
     var gModel by remember { mutableStateOf(Settings.get(ctx, Settings.GEMINI_MODEL, Settings.DEFAULT_GEMINI_MODEL)) }
+    var clKey by remember { mutableStateOf(Settings.get(ctx, Settings.CLAUDE_KEY, "")) }
+    var clModel by remember { mutableStateOf(Settings.get(ctx, Settings.CLAUDE_MODEL, Settings.DEFAULT_CLAUDE_MODEL)) }
     var cKey by remember { mutableStateOf(Settings.get(ctx, Settings.COMPAT_KEY, "")) }
     var cBase by remember { mutableStateOf(Settings.get(ctx, Settings.COMPAT_BASE, Settings.DEFAULT_COMPAT_BASE)) }
     var cModel by remember { mutableStateOf(Settings.get(ctx, Settings.COMPAT_MODEL, Settings.DEFAULT_COMPAT_MODEL)) }
     var cap by remember { mutableStateOf(Settings.get(ctx, Settings.DAILY_CAP, "80")) }
+    var pref by remember { mutableStateOf(Settings.get(ctx, Settings.PREFERRED, "gemini")) }
     var saved by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
         Text("Ajustes", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
@@ -1096,18 +1199,34 @@ private fun SettingsTab() {
             ) { Text("Bateria: não otimizar este app") }
         }
         Panel {
-            Text("IA gratuita (só como fallback e para tática/mercado)", fontWeight = FontWeight.Bold)
+            Text("IA para tática, mercado e leitura do relatório", fontWeight = FontWeight.Bold)
+            Text("Gemini (gratuito) é o padrão. Claude e Groq/xAI são opcionais.", fontSize = 12.sp, color = C.MUTED)
+            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                for ((id, name) in listOf("gemini" to "Gemini", "claude" to "Claude", "compat" to "Groq/xAI")) {
+                    val pick = { pref = id; Settings.put(ctx, Settings.PREFERRED, id) }
+                    if (pref == id) Button(onClick = pick, modifier = Modifier.weight(1f)) { Text(name, fontSize = 12.sp) }
+                    else OutlinedButton(onClick = pick, modifier = Modifier.weight(1f)) { Text(name, fontSize = 12.sp) }
+                }
+            }
             OutlinedTextField(gKey, { gKey = it }, label = { Text("Chave Google AI Studio (Gemini)") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(gModel, { gModel = it }, label = { Text("Modelo Gemini") }, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(cKey, { cKey = it }, label = { Text("Chave alternativa (Groq/xAI, formato OpenAI)") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(cBase, { cBase = it }, label = { Text("URL base alternativa") }, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(cModel, { cModel = it }, label = { Text("Modelo alternativo") }, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(cap, { cap = it }, label = { Text("Teto diário de chamadas") }, modifier = Modifier.fillMaxWidth())
-            KV("Chamadas hoje", AiClient.usedToday(ctx).toString())
+            OutlinedTextField(gModel, { gModel = it }, label = { Text("Modelo Gemini (auto = detecta sozinho)") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(clKey, { clKey = it }, label = { Text("Chave Claude (Console da Anthropic)") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(clModel, { clModel = it }, label = { Text("Modelo Claude") }, modifier = Modifier.fillMaxWidth())
+            Text(
+                "A assinatura do Claude (Pro/Max) não inclui a API: para usar o Claude aqui é preciso uma chave e créditos no Console da Anthropic, com cobrança separada.",
+                fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(bottom = 6.dp)
+            )
+            OutlinedTextField(cKey, { cKey = it }, label = { Text("Chave Groq/xAI (formato OpenAI)") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(cBase, { cBase = it }, label = { Text("URL base (Groq ou xAI)") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(cModel, { cModel = it }, label = { Text("Modelo (auto = detecta sozinho)") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(cap, { cap = it }, label = { Text("Teto diário de chamadas do Gemini") }, modifier = Modifier.fillMaxWidth())
+            KV("Chamadas ao Gemini hoje", AiClient.usedToday(ctx).toString())
             Button(
                 onClick = {
                     Settings.put(ctx, Settings.GEMINI_KEY, gKey)
                     Settings.put(ctx, Settings.GEMINI_MODEL, gModel.ifBlank { Settings.DEFAULT_GEMINI_MODEL })
+                    Settings.put(ctx, Settings.CLAUDE_KEY, clKey)
+                    Settings.put(ctx, Settings.CLAUDE_MODEL, clModel.ifBlank { Settings.DEFAULT_CLAUDE_MODEL })
                     Settings.put(ctx, Settings.COMPAT_KEY, cKey)
                     Settings.put(ctx, Settings.COMPAT_BASE, cBase.ifBlank { Settings.DEFAULT_COMPAT_BASE })
                     Settings.put(ctx, Settings.COMPAT_MODEL, cModel.ifBlank { Settings.DEFAULT_COMPAT_MODEL })
@@ -1117,6 +1236,12 @@ private fun SettingsTab() {
                 modifier = Modifier.fillMaxWidth()
             ) { Text("Salvar") }
             if (saved.isNotBlank()) Text(saved, color = C.OK)
+            OutlinedButton(
+                onClick = { startAiTest(ctx) },
+                enabled = !AiTest.running,
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+            ) { Text(if (AiTest.running) "Testando…" else "Testar a IA agora (mostra o tempo)") }
+            if (AiTest.result.isNotBlank()) Text(AiTest.result, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
         }
     }
 }

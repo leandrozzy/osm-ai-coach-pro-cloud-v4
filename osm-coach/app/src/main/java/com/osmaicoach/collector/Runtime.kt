@@ -52,6 +52,99 @@ object Diag {
     }
 }
 
+/** Progresso do processamento pós-captura (barra de progresso na tela Hoje). */
+object ProcessState {
+    @Volatile var running = false
+    @Volatile var title = ""
+    @Volatile var total = 0
+    @Volatile var done = 0
+    @Volatile var startedAt = 0L
+    @Volatile var finishedAt = 0L
+    @Volatile var summary = ""
+
+    fun begin(title: String, total: Int) {
+        running = true
+        this.title = title
+        this.total = total
+        done = 0
+        startedAt = System.currentTimeMillis()
+        finishedAt = 0L
+        summary = ""
+    }
+
+    fun label(t: String) { title = t }
+
+    fun tick() { done++ }
+
+    fun finish(summary: String) {
+        this.summary = summary
+        finishedAt = System.currentTimeMillis()
+        running = false
+    }
+}
+
+/** Tarefas de IA (tática/mercado) vivem fora da tela: continuam mesmo trocando de aba ou fechando o app. */
+object GenState {
+    data class Job(val kind: String, val slot: Int, val startedAt: Long, val finishedAt: Long, val ok: Boolean?, val error: String?)
+
+    private val jobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
+
+    fun get(kind: String, slot: Int): Job? = jobs["$kind:$slot"]
+
+    fun running(kind: String, slot: Int): Boolean = get(kind, slot)?.ok == null && get(kind, slot) != null
+
+    fun begin(kind: String, slot: Int) {
+        jobs["$kind:$slot"] = Job(kind, slot, System.currentTimeMillis(), 0L, null, null)
+    }
+
+    fun finish(kind: String, slot: Int, ok: Boolean, error: String?) {
+        val j = get(kind, slot) ?: return
+        jobs["$kind:$slot"] = j.copy(finishedAt = System.currentTimeMillis(), ok = ok, error = error)
+    }
+}
+
+fun startGeneration(ctx: Context, kind: String, slot: Int) {
+    val app = ctx.applicationContext
+    if (GenState.running(kind, slot)) return
+    GenState.begin(kind, slot)
+    AppScope.scope.launch(Dispatchers.IO) {
+        val r = try {
+            if (kind == "tactic") Director.generateTactic(app, Repo(app), slot) else Director.generateMarket(app, Repo(app), slot)
+        } catch (e: Exception) {
+            Director.Outcome(false, null, e.message ?: e.javaClass.simpleName)
+        }
+        GenState.finish(kind, slot, r.ok, r.error)
+    }
+}
+
+fun startReadOne(ctx: Context, id: Long) {
+    val app = ctx.applicationContext
+    if (ProcessState.running) return
+    AppScope.scope.launch(Dispatchers.IO) {
+        try {
+            Processor.readOne(app, id)
+        } catch (e: Exception) {
+            ProcessState.finish("Erro: " + (e.message ?: e.javaClass.simpleName))
+        }
+    }
+}
+
+object AiTest {
+    @Volatile var running = false
+    @Volatile var result = ""
+}
+
+fun startAiTest(ctx: Context) {
+    val app = ctx.applicationContext
+    if (AiTest.running) return
+    AiTest.running = true
+    AiTest.result = "Testando…"
+    AppScope.scope.launch(Dispatchers.IO) {
+        AiTest.result = try { AiClient.test(app) } catch (e: Exception) { "Erro: " + (e.message ?: "?") }
+        AiTest.running = false
+    }
+}
+
 /** Controle da sessão de captura (sobrevive à morte do processo: o estado fica em SharedPreferences + Room). */
 object Control {
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("collector_runtime", Context.MODE_PRIVATE)
@@ -81,6 +174,7 @@ object Control {
                 Processor.run(ctx.applicationContext, id)
             } catch (e: Exception) {
                 Diag.lastError = "Processamento: " + (e.message ?: e.javaClass.simpleName)
+                ProcessState.finish("Erro no processamento: " + (e.message ?: e.javaClass.simpleName))
             } finally {
                 val cur = dao.session(id)
                 if (cur != null) dao.putSession(cur.copy(state = "done"))
