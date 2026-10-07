@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">OSM AI Coach</string>
+    <string name="service_label">OSM AI Coach — leitura automática</string>
+    <string name="service_description">Observa o OSM enquanto você joga e tira capturas de tela somente quando o jogo está em primeiro plano. Não toca, não clica e não executa ações no jogo.</string>
+</resources>
