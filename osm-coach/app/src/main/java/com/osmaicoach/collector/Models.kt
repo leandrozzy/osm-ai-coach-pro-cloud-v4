@@ -182,6 +182,16 @@ object Money {
     }
 
     fun valid(s: String?): Boolean = parse(s) != null
+
+    /**
+     * O OCR às vezes perde a vírgula ("27,5M" vira "275M"). Para times fracos (força <= 80),
+     * um valor de 3 dígitos em M é implausível: reinsere a vírgula antes do último dígito.
+     */
+    fun fixLostComma(text: String, teamStrength: Int): String? {
+        if (teamStrength > 80) return null
+        val m = Regex("^(\\d{2})(\\d)M$").find(text.trim()) ?: return null
+        return m.groupValues[1] + "," + m.groupValues[2] + "M"
+    }
 }
 
 object Pos {

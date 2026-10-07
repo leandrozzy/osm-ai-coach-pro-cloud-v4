@@ -165,12 +165,16 @@ object AiPrompts {
             "Nunca invente. Responda APENAS com um objeto JSON, sem texto extra.\n"
 
     fun report(): String = HEAD +
-        "É o relatório/análise do time adversário. Chaves: " +
+        "Primeiro classifique a tela em \"kind\": \"rival_report\" se for o relatório/análise do time ADVERSÁRIO " +
+        "(informativo: formação, estilo, marcação, desarme etc. do rival); \"own_tactic_editor\" se for a tela onde o " +
+        "jogador DEFINE a própria tática (setas, controles deslizantes, \"Define a tua tática\"); senão \"other\". " +
+        "Se kind não for rival_report, devolva só {\"kind\": \"...\"}. " +
+        "Para rival_report as chaves são: " +
         "formation (ex.: \"4-4-2\" ou \"4-4-2 B\"), playStyle (estilo de jogo), marking (\"À zona\" ou \"Homem a homem\"), " +
         "offside (\"Sim\" ou \"Não\"), tackle (desarme: ex. \"Normal\" ou \"Agressivo\"), " +
         "secretTraining (\"Sim\" SOMENTE se houver um cadeado visível no relatório; caso contrário \"NI\"), " +
-        "trainingCamp (\"Sim\"/\"Não\"/\"NI\"), rivalStrength (número), rivalValue (ex.: \"211M\"), " +
-        "stadiumLevel (texto), loginBonus (texto), referee (\"Brando\", \"Médio\" ou \"Rigoroso\" pela cor/nível do termômetro)."
+        "trainingCamp (\"Sim\"/\"Não\"/\"NI\"), rivalStrength (número), rivalValue (ex.: \"21,1M\" — mantenha a vírgula), " +
+        "stadiumLevel (texto), stadiumBonus (texto), loginBonus (texto), referee (\"Brando\", \"Médio\" ou \"Rigoroso\" pela cor/nível do termômetro)."
 
     fun squad(): String = HEAD +
         "É a lista de elenco. Chaves: team (nome do time no cabeçalho), players (lista). Cada jogador: " +
@@ -195,6 +199,9 @@ object AiMapper {
         else -> null
     }
 
+    /** Só aplica campos de rival se a IA confirmar que a tela é o relatório do adversário. */
+    fun reportKind(j: JSONObject): String = j.optString("kind").trim().lowercase()
+
     fun report(j: JSONObject): Map<String, Reading> {
         val out = LinkedHashMap<String, Reading>()
         val c = 0.7
@@ -211,6 +218,7 @@ object AiMapper {
             ?.let { out[K.RIVAL_STRENGTH] = Reading(it.toString(), c) }
         clean(j.optString("rivalValue"))?.takeIf { Money.valid(it) }?.let { out[K.RIVAL_VALUE] = Reading(it, c) }
         clean(j.optString("stadiumLevel"))?.let { out[K.STADIUM] = Reading(it, c) }
+        clean(j.optString("stadiumBonus"))?.let { out[K.STADIUM_BONUS] = Reading(it, c) }
         clean(j.optString("loginBonus"))?.let { out[K.RIVAL_LOGIN_BONUS] = Reading(it, c) }
         clean(j.optString("referee"))?.takeIf { it in setOf("Brando", "Médio", "Rigoroso") }
             ?.let { out[K.REFEREE] = Reading(it, 0.6) }
@@ -270,6 +278,10 @@ object Processor {
                 continue
             }
             val now = System.currentTimeMillis()
+            if (type != ScreenType.SQUAD && AiMapper.reportKind(json) != "rival_report") {
+                dao.updateScreenAi(s.id, "done", s.extracted, "IA: não é relatório do rival (" + AiMapper.reportKind(json) + ")")
+                continue
+            }
             val changed = if (type == ScreenType.SQUAD) {
                 val (team, players) = AiMapper.squad(json)
                 repo.apply(s.slotId, Extraction(ScreenType.SQUAD, players = players, ownerTeam = team), "ai", now)

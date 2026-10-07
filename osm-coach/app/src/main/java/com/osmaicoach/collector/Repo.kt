@@ -117,7 +117,17 @@ class Repo(private val ctx: Context) {
             }
         }
         if (owner == "MY" && ot != null) mapped[K.TEAM] = Reading(ot, 0.8)
+        if (owner == "RIVAL") {
+            val st = ex.fields["x.strength"]?.value?.toIntOrNull() ?: f[K.RIVAL_STRENGTH]?.value?.toIntOrNull()
+            val v = mapped[K.RIVAL_VALUE]
+            if (v != null && st != null) {
+                Money.fixLostComma(v.value, st)?.let { mapped[K.RIVAL_VALUE] = Reading(it, 0.8) }
+            }
+        }
         changed += putFields(slot, mapped, source, now)
+
+        // Elenco do rival não é guardado: só o cabeçalho (forças, valor, formação) interessa.
+        if (owner != "MY") return changed
 
         val existing = dao.playersOf(slot).filter { it.owner == owner }
         for (p in ex.players) {

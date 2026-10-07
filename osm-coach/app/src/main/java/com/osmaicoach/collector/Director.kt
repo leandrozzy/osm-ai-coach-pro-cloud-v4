@@ -196,8 +196,12 @@ object Director {
     suspend fun generateTactic(ctx: Context, repo: Repo, slot: Int): Outcome {
         val c = context(repo, slot)
         val f = repo.fieldMap(slot)
-        if (f[K.TEAM] == null || c.getJSONArray("meu_elenco").length() < 8) {
-            return Outcome(false, null, "Dados insuficientes: leia o pré-jogo e o elenco deste slot antes de gerar a tática.")
+        val squadCount = c.getJSONArray("meu_elenco").length()
+        if (f[K.TEAM] == null || squadCount < 8) {
+            val faltam = ArrayList<String>()
+            if (f[K.TEAM] == null) faltam.add("pré-jogo (time do slot)")
+            if (squadCount < 8) faltam.add("meu elenco ($squadCount de pelo menos 8 jogadores lidos — abra o elenco do SEU time e role a lista)")
+            return Outcome(false, null, "Dados insuficientes. Falta ler: " + faltam.joinToString("; ") + ".")
         }
         val reply = AiClient.ask(ctx, tacticPrompt(c), null)
         val json = AiClient.parseJson(reply.text)
@@ -212,8 +216,9 @@ object Director {
     suspend fun generateMarket(ctx: Context, repo: Repo, slot: Int): Outcome {
         val c = context(repo, slot)
         val f = repo.fieldMap(slot)
-        if (c.getJSONArray("meu_elenco").length() < 8) {
-            return Outcome(false, null, "Dados insuficientes: leia o elenco deste slot antes de gerar o plano de mercado.")
+        val squadCount = c.getJSONArray("meu_elenco").length()
+        if (squadCount < 8) {
+            return Outcome(false, null, "Dados insuficientes: só $squadCount jogadores do seu elenco foram lidos. Abra o elenco do SEU time e role a lista inteira.")
         }
         val reply = AiClient.ask(ctx, marketPrompt(c), null)
         val json = AiClient.parseJson(reply.text)
@@ -234,21 +239,31 @@ object Director {
     suspend fun marketBaseline(repo: Repo, slot: Int): List<String> {
         val f = repo.fieldMap(slot)
         val mine = repo.dao.playersOf(slot).filter { it.owner == "MY" }
-        if (mine.isEmpty()) return listOf("Leia o elenco deste slot para ver o plano de mercado.")
+        if (mine.isEmpty()) return listOf("Leia o elenco do SEU time neste slot (menu do jogo → Plantel) e role a lista para ver o plano.")
         val counts = HashMap<String, Int>()
         for (p in mine) p.cat?.let { counts[it] = (counts[it] ?: 0) + 1 }
-        val cash = Money.parse(f[K.CASH]?.value)
+        val cashTxt = f[K.CASH]?.value
+        val cash = Money.parse(cashTxt)
         val listings = repo.dao.listingsOf(slot)
         val out = ArrayList<String>()
-        out.add("Vagas para vender: ${MarketPlanner.sellSlotsLeft(f[K.SELLING]?.value)} (máx. ${MarketPlanner.MAX_SELLING})")
+        out.add("Caixa: ${cashTxt ?: NI} • vagas para vender: ${MarketPlanner.sellSlotsLeft(f[K.SELLING]?.value)} (máx. ${MarketPlanner.MAX_SELLING}) • jogadores do mercado lidos: ${listings.size}")
         for (n in MarketPlanner.needs(counts)) {
             if (n.missing > 0) {
-                val cand = listings.filter { l ->
-                    l.cat == n.cat && l.strength != null && (cash == null || (Money.parse(l.priceText) ?: 0.0) <= cash)
-                }.sortedByDescending { it.strength }.take(3)
-                val txt = if (cand.isEmpty()) "sem candidato lido no mercado" else
-                    cand.joinToString("; ") { "${it.name} (${it.strength}, ${it.priceText}, ${it.age ?: "?"} anos)" }
-                out.add("Falta ${n.missing} ${n.cat} (tenho ${n.have}/${n.target}): $txt")
+                if (listings.isEmpty()) {
+                    out.add("Falta ${n.missing} ${n.cat} (tenho ${n.have}/${n.target}): abra a Lista de transferências e role para eu ler o mercado.")
+                    continue
+                }
+                val cand = listings.filter { it.cat == n.cat && it.strength != null }.sortedByDescending { it.strength }.take(3)
+                if (cand.isEmpty()) {
+                    out.add("Falta ${n.missing} ${n.cat} (tenho ${n.have}/${n.target}): nenhum ${n.cat} lido ainda na lista.")
+                } else {
+                    val txt = cand.joinToString("; ") {
+                        val price = Money.parse(it.priceText)
+                        val short = if (cash != null && price != null && price > cash) " — falta caixa" else ""
+                        "${it.name} (${it.strength}, ${it.priceText}, ${it.age ?: "?"} anos)$short"
+                    }
+                    out.add("Falta ${n.missing} ${n.cat} (tenho ${n.have}/${n.target}): $txt")
+                }
             } else if (n.surplus > 0) {
                 val weak = mine.filter { it.cat == n.cat }.sortedBy { it.strength ?: 999 }.take(n.surplus)
                 out.add("Excesso de ${n.surplus} ${n.cat}: vender " + weak.joinToString { "${it.name} (${it.strength ?: "?"})" })

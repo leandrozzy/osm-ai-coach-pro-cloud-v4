@@ -160,7 +160,13 @@ object Parsers {
     fun squad(o: OcrResult, img: PixelProbe.Img?): Extraction {
         val f = LinkedHashMap<String, Reading>()
 
-        val head = o.lines.filter { it.yc in 0.18f..0.30f && it.xc < 0.30f }.sortedBy { it.yc }
+        // O cabeçalho (time, apelido, força) só existe com a lista no topo. Rolando, nomes de jogadores
+        // sobem para essa região: sem "Posição/Objetivo/Nota mais alta" visíveis, não há dono.
+        val hasHeader = o.lines.any { ln ->
+            val n = Txt.norm(ln.text)
+            (ln.yc in 0.10f..0.20f && (n.contains("posicao") || n.contains("objetivo"))) || n.contains("nota mais alta")
+        }
+        val head = if (hasHeader) o.lines.filter { it.yc in 0.18f..0.30f && it.xc < 0.30f }.sortedBy { it.yc } else emptyList()
         val owner = head.firstOrNull { Txt.letters(it.text) >= 3 && !Txt.norm(it.text).startsWith("nota") }
         val nick = if (owner != null) head.firstOrNull { it !== owner && it.yc > owner.yc && Txt.letters(it.text) >= 3 } else null
 
@@ -194,6 +200,8 @@ object Parsers {
         }
         o.tokens.firstOrNull { it.xc > 0.88f && it.yc in 0.12f..0.18f && Money.valid(it.text) }
             ?.let { f["x.value"] = Reading(it.text.trim(), 0.85) }
+
+        if (!hasHeader) f.clear()
 
         // Colunas (usa cabeçalho se visível; senão padrões medidos nos quadros reais).
         fun colX(word: String, def: Float): Float =
@@ -354,16 +362,16 @@ object Parsers {
             )
         }
 
-        // Cabeçalho: de quem é este calendário.
-        val ownerLine = o.lines.filter {
-            it.xc in 0.35f..0.65f && it.yc in 0.45f..0.55f && Txt.letters(it.text) >= 3
-        }.maxByOrNull { it.h }
-
-        // Linha de times no topo (com apelido embaixo quando humano).
-        val humans = LinkedHashMap<String, String?>()
+        // Linha de times no topo (só existe com a lista no topo). Sem ela não dá para saber de quem é o calendário.
         val topLines = o.lines.filter { it.yc in 0.24f..0.37f && Txt.letters(it.text) >= 2 }.sortedBy { it.xc }
+        val hasStrip = topLines.count { Txt.letters(it.text) >= 3 } >= 3
+        val ownerLine = if (!hasStrip) null else o.lines.filter {
+            it.xc in 0.35f..0.65f && it.yc in 0.45f..0.55f && Txt.letters(it.text) >= 3 &&
+                !Txt.norm(it.text).startsWith("jornada") && !RX_DATE.containsMatchIn(it.text)
+        }.maxByOrNull { it.h }
+        val humans = LinkedHashMap<String, String?>()
         val used = HashSet<OcrLine>()
-        for (ln in topLines) {
+        for (ln in (if (hasStrip) topLines else emptyList())) {
             if (ln in used) continue
             val group = topLines.filter { abs(it.xc - ln.xc) <= 0.06f }.sortedBy { it.yc }
             used.addAll(group)
@@ -377,6 +385,13 @@ object Parsers {
             humans = humans,
             ownerTeam = ownerLine?.text?.trim()
         )
+    }
+
+    /** Tela com cara de relatório/análise do adversário (será lida pela IA, que confirma se é mesmo). */
+    fun hasReportHint(o: OcrResult): Boolean {
+        val t = Txt.norm(o.fullText)
+        val words = listOf("formacao", "marcacao", "desarme", "fora de jogo", "impedimento", "estilo de jogo", "estadio", "estagio", "secreto", "relatorio")
+        return words.count { t.contains(it) } >= 2
     }
 
     // ---------------------------------------------------------------- MERCADO

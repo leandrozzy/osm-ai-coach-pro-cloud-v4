@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.os.PowerManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -53,12 +54,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -82,6 +87,9 @@ private object C {
     val BAD = Color(0xFFFF5C5C)
     val WARN = Color(0xFFFFB74D)
     val MUTED = Color(0xFF9FB0C8)
+    val WIN = Color(0xFF2EA043)
+    val DRAW = Color(0xFFF2C94C)
+    val LOSS = Color(0xFFE5484D)
 }
 
 class MainActivity : ComponentActivity() {
@@ -642,19 +650,48 @@ private fun SlotScreen(slot: Int, startTab: Int, onBack: () -> Unit) {
 private fun fv(d: SlotData, key: String): String = known(d.fields, key) ?: NI
 
 @Composable
+private fun Section(title: String, rows: List<Pair<String, String>>) {
+    Panel {
+        Text(title, color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp, modifier = Modifier.padding(bottom = 4.dp))
+        for ((k, v) in rows) KV(k, v)
+    }
+}
+
+@Composable
 private fun SlotSummaryTab(d: SlotData) {
     val c = d.completeness
+    val at = fv(d, K.MATCH_AT).toLongOrNull()
     Panel {
-        KV("Time", fv(d, K.TEAM).let { if (it == NI) fv(d, K.HUB_TITLE) else it })
-        KV("Competição", fv(d, K.COMPETITION))
-        KV("Tipo", fv(d, K.COMP_TYPE))
-        val done = fv(d, K.ROUND_DONE)
-        val total = fv(d, K.ROUND_TOTAL)
-        KV("Rodadas concluídas/total", if (done == NI) NI else "$done/$total")
-        KV("Próxima rodada", fv(d, K.ROUND))
-        KV("Posição na liga", fv(d, K.LEAGUE_POS))
-        KV("Caixa", fv(d, K.CASH))
+        Text("Próximo jogo", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+        val rival = fv(d, K.RIVAL_TEAM)
+        Text(if (rival == NI) "Adversário ainda não lido" else "vs $rival", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.padding(top = 4.dp))
+        Row(Modifier.padding(top = 6.dp)) {
+            val human = fv(d, K.RIVAL_HUMAN)
+            if (human != NI) Pill(if (human == "Sim") "Humano" else "CPU", human == "Sim")
+            val home = fv(d, K.HOME)
+            if (home != NI) Pill(if (home == "Casa") "🏠 Casa" else "✈ Fora")
+            if (at != null) Pill(fmtTime(at))
+            val ref = fv(d, K.REFEREE)
+            if (ref != NI) Pill("Árbitro: $ref", ref != "Rigoroso")
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+            ForceBox("Minha força", fv(d, K.MY_STRENGTH), C.PRIMARY)
+            ForceBox("Rival", fv(d, K.RIVAL_STRENGTH), C.LOSS)
+        }
     }
+    Section(
+        "Competição",
+        listOf(
+            "Time" to fv(d, K.TEAM).let { if (it == NI) fv(d, K.HUB_TITLE) else it },
+            "Competição" to fv(d, K.COMPETITION),
+            "Tipo" to fv(d, K.COMP_TYPE),
+            "Rodadas concluídas/total" to (fv(d, K.ROUND_DONE).let { done -> if (done == NI) NI else "$done/${fv(d, K.ROUND_TOTAL)}" }),
+            "Próxima rodada" to fv(d, K.ROUND),
+            "Posição na liga" to fv(d, K.LEAGUE_POS),
+            "Pontos" to fv(d, K.POINTS),
+            "Caixa" to fv(d, K.CASH)
+        )
+    )
     if (c != null) {
         Panel {
             Text("Completude: ${c.percent}% (${c.known.size} de ${c.known.size + c.missing.size} campos)", fontWeight = FontWeight.Bold)
@@ -675,33 +712,66 @@ private fun SlotSummaryTab(d: SlotData) {
 }
 
 @Composable
+private fun ForceBox(label: String, value: String, color: Color) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(Modifier.size(64.dp).clip(RoundedCornerShape(50)).background(color.copy(alpha = 0.25f)), contentAlignment = Alignment.Center) {
+            Text(value, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
+        }
+        Text(label, fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
+    }
+}
+
+@Composable
 private fun SlotPregame(d: SlotData) {
     val at = fv(d, K.MATCH_AT).toLongOrNull()
-    val rows = listOf(
-        "Rodada" to fv(d, K.ROUND),
-        "Data/hora do jogo" to (if (at != null) fmtTime(at) else NI),
-        "Casa/fora" to fv(d, K.HOME),
-        "Adversário" to fv(d, K.RIVAL_TEAM),
-        "Humano/CPU" to fv(d, K.RIVAL_HUMAN),
-        "Apelido do rival" to fv(d, K.RIVAL_NICK),
-        "Minha força" to fv(d, K.MY_STRENGTH),
-        "Força do rival" to fv(d, K.RIVAL_STRENGTH),
-        "Valor do meu elenco" to fv(d, K.MY_VALUE),
-        "Valor do elenco rival" to fv(d, K.RIVAL_VALUE),
-        "Formação rival" to fv(d, K.RIVAL_FORMATION),
-        "Plano de jogo rival" to fv(d, K.RIVAL_PLAN),
-        "Marcação rival" to fv(d, K.RIVAL_MARKING),
-        "Impedimento rival" to fv(d, K.RIVAL_OFFSIDE),
-        "Desarme rival" to fv(d, K.RIVAL_TACKLE),
-        "Treino secreto rival" to fv(d, K.RIVAL_SECRET),
-        "Campo de treinamento rival" to fv(d, K.RIVAL_CAMP),
-        "Bônus de login rival" to fv(d, K.RIVAL_LOGIN_BONUS),
-        "Árbitro (termômetro)" to fv(d, K.REFEREE),
-        "Estádio" to fv(d, K.STADIUM),
-        "Bônus de estádio" to fv(d, K.STADIUM_BONUS)
+    Section(
+        "Jogo",
+        listOf(
+            "Rodada" to fv(d, K.ROUND),
+            "Data/hora do jogo" to (if (at != null) fmtTime(at) else NI),
+            "Casa/fora" to fv(d, K.HOME),
+            "Adversário" to fv(d, K.RIVAL_TEAM),
+            "Humano/CPU" to fv(d, K.RIVAL_HUMAN),
+            "Apelido do rival" to fv(d, K.RIVAL_NICK),
+            "Árbitro (termômetro)" to fv(d, K.REFEREE)
+        )
     )
-    Panel { for ((k, v) in rows) KV(k, v) }
-    Text("NI = ainda não lido. O relatório do adversário depende da IA (precisa de chave em Ajustes).", fontSize = 12.sp, color = C.MUTED)
+    Section(
+        "Forças",
+        listOf(
+            "Minha força" to fv(d, K.MY_STRENGTH),
+            "Força do rival" to fv(d, K.RIVAL_STRENGTH),
+            "Valor do meu elenco" to fv(d, K.MY_VALUE),
+            "Valor do elenco rival" to fv(d, K.RIVAL_VALUE),
+            "Meus setores (GOL/DEF/MEI/ATA)" to listOf(K.MY_GOL, K.MY_DEF, K.MY_MID, K.MY_ATK).joinToString(" / ") { fv(d, it) },
+            "Formação rival (elenco)" to fv(d, K.RIVAL_FORMATION)
+        )
+    )
+    Section(
+        "Relatório do rival",
+        listOf(
+            "Plano de jogo" to fv(d, K.RIVAL_PLAN),
+            "Marcação" to fv(d, K.RIVAL_MARKING),
+            "Impedimento" to fv(d, K.RIVAL_OFFSIDE),
+            "Desarme" to fv(d, K.RIVAL_TACKLE),
+            "Treino secreto" to fv(d, K.RIVAL_SECRET),
+            "Campo de treinamento" to fv(d, K.RIVAL_CAMP),
+            "Bônus de login" to fv(d, K.RIVAL_LOGIN_BONUS),
+            "Estádio" to fv(d, K.STADIUM),
+            "Bônus de estádio" to fv(d, K.STADIUM_BONUS)
+        )
+    )
+    Text(
+        "NI = ainda não lido. O relatório do rival é lido pela IA ao encerrar a captura: abra o relatório do adversário no jogo e deixe a tela parada por alguns segundos.",
+        fontSize = 12.sp, color = C.MUTED
+    )
+}
+
+private fun catColor(cat: String): Color = when (cat) {
+    "ATA" -> Color(0xFFE5484D)
+    "MEI" -> Color(0xFF3D8BFF)
+    "DEF" -> Color(0xFF2EA043)
+    else -> Color(0xFFF2C94C)
 }
 
 @Composable
@@ -711,12 +781,22 @@ private fun SlotSquad(d: SlotData) {
     for (p in mine) p.cat?.let { counts[it] = (counts[it] ?: 0) + 1 }
     Panel {
         Text("Meu elenco: ${mine.size} jogadores", fontWeight = FontWeight.Bold)
-        for (n in MarketPlanner.needs(counts)) KV(n.cat, "${n.have}/${n.target}")
-        KV("Treinando", mine.count { it.training == true }.toString())
-        KV(
-            "Força geral / GOL / DEF / MEI / ATA",
-            listOf(K.MY_STRENGTH, K.MY_GOL, K.MY_DEF, K.MY_MID, K.MY_ATK).joinToString(" / ") { fv(d, it) }
-        )
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+            for (n in MarketPlanner.needs(counts)) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Box(Modifier.clip(RoundedCornerShape(12.dp)).background(catColor(n.cat).copy(alpha = 0.25f)).padding(horizontal = 14.dp, vertical = 8.dp)) {
+                        Text("${n.have}/${n.target}", fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
+                    }
+                    Text(n.cat, fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 3.dp))
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        KV("Treinando (camisa laranja)", mine.count { it.training == true }.toString())
+        KV("Força geral / GOL / DEF / MEI / ATA", listOf(K.MY_STRENGTH, K.MY_GOL, K.MY_DEF, K.MY_MID, K.MY_ATK).joinToString(" / ") { fv(d, it) })
+    }
+    if (mine.isEmpty()) {
+        Text("Nenhum jogador seu lido ainda. No jogo: Plantel do SEU time, depois role a lista devagar até o fim.", color = C.MUTED, fontSize = 12.sp)
     }
     for (cat in listOf("ATA", "MEI", "DEF", "GOL")) {
         val list = mine.filter { it.cat == cat }.sortedByDescending { it.strength ?: 0 }
@@ -724,38 +804,137 @@ private fun SlotSquad(d: SlotData) {
         Title(cat)
         Panel {
             for (p in list) {
-                val tag = if (p.training == true) "  🟠 treinando" else ""
-                Text(
-                    "${p.name}  •  ${p.posCode ?: "?"}  •  ${p.age ?: "?"}a  •  força ${p.strength ?: NI}  •  ${p.valueText ?: NI}$tag",
-                    fontSize = 13.sp, modifier = Modifier.padding(vertical = 2.dp)
-                )
+                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)).background(catColor(cat).copy(alpha = 0.3f)), contentAlignment = Alignment.Center) {
+                        Text(p.strength?.toString() ?: "?", fontWeight = FontWeight.ExtraBold)
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(p.name, fontWeight = FontWeight.SemiBold)
+                        Text("${p.posCode ?: "?"} • ${p.age ?: "?"} anos • ${p.valueText ?: NI}", fontSize = 12.sp, color = C.MUTED)
+                    }
+                    if (p.training == true) Pill("🟠 Treinando")
+                }
             }
         }
     }
-    val rivalCount = d.players.count { it.owner == "RIVAL" }
-    if (rivalCount > 0) Text("Elenco rival lido: $rivalCount jogadores", modifier = Modifier.padding(top = 10.dp), color = C.MUTED)
+}
+
+@Composable
+private fun CountPill(text: String, color: Color) {
+    Box(Modifier.padding(end = 6.dp).clip(RoundedCornerShape(50)).background(color).padding(horizontal = 12.dp, vertical = 4.dp)) {
+        Text(text, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (color == C.DRAW) Color(0xFF222222) else Color.White)
+    }
+}
+
+@Composable
+private fun ResultBadge(result: String?) {
+    val c = when (result) {
+        "V" -> C.WIN
+        "E" -> C.DRAW
+        "D" -> C.LOSS
+        else -> C.SURFACE2
+    }
+    Box(Modifier.size(24.dp).clip(RoundedCornerShape(50)).background(c), contentAlignment = Alignment.Center) {
+        Text(result ?: "–", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = if (result == "E") Color(0xFF222222) else Color.White)
+    }
+}
+
+@Composable
+private fun MatchCard(m: MatchEntity, modifier: Modifier) {
+    val tint = when (m.result) {
+        "V" -> Color(0xFF12351F)
+        "E" -> Color(0xFF3A3210)
+        "D" -> Color(0xFF3A1616)
+        else -> C.SURFACE2
+    }
+    val score = if (m.scoreMine != null && m.scoreOpp != null) "${m.scoreMine}-${m.scoreOpp}" else "–"
+    val place = when (m.home) {
+        true -> "🏠 "
+        false -> "✈ "
+        null -> ""
+    }
+    Column(
+        modifier.clip(RoundedCornerShape(12.dp)).background(tint).padding(8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text(place + (if (m.round != null) "J${m.round}" else m.label.take(8)), fontSize = 11.sp, color = C.MUTED)
+            ResultBadge(m.result)
+        }
+        Text(score, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.padding(vertical = 2.dp))
+        Text(m.opponent ?: NI, fontSize = 11.sp, textAlign = TextAlign.Center, maxLines = 2, fontWeight = FontWeight.SemiBold)
+        if (m.opponentNick != null) Text(m.opponentNick, fontSize = 10.sp, color = C.PRIMARY, textAlign = TextAlign.Center, maxLines = 1)
+        Text(m.date ?: m.time ?: "", fontSize = 10.sp, color = C.MUTED)
+    }
 }
 
 @Composable
 private fun SlotCalendar(d: SlotData) {
     if (d.matches.isEmpty()) {
-        Text("Calendário ainda não lido neste slot.", color = C.MUTED)
+        Text("Calendário ainda não lido neste slot. No jogo: menu → Calendário do SEU time (no topo da lista) e role devagar.", color = C.MUTED)
         return
     }
-    Panel {
-        for (m in d.matches.sortedBy { it.round ?: 999 }) {
-            val score = if (m.scoreMine != null && m.scoreOpp != null) "${m.scoreMine}x${m.scoreOpp} ${m.result ?: ""}" else "a jogar"
-            val place = when (m.home) {
-                true -> "casa"
-                false -> "fora"
-                null -> "?"
-            }
-            val nick = if (m.opponentNick != null) " (${m.opponentNick})" else ""
-            Text(
-                "${m.label} • ${m.opponent ?: NI}$nick • $place • ${m.date ?: m.time ?: NI} • $score",
-                fontSize = 13.sp, modifier = Modifier.padding(vertical = 3.dp)
-            )
+    val sorted = d.matches.sortedBy { it.round ?: 999 }
+    Row(Modifier.padding(bottom = 8.dp)) {
+        CountPill("V ${sorted.count { it.result == "V" }}", C.WIN)
+        CountPill("E ${sorted.count { it.result == "E" }}", C.DRAW)
+        CountPill("D ${sorted.count { it.result == "D" }}", C.LOSS)
+        CountPill("${sorted.count { it.result == null }} a jogar", C.SURFACE2)
+    }
+    for (row in sorted.chunked(3)) {
+        Row(Modifier.fillMaxWidth()) {
+            for (m in row) MatchCard(m, Modifier.weight(1f).padding(3.dp))
+            repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
         }
+    }
+}
+
+private fun formationLines(f: String): List<Int> {
+    val nums = f.trim().split(" ")[0].split("-").mapNotNull { it.toIntOrNull() }
+    return if (nums.isNotEmpty() && nums.sum() == 10) nums else emptyList()
+}
+
+@Composable
+private fun PitchView(formation: String) {
+    val lines = formationLines(formation)
+    Canvas(Modifier.fillMaxWidth().height(300.dp).clip(RoundedCornerShape(16.dp))) {
+        val w = size.width
+        val h = size.height
+        drawRect(Color(0xFF1E7B3B))
+        val stripe = h / 8f
+        for (i in 0 until 8 step 2) {
+            drawRect(Color(0x14FFFFFF), topLeft = Offset(0f, i * stripe), size = Size(w, stripe))
+        }
+        val line = Color(0xCCFFFFFF)
+        drawRect(line, topLeft = Offset(w * 0.04f, h * 0.03f), size = Size(w * 0.92f, h * 0.94f), style = Stroke(3f))
+        drawLine(line, Offset(w * 0.04f, h * 0.5f), Offset(w * 0.96f, h * 0.5f), 3f)
+        drawCircle(line, radius = h * 0.12f, center = Offset(w * 0.5f, h * 0.5f), style = Stroke(3f))
+        drawRect(line, topLeft = Offset(w * 0.3f, h * 0.03f), size = Size(w * 0.4f, h * 0.14f), style = Stroke(3f))
+        drawRect(line, topLeft = Offset(w * 0.3f, h * 0.83f), size = Size(w * 0.4f, h * 0.14f), style = Stroke(3f))
+        if (lines.isEmpty()) return@Canvas
+        drawCircle(Color.White, radius = 19f, center = Offset(w * 0.5f, h * 0.91f))
+        drawCircle(Color(0xFFFFC83D), radius = 15f, center = Offset(w * 0.5f, h * 0.91f))
+        val k = lines.size
+        for ((i, n) in lines.withIndex()) {
+            val y = if (k == 1) 0.5f else 0.74f - i * (0.58f / (k - 1))
+            for (j in 0 until n) {
+                val x = (j + 1f) / (n + 1f)
+                drawCircle(Color.White, radius = 19f, center = Offset(w * x, h * y))
+                drawCircle(Color(0xFF3D8BFF), radius = 15f, center = Offset(w * x, h * y))
+            }
+        }
+    }
+}
+
+@Composable
+private fun TacticBar(label: String, value: Int) {
+    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(label, fontSize = 13.sp, color = C.MUTED)
+            Text(value.toString(), fontWeight = FontWeight.ExtraBold, fontSize = 15.sp)
+        }
+        Bar(value)
     }
 }
 
@@ -790,23 +969,36 @@ private fun SlotTactic(slot: Int, d: SlotData) {
     } catch (e: Exception) {
         null
     }
-    Text("Gerada ${ago(plan.at)} — coloque manualmente no jogo:", color = C.MUTED, modifier = Modifier.padding(top = 8.dp))
-    if (j != null) {
-        Panel {
-            KV("Formação", j.optString("formation"))
-            KV("Estilo de jogo", j.optString("playStyle"))
-            KV("Pressão", j.optInt("pressure").toString())
-            KV("Mentalidade/Estilo", j.optInt("mentality").toString())
-            KV("Ritmo/Temporização", j.optInt("tempo").toString())
-            KV("Marcação", j.optString("marking"))
-            KV("Impedimento", j.optString("offside"))
-            KV("Desarme", j.optString("tackle"))
-            KV("Avançadas Ataque", j.optString("advAttack"))
-            KV("Avançadas Meio", j.optString("advMid"))
-            KV("Avançadas Defesa", j.optString("advDef"))
+    if (j == null) return
+    Text("Gerada ${ago(plan.at)} — coloque manualmente no jogo:", color = C.MUTED, modifier = Modifier.padding(top = 8.dp, bottom = 6.dp))
+    Panel {
+        Text("Formação ${j.optString("formation")}", fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
+        Text(j.optString("playStyle"), color = C.GOLD, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(bottom = 8.dp))
+        PitchView(j.optString("formation"))
+    }
+    Panel {
+        Text("Controles", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+        TacticBar("Pressão", j.optInt("pressure"))
+        TacticBar("Mentalidade / Estilo", j.optInt("mentality"))
+        TacticBar("Ritmo / Temporização", j.optInt("tempo"))
+        Row(Modifier.padding(top = 8.dp)) {
+            Pill("Marcação: " + j.optString("marking"))
+            Pill("Impedimento: " + j.optString("offside"))
+            Pill("Desarme: " + j.optString("tackle"))
         }
-        val ra = j.optJSONArray("rationale")
-        if (ra != null) for (i in 0 until ra.length()) Text("• " + ra.optString(i), fontSize = 13.sp, modifier = Modifier.padding(vertical = 2.dp))
+    }
+    Panel {
+        Text("Avançadas por setor", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+        KV("⬆ Ataque", j.optString("advAttack"))
+        KV("↔ Meio", j.optString("advMid"))
+        KV("⬇ Defesa", j.optString("advDef"))
+    }
+    val ra = j.optJSONArray("rationale")
+    if (ra != null && ra.length() > 0) {
+        Panel {
+            Text("Por que esta tática", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            for (i in 0 until ra.length()) Text("• " + ra.optString(i), fontSize = 13.sp, modifier = Modifier.padding(vertical = 2.dp))
+        }
     }
 }
 

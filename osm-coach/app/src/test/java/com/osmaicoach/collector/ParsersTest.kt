@@ -49,6 +49,7 @@ class ParsersTest {
         val rows = ArrayList<OcrLine>()
         rows += Fx.line("Tobol", 0.05f, 0.228f, 0.05f)
         rows += Fx.line("leandrozzy", 0.06f, 0.263f, 0.08f)
+        rows += Fx.line("Posição: 4", 0.08f, 0.149f, 0.1f)
         rows += Fx.line("4-3-3 B", 0.71f, 0.149f, 0.08f)
         rows += Fx.line("Avançados", 0.5f, 0.60f, 0.08f)
         fun row(y: Float, name: String, age: String, pos: String, a: String, d: String, m: String, v: String) {
@@ -73,6 +74,8 @@ class ParsersTest {
 
     @Test fun calendarSkipsEmptyCardsAndNeverInventsAResult() {
         val o = Fx.ocr(
+            Fx.line("Altay Oskemen", 0.1f, 0.302f, 0.1f), Fx.line("Astana", 0.22f, 0.302f, 0.07f),
+            Fx.line("FK Aktobe", 0.33f, 0.302f, 0.08f), Fx.line("el chiri_2", 0.33f, 0.34f, 0.08f),
             Fx.line("Tobol", 0.5f, 0.503f, 0.06f, 0.06f),
             Fx.line("Jornada 1", 0.087f, 0.604f, 0.08f), Fx.line("13-09-26", 0.087f, 0.69f, 0.08f),
             Fx.line("1-0", 0.087f, 0.78f, 0.05f, 0.08f), Fx.line("Kaysar Kyzylorda", 0.087f, 0.89f, 0.14f),
@@ -130,6 +133,47 @@ class ParsersTest {
         assertEquals("ATA", ex.listings[1].cat)
         assertEquals(80, ex.listings[1].strength)
         assertNotNull(ex.listings[1].priceText)
+    }
+
+    @Test fun scrolledSquadHasNoOwnerSoPlayerNamesAreNeverTakenAsTeam() {
+        val rows = ArrayList<OcrLine>()
+        fun row(y: Float, name: String, age: String, pos: String, a: String, d: String, m: String, v: String) {
+            rows += Fx.line(name, 0.07f, y); rows += Fx.line(age, 0.555f, y, 0.03f); rows += Fx.line(pos, 0.62f, y, 0.03f)
+            rows += Fx.line(a, 0.663f, y, 0.025f); rows += Fx.line(d, 0.70f, y, 0.025f); rows += Fx.line(m, 0.737f, y, 0.025f)
+            rows += Fx.line(v, 0.95f, y, 0.04f)
+        }
+        row(0.20f, "Foden", "26", "MC", "40", "30", "90", "18,2M")
+        row(0.30f, "Gibbs-White", "26", "MC", "41", "31", "90", "18,0M")
+        row(0.40f, "Lopez", "23", "MC", "40", "30", "88", "16,5M")
+        val ex = Parsers.squad(Fx.ocr(*rows.toTypedArray()), null)
+        assertNull(ex.ownerTeam)
+        assertNull(ex.ownerNick)
+        assertTrue(ex.fields.isEmpty())
+        assertEquals(3, ex.players.size)
+    }
+
+    @Test fun scrolledCalendarHasNoOwnerAndNoHumans() {
+        val o = Fx.ocr(
+            Fx.line("Jornada 9", 0.5f, 0.503f, 0.08f, 0.04f),
+            Fx.line("Irtysh Pavlodar", 0.25f, 0.30f, 0.12f), Fx.line("Mr_Java", 0.25f, 0.34f, 0.07f),
+            Fx.line("Jornada 1", 0.087f, 0.604f, 0.08f), Fx.line("1-0", 0.087f, 0.78f, 0.05f, 0.08f),
+            Fx.line("Kaysar Kyzylorda", 0.087f, 0.89f, 0.14f)
+        )
+        val ex = Parsers.calendar(o, null)
+        assertNull(ex.ownerTeam)
+        assertTrue(ex.humans.isEmpty())
+    }
+
+    @Test fun reportHintNeedsTwoKeywords() {
+        assertTrue(Parsers.hasReportHint(Fx.ocr(Fx.line("Formação 4-4-2 B", 0.5f, 0.2f, 0.2f), Fx.line("Desarme Agressivo", 0.5f, 0.3f, 0.2f))))
+        assertFalse(Parsers.hasReportHint(Fx.ocr(Fx.line("Mercado de transferências", 0.5f, 0.2f, 0.3f))))
+    }
+
+    @Test fun lostCommaInTeamValueIsRestoredOnlyForWeakTeams() {
+        assertEquals("27,5M", Money.fixLostComma("275M", 61))
+        assertNull(Money.fixLostComma("263M", 91))
+        assertNull(Money.fixLostComma("27,5M", 61))
+        assertNull(Money.fixLostComma("75M", 61))
     }
 
     @Test fun moneyRequiresSuffix() {

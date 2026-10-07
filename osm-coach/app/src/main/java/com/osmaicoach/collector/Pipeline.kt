@@ -76,7 +76,8 @@ class FramePipeline private constructor(private val ctx: Context) {
     private var stable = 0
     private var unstable = 0
     private var lastProcessed: LongArray? = null
-    private var lastOwner: Triple<Int, String, Long>? = null
+    private val lastOwners = HashMap<ScreenType, Triple<Int, String, Long>>()
+    private var reportCandidates = 0
     private var lastOsmAcceptedAt = 0L
     private var imagesThisSession = 0
     private val mutex = Mutex()
@@ -99,7 +100,8 @@ class FramePipeline private constructor(private val ctx: Context) {
         stable = 0
         unstable = 0
         lastProcessed = null
-        lastOwner = null
+        lastOwners.clear()
+        reportCandidates = 0
         imagesThisSession = 0
         val p = ctx.getSharedPreferences("machine", Context.MODE_PRIVATE)
         if (p.getString("session", null) == sessionId) {
@@ -247,11 +249,20 @@ class FramePipeline private constructor(private val ctx: Context) {
             var ex = parse(ocr, type, img, now)
             Diag.parsed.incrementAndGet()
 
+            // Rolando a lista o cabeçalho some: reaproveita o dono lido por último (mesmo tipo e slot, até 10 min).
             if (ex.ownerTeam == null && (type == ScreenType.SQUAD || type == ScreenType.CALENDAR)) {
-                val lo = lastOwner
-                if (lo != null && now - lo.third < 120000L && lo.first == (machine.current ?: -1)) {
+                val lo = lastOwners[type]
+                if (lo != null && now - lo.third < 600000L && lo.first == (machine.current ?: -1)) {
                     ex = ex.copy(ownerTeam = lo.second)
                 }
+            }
+            // Trocou de tipo de tela: o dono da lista anterior deixa de valer.
+            if (type == ScreenType.HUB || type == ScreenType.PREGAME || type == ScreenType.MARKET) {
+                lastOwners.clear()
+            } else if (type == ScreenType.SQUAD) {
+                lastOwners.remove(ScreenType.CALENDAR)
+            } else if (type == ScreenType.CALENDAR) {
+                lastOwners.remove(ScreenType.SQUAD)
             }
 
             val known = repo.knownIdentities()
@@ -266,14 +277,17 @@ class FramePipeline private constructor(private val ctx: Context) {
             val own = ex.ownerTeam
             val cur = asg.slot
             if (own != null && cur != null && (type == ScreenType.SQUAD || type == ScreenType.CALENDAR)) {
-                lastOwner = Triple(cur, own, now)
+                lastOwners[type] = Triple(cur, own, now)
             }
 
             if (type == ScreenType.HUB) saveCrests(bmp, ex.hubCards.map { it.slot })
             val changed = repo.apply(asg.slot, ex, "ocr", now)
+            val hint = if (type == ScreenType.OTHER_OSM) {
+                " [" + ocr.lines.map { it.text.trim() }.filter { Txt.letters(it) >= 4 }.take(3).joinToString(" | ").take(70) + "]"
+            } else ""
             Diag.log(
                 typeLabel(type) + " → " + (asg.slot?.let { "S$it" } ?: if (type == ScreenType.HUB) "central" else "sem slot") +
-                    (if (changed > 0) " (+$changed campos)" else "")
+                    (if (changed > 0) " (+$changed campos)" else "") + hint
             )
             if (changed > 0) {
                 Diag.extracted.addAndGet(changed)
@@ -284,17 +298,21 @@ class FramePipeline private constructor(private val ctx: Context) {
             val unassigned = asg.slot == null && type != ScreenType.HUB
             if (unassigned) Diag.unassigned.incrementAndGet()
 
+            // Tela desconhecida do OSM com cara de relatório do rival: guarda a imagem para a IA confirmar e ler.
+            val reportHint = type == ScreenType.OTHER_OSM && asg.slot != null &&
+                reportCandidates < 10 && Parsers.hasReportHint(ocr)
             var path: String? = null
-            if (((unassigned && dataType) || ex.needsAi) && imagesThisSession < 60) {
+            if (((unassigned && dataType) || ex.needsAi || reportHint) && imagesThisSession < 60) {
                 path = ImageIo.saveJpeg(ctx, bmp, sessionId, now)
                 imagesThisSession++
+                if (reportHint) reportCandidates++
             }
             dao.insertScreen(
                 ScreenEntity(
                     sessionId = sessionId, at = now, type = type.name, slotId = asg.slot ?: 0,
                     slotConf = asg.confidence, hash = FrameHash.toText(h), imagePath = path,
                     ocrChars = ocr.fullText.length, extracted = changed,
-                    aiState = if (ex.needsAi && path != null) "pending" else "none", note = asg.reason
+                    aiState = if ((ex.needsAi || reportHint) && path != null) "pending" else "none", note = asg.reason
                 )
             )
         }

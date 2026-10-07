@@ -42,6 +42,12 @@ class AiTest {
         assertNull(players[1].training)
     }
 
+    @Test fun reportIsOnlyAppliedWhenAiConfirmsRivalReport() {
+        assertEquals("rival_report", AiMapper.reportKind(JSONObject("""{"kind":"rival_report","formation":"4-4-2"}""")))
+        assertEquals("own_tactic_editor", AiMapper.reportKind(JSONObject("""{"kind":"Own_Tactic_Editor"}""")))
+        assertEquals("", AiMapper.reportKind(JSONObject("""{"formation":"4-4-2"}""")))
+    }
+
     @Test fun jsonFencesAreStripped() {
         val j = AiClient.parseJson("```json\n{\"a\":1}\n```")
         assertNotNull(j)
