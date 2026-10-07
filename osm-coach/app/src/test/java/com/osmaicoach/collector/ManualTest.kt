@@ -40,8 +40,28 @@ class ManualTest {
         assertTrue(r.missingItems.any { it.key == K.MY_STADIUM })
     }
 
+    @Test fun fieldsThatDoNotExistInTheGameAreNotRequired() {
+        val keys = Completeness.ITEMS.map { it.key }
+        assertTrue(K.RIVAL_PRESSURE !in keys && K.RIVAL_MENTALITY !in keys && K.RIVAL_TEMPO !in keys)
+        assertTrue(K.STADIUM_BONUS !in keys && K.RIVAL_LOGIN_BONUS !in keys)
+    }
+
+    @Test fun loginBonusAndNickAreRequiredOnlyForHumanRivals() {
+        val cpu = HashMap<String, StoredField>()
+        cpu[K.RIVAL_HUMAN] = StoredField("Não", 0.9, 1L)
+        assertTrue(Completeness.compute(cpu, 0, 0, false).missingItems.none { it.key == K.RIVAL_LOGIN_BONUS })
+        val human = HashMap<String, StoredField>()
+        human[K.RIVAL_HUMAN] = StoredField("Sim", 0.9, 1L)
+        assertTrue(Completeness.compute(human, 0, 0, false).missingItems.any { it.key == K.RIVAL_LOGIN_BONUS })
+    }
+
+    @Test fun calendarIsCompleteOnlyWhenAllRoundsWereRead() {
+        assertTrue(Completeness.compute(emptyMap(), 0, 24, false, 34).missing.any { it.contains("24 de 34") })
+        assertTrue(Completeness.compute(emptyMap(), 0, 34, false, 34).known.contains("Calendário completo"))
+    }
+
     @Test fun everyMissingFieldHasAManualSpec() {
-        for (item in Completeness.ITEMS) {
+        for (item in Completeness.ITEMS + Completeness.HUMAN_ONLY) {
             assertNotNull("sem especificação manual para ${item.key}", ManualFields.SPECS[item.key])
         }
     }

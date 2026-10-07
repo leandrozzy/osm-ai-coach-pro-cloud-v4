@@ -58,9 +58,7 @@ object Completeness {
         Item(K.RIVAL_SECRET, "Treino secreto rival"),
         Item(K.RIVAL_CAMP, "Campo de treinamento rival"),
         Item(K.REFEREE, "Árbitro"),
-        Item(K.STADIUM_BONUS, "Bônus de estádio"),
-        Item(K.RIVAL_LOGIN_BONUS, "Bônus de login rival"),
-        Item(K.STADIUM, "Estádio rival"),
+        Item(K.STADIUM, "Nível do estádio rival"),
         Item(K.MY_STADIUM, "Meu estádio"),
         Item(K.MY_GOL, "Meu setor GOL"),
         Item(K.MY_DEF, "Meu setor DEF"),
@@ -69,27 +67,33 @@ object Completeness {
         Item(K.RIVAL_GOL, "Setor GOL do rival"),
         Item(K.RIVAL_DEF, "Setor DEF do rival"),
         Item(K.RIVAL_MID, "Setor MEI do rival"),
-        Item(K.RIVAL_ATK, "Setor ATA do rival"),
-        Item(K.RIVAL_PRESSURE, "Pressão do rival"),
-        Item(K.RIVAL_MENTALITY, "Estilo do rival"),
-        Item(K.RIVAL_TEMPO, "Temporização do rival")
+        Item(K.RIVAL_ATK, "Setor ATA do rival")
+    )
+
+    /** Só existem quando o rival é humano (time de CPU não tem apelido nem bônus de login). */
+    val HUMAN_ONLY = listOf(
+        Item(K.RIVAL_NICK, "Apelido do rival (humano)"),
+        Item(K.RIVAL_LOGIN_BONUS, "Bônus de login do rival (humano)")
     )
 
     data class Result(val known: List<String>, val missing: List<String>, val percent: Int, val missingItems: List<Item> = emptyList())
 
     /** Calculado somente por campos realmente preenchidos; nunca por quantidade de frames. */
-    fun compute(fields: Map<String, StoredField>, squadCount: Int, calendarCount: Int, marketSeen: Boolean): Result {
+    fun compute(fields: Map<String, StoredField>, squadCount: Int, calendarCount: Int, marketSeen: Boolean, calendarTotal: Int? = null): Result {
         val known = ArrayList<String>()
         val missing = ArrayList<String>()
         val missingItems = ArrayList<Item>()
-        for (it in ITEMS) {
+        val human = fields[K.RIVAL_HUMAN]?.value == "Sim"
+        for (it in (if (human) ITEMS + HUMAN_ONLY else ITEMS)) {
             if (FieldMerge.known(fields[it.key]?.value)) known.add(it.label) else {
                 missing.add(it.label)
                 missingItems.add(it)
             }
         }
         if (squadCount >= 16) known.add("Meu elenco (16+ jogadores)") else missing.add("Meu elenco (16+ jogadores)")
-        if (calendarCount >= 6) known.add("Calendário (6+ jogos)") else missing.add("Calendário (6+ jogos)")
+        val need = calendarTotal ?: 6
+        if (calendarCount >= need) known.add("Calendário completo")
+        else missing.add("Calendário completo ($calendarCount de ${calendarTotal ?: "?"} rodadas)")
         if (marketSeen) known.add("Mercado") else missing.add("Mercado")
         val total = known.size + missing.size
         val pct = if (total == 0) 0 else (known.size * 100) / total

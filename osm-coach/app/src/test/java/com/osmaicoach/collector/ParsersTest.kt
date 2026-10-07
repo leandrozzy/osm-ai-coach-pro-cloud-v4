@@ -201,22 +201,68 @@ class ParsersTest {
         assertTrue(v.contains("414K"))
     }
 
-    @Test fun rivalReportIsReadByLabelAndValue() {
-        val o = Fx.ocr(
-            Fx.line("Formação", 0.15f, 0.30f, 0.12f), Fx.line("4-4-2 B", 0.50f, 0.30f, 0.10f),
-            Fx.line("Estilo de jogo", 0.15f, 0.40f, 0.18f), Fx.line("Jogar pelas alas", 0.55f, 0.40f, 0.18f),
-            Fx.line("Marcação", 0.15f, 0.50f, 0.12f), Fx.line("À zona", 0.50f, 0.50f, 0.08f),
-            Fx.line("Impedimento", 0.15f, 0.60f, 0.14f), Fx.line("Não", 0.50f, 0.60f, 0.05f),
-            Fx.line("Desarme", 0.15f, 0.70f, 0.12f), Fx.line("Agressivo", 0.50f, 0.70f, 0.10f)
-        )
+    private fun analysisNote() = listOf(
+        Fx.line("Mashal Mubarek", 0.20f, 0.27f, 0.2f, 0.04f),
+        Fx.line("UzM Raridade [S3]", 0.20f, 0.32f, 0.2f, 0.04f),
+        Fx.line("Pelo que pude ver, Mashal Mubarek deu ordens aos jogadores para usarem entradas Normal.", 0.20f, 0.38f, 0.4f),
+        Fx.line("Também consegui descobrir a formação. Parece que vão jogar num 4-3-3 A", 0.20f, 0.42f, 0.4f),
+        Fx.line("Tenho a certeza que eles não foram em Estágio.", 0.20f, 0.46f, 0.3f),
+        Fx.line("Nível do estádio: 1", 0.10f, 0.51f, 0.12f)
+    )
+
+    @Test fun analysisFieldsAreReadFromTheFormationPage() {
+        val o = Fx.ocr(*(analysisNote() + listOf(
+            Fx.line("Formação: 4-3-3 A", 0.70f, 0.03f, 0.2f), Fx.line("Kostoulas", 0.70f, 0.12f), Fx.line("Suplentes", 0.70f, 0.74f)
+        )).toTypedArray())
+        assertTrue(Parsers.isAnalysis(o))
         val ex = Parsers.report(o)
         assertEquals(ScreenType.REPORT, ex.type)
-        assertEquals("4-4-2 B", ex.fields[K.RIVAL_FORMATION]?.value)
+        assertEquals("Normal", ex.fields[K.RIVAL_TACKLE]?.value)
+        assertEquals("4-3-3 A", ex.fields[K.RIVAL_FORMATION]?.value)
+        assertEquals("Não", ex.fields[K.RIVAL_CAMP]?.value)
+        assertEquals("Nível 1", ex.fields[K.STADIUM]?.value)
+        assertEquals("UzM Raridade", ex.fields[K.RIVAL_NICK]?.value)
+        assertEquals("Sim", ex.fields[K.RIVAL_HUMAN]?.value)
+        assertFalse(ex.needsAi)
+    }
+
+    @Test fun analysisFieldsAreReadFromTheTacticPage() {
+        val o = Fx.ocr(*(analysisNote() + listOf(
+            Fx.line("Jogar pelas alas", 0.70f, 0.03f, 0.15f),
+            Fx.line("Marcação", 0.67f, 0.68f, 0.08f), Fx.line("À zona", 0.67f, 0.72f, 0.06f),
+            Fx.line("Fazer fora-de-jogo", 0.95f, 0.68f, 0.15f), Fx.line("Não", 0.95f, 0.72f, 0.04f)
+        )).toTypedArray())
+        val ex = Parsers.report(o)
         assertEquals("Jogar pelas alas", ex.fields[K.RIVAL_PLAN]?.value)
         assertEquals("À zona", ex.fields[K.RIVAL_MARKING]?.value)
         assertEquals("Não", ex.fields[K.RIVAL_OFFSIDE]?.value)
-        assertEquals("Agressivo", ex.fields[K.RIVAL_TACKLE]?.value)
-        assertFalse(ex.needsAi)
+        assertEquals("Normal", ex.fields[K.RIVAL_TACKLE]?.value)
+    }
+
+    @Test fun calendarIgnoresStadiumBannerTextGluedToTheDate() {
+        val o = Fx.ocr(
+            Fx.line("Jornada 14", 0.25f, 0.60f, 0.12f), Fx.line("Jornada 15", 0.5f, 0.60f, 0.12f), Fx.line("Jornada 16", 0.75f, 0.60f, 0.12f),
+            Fx.line("ANIVE11-10-26", 0.25f, 0.68f, 0.12f), Fx.line("Neftchi Fergana", 0.25f, 0.90f, 0.15f), Fx.line("UzM wLn7", 0.25f, 0.94f, 0.1f),
+            Fx.line("12-10-26", 0.5f, 0.68f, 0.1f), Fx.line("Dinamo Samarkand", 0.5f, 0.90f, 0.15f),
+            Fx.line("13-10-26", 0.75f, 0.68f, 0.1f), Fx.line("Quartos de final", 0.75f, 0.90f, 0.15f)
+        )
+        val ex = Parsers.calendar(o, null)
+        val m14 = ex.matches.first { it.round == 14 }
+        assertEquals("Neftchi Fergana", m14.opponent)
+        assertEquals("11/10/26", m14.date)
+    }
+
+    @Test fun lastRowOfTheCalendarIsReadEvenWhenACupCardSaysFinal() {
+        val o = Fx.ocr(
+            Fx.line("Jornada 31", 0.25f, 0.64f, 0.12f), Fx.line("Jornada 32", 0.5f, 0.64f, 0.12f), Fx.line("Jornada 33", 0.75f, 0.64f, 0.12f),
+            Fx.line("28-10-26", 0.25f, 0.72f, 0.1f), Fx.line("Neftchi Fergana", 0.25f, 0.93f, 0.15f),
+            Fx.line("29-10-26", 0.5f, 0.72f, 0.1f), Fx.line("Dinamo Samarkand", 0.5f, 0.93f, 0.15f),
+            Fx.line("30-10-26", 0.75f, 0.72f, 0.1f), Fx.line("Final", 0.75f, 0.93f, 0.08f), Fx.line("ASD", 0.75f, 0.97f, 0.05f)
+        )
+        val ex = Parsers.calendar(o, null)
+        assertEquals(setOf(31, 32, 33), ex.matches.mapNotNull { it.round }.toSet())
+        assertEquals("Neftchi Fergana", ex.matches.first { it.round == 31 }.opponent)
+        assertEquals("Final", ex.matches.first { it.round == 33 }.opponent)
     }
 
     @Test fun reportWithoutLabelsReadsNothingAndAsksForAi() {

@@ -258,7 +258,8 @@ class FramePipeline private constructor(private val ctx: Context) {
             // Rolando a lista o cabeçalho some: reaproveita o dono lido por último (mesmo tipo e slot, até 10 min).
             if (type == ScreenType.REPORT) {
                 val rn = machine.current?.let { repo.fieldMap(it)[K.RIVAL_TEAM]?.value }
-                val mentions = rn != null && Txt.key(rn).length >= 4 && Txt.key(ocr.fullText).contains(Txt.key(rn))
+                val mentions = Parsers.isAnalysis(ocr) ||
+                    (rn != null && Txt.key(rn).length >= 4 && Txt.key(ocr.fullText).contains(Txt.key(rn)))
                 if (!mentions) ex = Extraction(ScreenType.REPORT, needsAi = true, note = "sem nome do rival")
             }
             if (ex.ownerTeam == null && (type == ScreenType.SQUAD || type == ScreenType.CALENDAR)) {
@@ -320,7 +321,9 @@ class FramePipeline private constructor(private val ctx: Context) {
             val rivalName = asg.slot?.let { repo.fieldMap(it)[K.RIVAL_TEAM]?.value }
             val mentionsRival = rivalName != null && Txt.key(rivalName).length >= 4 &&
                 Txt.key(ocr.fullText).contains(Txt.key(rivalName))
-            val reportHint = type == ScreenType.OTHER_OSM && asg.slot != null &&
+            // A tela de introdução do analista (cartoon + botão) não tem dados: não vale guardar para a IA.
+            val analystIntro = Txt.norm(ocr.fullText).contains("relatorio do analista")
+            val reportHint = type == ScreenType.OTHER_OSM && asg.slot != null && !analystIntro &&
                 reportCandidates < 12 && (Parsers.hasReportHint(ocr) || mentionsRival)
             // Diagnóstico: guarda poucas telas de tática e calendários "sem novidade" para eu ver o que o app viu.
             val diagTactic = type == ScreenType.TACTIC && asg.slot != null && tacticSaved < 6

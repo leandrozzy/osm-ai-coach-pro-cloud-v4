@@ -13,6 +13,8 @@ object ScreenClassifier {
         val hubHits = hubRound.findAll(t).count()
         if (hubHits >= 2 || (hubHits >= 1 && t.contains("espacos de treinador"))) return ScreenType.HUB
         if (ocr.tokens.size < 4) return ScreenType.NOISE
+        // Análise do rival (nota do analista à esquerda): tela cheia, SEM a barra do OSM.
+        if (Parsers.isAnalysis(ocr)) return ScreenType.REPORT
         // Sem a barra do OSM só passa se o texto tiver o vocabulário do jogo (análise do rival, calendário etc.).
         val osmish = listOf(
             "formacao", "marcacao", "desarme", "estilo de jogo", "jornada", "analista", "relatorio", "adversario",
@@ -48,8 +50,8 @@ object ScreenClassifier {
         if (t.contains("preparacao para o jogo") || (t.contains("jogo rapido") && t.contains("treino"))) {
             return ScreenType.PREGAME
         }
-        val reportWords = listOf("formacao", "marcacao", "desarme", "fora de jogo", "impedimento", "estilo de jogo")
-        if (reportWords.count { t.contains(it) } >= 3 || (t.contains("temporizacao") && t.contains("pressao"))) return ScreenType.REPORT
+        val reportWords = listOf("formacao", "marcacao", "desarme", "fora de jogo", "fora-de-jogo", "impedimento", "estilo de jogo")
+        if (reportWords.count { t.contains(it) } >= 3) return ScreenType.REPORT
         return ScreenType.OTHER_OSM
     }
 }

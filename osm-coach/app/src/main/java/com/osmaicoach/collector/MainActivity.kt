@@ -471,7 +471,10 @@ private suspend fun loadSlot(ctx: Context, slot: Int): SlotData {
     val players = dao.playersOf(slot)
     val matches = dao.matchesOf(slot)
     val market = dao.snapshots("TRANSFER", slot).isNotEmpty()
-    val comp = Completeness.compute(f, players.count { it.owner == "MY" }, matches.size, market)
+    val comp = Completeness.compute(
+        f, players.count { it.owner == "MY" }, matches.count { it.round != null }, market,
+        f[K.ROUND_TOTAL]?.value?.toIntOrNull()
+    )
     Director.resolveTacticLogs(repo, slot)
     return SlotData(
         fields = f, players = players, matches = matches,
@@ -512,9 +515,9 @@ private suspend fun loadToday(ctx: Context): TodayData {
     for (slot in 1..4) {
         val f = repo.fieldMap(slot)
         val players = repo.dao.playersOf(slot).count { it.owner == "MY" }
-        val matches = repo.dao.matchesOf(slot).size
+        val matches = repo.dao.matchesOf(slot).count { it.round != null }
         val market = repo.dao.snapshots("TRANSFER", slot).isNotEmpty()
-        val c = Completeness.compute(f, players, matches, market)
+        val c = Completeness.compute(f, players, matches, market, f[K.ROUND_TOTAL]?.value?.toIntOrNull())
         val name = known(f, K.TEAM) ?: known(f, K.HUB_TITLE)
         list.add(
             SlotSummary(
@@ -1195,25 +1198,22 @@ private fun SlotPregame(slot: Int, d: SlotData) {
             EditRow("Formação do rival", K.RIVAL_FORMATION)
         )
     )
-    EditSection(
-        slot, d, "Relatório do rival",
-        listOf(
-            EditRow("Plano de jogo", K.RIVAL_PLAN),
-            EditRow("Marcação", K.RIVAL_MARKING),
-            EditRow("Impedimento", K.RIVAL_OFFSIDE),
-            EditRow("Desarme", K.RIVAL_TACKLE),
-            EditRow("Pressão", K.RIVAL_PRESSURE),
-            EditRow("Estilo / mentalidade", K.RIVAL_MENTALITY),
-            EditRow("Temporização", K.RIVAL_TEMPO),
-            EditRow("Treino secreto", K.RIVAL_SECRET),
-            EditRow("Campo de treinamento", K.RIVAL_CAMP),
-            EditRow("Bônus de login", K.RIVAL_LOGIN_BONUS),
-            EditRow("Estádio", K.STADIUM),
-            EditRow("Bônus de estádio", K.STADIUM_BONUS)
-        )
-    )
+    val rivalIsHuman = fv(d, K.RIVAL_HUMAN) == "Sim"
+    val reportRows = ArrayList<EditRow>()
+    reportRows.add(EditRow("Plano de jogo (estilo)", K.RIVAL_PLAN))
+    reportRows.add(EditRow("Marcação", K.RIVAL_MARKING))
+    reportRows.add(EditRow("Fora-de-jogo", K.RIVAL_OFFSIDE))
+    reportRows.add(EditRow("Entradas (desarme)", K.RIVAL_TACKLE))
+    reportRows.add(EditRow("Treino secreto", K.RIVAL_SECRET))
+    reportRows.add(EditRow("Estágio (campo de treinamento)", K.RIVAL_CAMP))
+    reportRows.add(EditRow("Nível do estádio", K.STADIUM))
+    if (rivalIsHuman) {
+        reportRows.add(EditRow("Apelido do usuário", K.RIVAL_NICK))
+        reportRows.add(EditRow("Bônus de login", K.RIVAL_LOGIN_BONUS))
+    }
+    EditSection(slot, d, "Relatório do rival (análise do analista)", reportRows)
     Text(
-        "NI = ainda não lido. Formação, força e setores do rival vêm do elenco dele. Plano, marcação, impedimento e desarme vêm da análise do rival: abra-a no jogo, deixe a tela parada por 3 segundos e toque no botão acima (ou ao encerrar a captura).",
+        "NI = ainda não lido. Formação, força, valor e setores do rival vêm do Plantel dele. Estilo, marcação, fora-de-jogo, entradas, estágio e nível do estádio vêm do Relatório do analista (a tela com a nota à esquerda): alterne os botões Tática e Equipa inicial. Apelido e bônus de login só existem se o rival for humano.",
         fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 6.dp)
     )
 }

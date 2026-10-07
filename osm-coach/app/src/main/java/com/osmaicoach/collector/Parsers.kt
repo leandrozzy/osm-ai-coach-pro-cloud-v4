@@ -10,6 +10,8 @@ object Parsers {
     private val RX_HUB_ROUND = Regex("(\\d{1,2})\\s*/\\s*(\\d{1,2})\\s*jornada")
     private val RX_JORNADA = Regex("^jornada\\s*(\\d{1,2})$")
     private val RX_DATE = Regex("\\b(\\d{2})-(\\d{2})-(\\d{2})\\b")
+    // O texto do fundo do estádio ("25 ANNIVERSARY") gruda na data e some o \b: aceita a data colada.
+    private val RX_DATE_LOOSE = Regex("(\\d{2})-(\\d{2})-(\\d{2})")
     private val RX_TIME = Regex("^(\\d{1,2}):(\\d{2})$")
     private val RX_SCORE = Regex("^(\\d{1,2})\\s*[-–—]\\s*(\\d{1,2})$")
     private val RX_FORMATION = Regex("([3-5]-\\d-\\d(?:-\\d)?)\\s*([A-Da-d])?")
@@ -309,8 +311,6 @@ object Parsers {
             val m = RX_JORNADA.find(n)
             if (m != null) {
                 anchors.add(Anchor(ln, m.groupValues[1].toIntOrNull(), "Jornada " + m.groupValues[1]))
-            } else if (n == "final" || n == "semifinal" || n == "semi final" || n.startsWith("quartas") || n.startsWith("oitavas")) {
-                if (ln.yc > 0.5f) anchors.add(Anchor(ln, null, ln.text.trim()))
             }
         }
         val rowYs = ArrayList<Float>()
@@ -330,13 +330,15 @@ object Parsers {
             val alpha = ArrayList<OcrLine>()
             for (ln in card.sortedBy { it.yc }) {
                 val t = ln.text.trim()
-                val dm = RX_DATE.find(t)
+                val dm = RX_DATE_LOOSE.find(t)
                 val tm = RX_TIME.find(t)
                 val sm = RX_SCORE.find(t)
+                val junk = Txt.norm(t).let { it.contains("anniv") || it.startsWith("anive") || it.startsWith("annive") }
                 when {
                     dm != null -> date = dm.groupValues[1] + "/" + dm.groupValues[2] + "/" + dm.groupValues[3]
                     tm != null -> time = t
                     sm != null -> score = Pair(sm.groupValues[1].toInt(), sm.groupValues[2].toInt())
+                    junk -> {}
                     Txt.letters(t) >= 2 -> alpha.add(ln)
                 }
             }
@@ -400,84 +402,94 @@ object Parsers {
         )
     }
 
-    private fun valueFor(o: OcrResult, label: Regex): String? {
-        for (ln in o.lines) {
-            val n = Txt.norm(ln.text)
-            if (!label.containsMatchIn(n)) continue
-            val idx = ln.text.indexOf(':')
-            if (idx >= 0 && idx < ln.text.length - 1) {
-                val v = ln.text.substring(idx + 1).trim()
-                if (v.isNotEmpty()) return v
-            }
-            val right = o.lines.filter { it !== ln && it.l >= ln.r - 0.01f && abs(it.yc - ln.yc) <= 0.03f }.minByOrNull { it.l - ln.r }
-            if (right != null) return right.text.trim()
-            val below = o.lines.filter { it !== ln && it.yc > ln.yc && it.yc - ln.yc <= 0.09f && abs(it.xc - ln.xc) <= 0.15f }.minByOrNull { it.yc - ln.yc }
-            if (below != null) return below.text.trim()
-        }
-        return null
+    private val STYLE_NAMES = listOf("Jogo de passe", "Jogar pelas alas", "Remate à vista", "Contra-ataque", "Bolas longas")
+
+    /** A nota do analista ("Pelo que pude ver, ...") aparece à esquerda nas duas telas da análise. */
+    fun isAnalysis(o: OcrResult): Boolean {
+        val t = Txt.norm(o.fullText)
+        return t.contains("pelo que pude ver") || (t.contains("nivel do estadio") && t.contains("formacao")) ||
+            (t.contains("tenho a certeza") && t.contains("estagio"))
     }
 
-    private fun numberFor(o: OcrResult, label: Regex): Int? {
-        for (ln in o.lines) {
-            if (!label.containsMatchIn(Txt.norm(ln.text))) continue
-            val near = o.tokens.filter {
-                val n = intTok(it)
-                n != null && n in 0..100 && it.xc > ln.xc && it.yc >= ln.yc - 0.03f && it.yc <= ln.yc + 0.08f
-            }.minByOrNull { abs(it.yc - ln.yc) }
-            if (near != null) return intTok(near)
-        }
-        return null
-    }
+    private fun belowOf(o: OcrResult, ln: OcrLine): OcrLine? =
+        o.lines.filter { it !== ln && it.yc > ln.yc && it.yc - ln.yc <= 0.1f && abs(it.xc - ln.xc) <= 0.1f }
+            .minByOrNull { it.yc - ln.yc }
 
-    /** Relatório do adversário por rótulo:valor. Só aceita valores do vocabulário conhecido. */
+    /**
+     * Análise do rival. Esquerda: nota do analista (entradas, formação, estágio, nível do estádio) e o apelido.
+     * Direita: ora o campo ("Formação: 4-3-3 A" + suplentes), ora a tática (estilo no topo, Marcação, Fora-de-jogo).
+     */
     fun report(o: OcrResult): Extraction {
         val f = LinkedHashMap<String, Reading>()
-        val conf = 0.65
-        val fm = valueFor(o, Regex("^formacao"))
+        val left = o.lines.filter { it.xc < 0.47f }.sortedBy { it.yc }
+        val right = o.lines.filter { it.xc >= 0.47f }
+        val leftRaw = left.joinToString(" ") { it.text.trim() }
+        val leftNorm = Txt.norm(leftRaw)
+        val noteSeen = leftNorm.contains("pelo que pude ver") || leftNorm.contains("nivel do estadio")
+
+        val tk = Regex("entradas\\s+([a-z]+)").find(leftNorm)
+        if (tk != null) {
+            val w = tk.groupValues[1]
+            val v = if (w.startsWith("agress")) "Agressivo" else if (w == "normal") "Normal" else w.replaceFirstChar { it.uppercase() }
+            f[K.RIVAL_TACKLE] = Reading(v, 0.85)
+        }
+        val fm = RX_FORMATION.find(leftRaw)
         if (fm != null) {
-            val m = RX_FORMATION.find(fm)
+            val variant = fm.groupValues[2].uppercase()
+            f[K.RIVAL_FORMATION] = Reading(fm.groupValues[1] + (if (variant.isNotEmpty()) " $variant" else ""), 0.85)
+        }
+        if (leftNorm.contains("estagio")) {
+            val no = Regex("nao\\s+(?:foram|estiveram|fizeram|estao)[^.]{0,25}estagio").containsMatchIn(leftNorm)
+            f[K.RIVAL_CAMP] = Reading(if (no) "Não" else "Sim", 0.85)
+        }
+        val st = Regex("nivel do estadio\\s*:?\\s*(\\d{1,2})").find(leftNorm)
+        if (st != null) f[K.STADIUM] = Reading("Nível " + st.groupValues[1], 0.9)
+        if (leftNorm.contains("secreto")) {
+            val no = Regex("nao[^.]{0,30}secreto").containsMatchIn(leftNorm)
+            f[K.RIVAL_SECRET] = Reading(if (no) "Não" else "Sim", 0.8)
+        } else if (noteSeen) {
+            f[K.RIVAL_SECRET] = Reading("Não", 0.55)
+        }
+        // Apelido do usuário aparece como "Apelido [S3]" logo abaixo do nome do time (só times humanos).
+        for (ln in left) {
+            if (ln.yc >= 0.45f) continue
+            val m = Regex("^(.{3,30}?)\\s*\\[[^\\]]{1,4}\\]\\s*$").find(ln.text.trim())
             if (m != null) {
-                val variant = m.groupValues[2].uppercase()
-                f[K.RIVAL_FORMATION] = Reading(m.groupValues[1] + (if (variant.isNotEmpty()) " $variant" else ""), conf)
+                f[K.RIVAL_NICK] = Reading(m.groupValues[1].trim(), 0.85)
+                f[K.RIVAL_HUMAN] = Reading("Sim", 0.85)
+                break
             }
         }
-        val style = valueFor(o, Regex("estilo de jogo"))
-        if (style != null && Txt.letters(style) >= 4 && style.length <= 30) f[K.RIVAL_PLAN] = Reading(style, conf)
-        val mk = valueFor(o, Regex("marcacao"))
+
+        // Direita, tela do campo: "Formação: 4-3-3 A" (mais confiável que a frase da nota).
+        val head = right.firstOrNull { Txt.norm(it.text).startsWith("formacao") }
+        if (head != null) {
+            val m = RX_FORMATION.find(head.text)
+            if (m != null) {
+                val variant = m.groupValues[2].uppercase()
+                f[K.RIVAL_FORMATION] = Reading(m.groupValues[1] + (if (variant.isNotEmpty()) " $variant" else ""), 0.9)
+            }
+        }
+        // Direita, tela da tática: estilo no topo, depois Marcação e Fora-de-jogo com o valor logo abaixo.
+        for (ln in right.filter { it.yc < 0.14f }) {
+            val n = Txt.norm(ln.text)
+            val hit = STYLE_NAMES.firstOrNull { Txt.norm(it) == n || n.contains(Txt.norm(it)) }
+            if (hit != null) {
+                f[K.RIVAL_PLAN] = Reading(hit, 0.9)
+                break
+            }
+        }
+        val mk = right.firstOrNull { Txt.norm(it.text) == "marcacao" }
         if (mk != null) {
-            val n = Txt.norm(mk)
-            if (n.contains("zona")) f[K.RIVAL_MARKING] = Reading("À zona", conf)
-            else if (n.contains("homem")) f[K.RIVAL_MARKING] = Reading("Homem a homem", conf)
+            val v = belowOf(o, mk)?.let { Txt.norm(it.text) } ?: ""
+            if (v.contains("zona")) f[K.RIVAL_MARKING] = Reading("À zona", 0.9)
+            else if (v.contains("homem")) f[K.RIVAL_MARKING] = Reading("Homem a homem", 0.9)
         }
-        val off = valueFor(o, Regex("fora de jogo|impedimento"))
+        val off = right.firstOrNull { val n = Txt.norm(it.text); n.contains("fora-de-jogo") || n.contains("fora de jogo") }
         if (off != null) {
-            val n = Txt.norm(off)
-            if (n == "sim") f[K.RIVAL_OFFSIDE] = Reading("Sim", conf)
-            else if (n == "nao") f[K.RIVAL_OFFSIDE] = Reading("Não", conf)
-        }
-        val tk = valueFor(o, Regex("desarme"))
-        if (tk != null) {
-            val n = Txt.norm(tk)
-            if (n.contains("agress")) f[K.RIVAL_TACKLE] = Reading("Agressivo", conf)
-            else if (n.contains("normal")) f[K.RIVAL_TACKLE] = Reading("Normal", conf)
-            else if (n.contains("suave") || n.contains("cuidad")) f[K.RIVAL_TACKLE] = Reading(tk.trim(), conf)
-        }
-        val camp = valueFor(o, Regex("campo de treinamento|estagio"))
-        if (camp != null) {
-            val n = Txt.norm(camp)
-            if (n.contains("nao")) f[K.RIVAL_CAMP] = Reading("Não", conf)
-            else if (n.contains("estagio") || n == "sim") f[K.RIVAL_CAMP] = Reading("Sim", conf)
-        }
-        val pr = numberFor(o, Regex("^pressao"))
-        if (pr != null) f[K.RIVAL_PRESSURE] = Reading(pr.toString(), 0.6)
-        val me = numberFor(o, Regex("^estilo$"))
-        if (me != null) f[K.RIVAL_MENTALITY] = Reading(me.toString(), 0.6)
-        val tp = numberFor(o, Regex("^temporizacao"))
-        if (tp != null) f[K.RIVAL_TEMPO] = Reading(tp.toString(), 0.6)
-        val std = valueFor(o, Regex("estadio"))
-        if (std != null) {
-            val m = Regex("nivel\\s*(\\d)").find(Txt.norm(std))
-            if (m != null) f[K.STADIUM] = Reading("Nível " + m.groupValues[1], conf)
+            val v = belowOf(o, off)?.let { Txt.norm(it.text) } ?: ""
+            if (v == "sim") f[K.RIVAL_OFFSIDE] = Reading("Sim", 0.9)
+            else if (v == "nao") f[K.RIVAL_OFFSIDE] = Reading("Não", 0.9)
         }
         return Extraction(ScreenType.REPORT, fields = f, needsAi = f.size < 2)
     }
@@ -503,6 +515,7 @@ object Parsers {
     /** Tela com cara de relatório/análise do adversário (será lida pela IA, que confirma se é mesmo). */
     fun hasReportHint(o: OcrResult): Boolean {
         val t = Txt.norm(o.fullText)
+        if (t.contains("relatorio do analista") && !isAnalysis(o)) return false
         val words = listOf("formacao", "marcacao", "desarme", "fora de jogo", "impedimento", "estilo de jogo", "estadio", "estagio", "secreto", "relatorio")
         return words.count { t.contains(it) } >= 2
     }

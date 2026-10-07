@@ -45,6 +45,14 @@ class ClassifierTest {
         assertEquals(ScreenType.OTHER_OSM, ScreenClassifier.classify(o, true))
     }
 
+    @Test fun analysisScreenWithoutTopBarIsAReport() {
+        val o = Fx.ocr(
+            Fx.line("Mashal Mubarek", 0.2f, 0.27f, 0.2f), Fx.line("Pelo que pude ver, Mashal Mubarek deu ordens aos jogadores", 0.2f, 0.38f, 0.4f),
+            Fx.line("Nível do estádio: 1", 0.1f, 0.51f, 0.12f), Fx.line("Formação: 4-3-3 A", 0.7f, 0.03f, 0.2f), Fx.line("Suplentes", 0.7f, 0.74f)
+        )
+        assertEquals(ScreenType.REPORT, ScreenClassifier.classify(o, false))
+    }
+
     @Test fun stadiumScreen() {
         val o = Fx.ocr(Fx.line("Capacidade", 0.5f, 0.3f), Fx.line("Nível 2", 0.5f, 0.35f), Fx.line("+414K receitas de bilheteria", 0.5f, 0.42f, 0.3f), Fx.line("Estádio", 0.2f, 0.1f))
         assertEquals(ScreenType.STADIUM, ScreenClassifier.classify(o, true))

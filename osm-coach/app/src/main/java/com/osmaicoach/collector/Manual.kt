@@ -6,12 +6,11 @@ object ManualFields {
 
     private val YES_NO = listOf("Sim", "Não")
     private val STYLES = listOf("Jogo de passe", "Jogar pelas alas", "Remate à vista", "Contra-ataque", "Bolas longas")
-    private const val ANALYSIS = "Analista de dados → análise do rival (deixe a tela parada 3 s)"
+    private const val ANALYSIS = "Analista de dados → Relatório do analista → tela com a nota à esquerda (alterne Tática e Equipa inicial)"
 
     private val NUMERIC = setOf(
         K.ROUND, K.ROUND_DONE, K.ROUND_TOTAL, K.LEAGUE_POS, K.POINTS, K.MY_STRENGTH, K.RIVAL_STRENGTH,
-        K.MY_GOL, K.MY_DEF, K.MY_MID, K.MY_ATK, K.RIVAL_GOL, K.RIVAL_DEF, K.RIVAL_MID, K.RIVAL_ATK,
-        K.RIVAL_PRESSURE, K.RIVAL_MENTALITY, K.RIVAL_TEMPO
+        K.MY_GOL, K.MY_DEF, K.MY_MID, K.MY_ATK, K.RIVAL_GOL, K.RIVAL_DEF, K.RIVAL_MID, K.RIVAL_ATK
     )
     private val MONEY = setOf(K.MY_VALUE, K.RIVAL_VALUE, K.CASH)
 
@@ -51,11 +50,7 @@ object ManualFields {
         Spec(K.RIVAL_SECRET, "Treino secreto do rival", YES_NO, ANALYSIS, "Não"),
         Spec(K.RIVAL_CAMP, "Campo de treinamento do rival", YES_NO, ANALYSIS, "Não"),
         Spec(K.RIVAL_LOGIN_BONUS, "Bônus de login do rival", null, ANALYSIS, "+3%"),
-        Spec(K.STADIUM, "Estádio do rival", null, ANALYSIS, "Nível 2"),
-        Spec(K.STADIUM_BONUS, "Bônus de estádio do rival", null, ANALYSIS, "+5%"),
-        Spec(K.RIVAL_PRESSURE, "Pressão do rival", null, ANALYSIS, "55"),
-        Spec(K.RIVAL_MENTALITY, "Estilo/mentalidade do rival", null, ANALYSIS, "70"),
-        Spec(K.RIVAL_TEMPO, "Temporização do rival", null, ANALYSIS, "70"),
+        Spec(K.STADIUM, "Nível do estádio do rival", null, ANALYSIS, "Nível 1"),
         Spec(K.MY_STADIUM, "Meu estádio", null, "Menu → Estádio", "Capacidade: Nível 2")
     ).associateBy { it.key }
 
