@@ -183,6 +183,17 @@ class ParsersTest {
         assertNull(Money.fixLostComma("75M", 61))
     }
 
+    @Test fun midfieldBubbleGluedToItsLabelIsStillRead() {
+        val o = Fx.ocr(
+            Fx.line("Posição: 4", 0.08f, 0.149f, 0.1f),
+            Fx.line("88", 0.631f, 0.275f, 0.03f), Fx.line("90", 0.676f, 0.275f, 0.03f),
+            Fx.line("Méd89", 0.724f, 0.27f, 0.04f), Fx.line("91", 0.766f, 0.275f, 0.03f)
+        )
+        val ex = Parsers.squad(o, null)
+        assertEquals("89", ex.fields["x.mid"]?.value)
+        assertEquals("91", ex.fields["x.atk"]?.value)
+    }
+
     @Test fun sectorBubblesAreReadByPositionEvenIfLabelsAreWrong() {
         val o = Fx.ocr(
             Fx.line("Posição: 4", 0.08f, 0.149f, 0.1f),

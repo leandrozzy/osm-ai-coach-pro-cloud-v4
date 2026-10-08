@@ -15,6 +15,7 @@ object Parsers {
     private val RX_TIME = Regex("^(\\d{1,2}):(\\d{2})$")
     private val RX_SCORE = Regex("^(\\d{1,2})\\s*[-–—]\\s*(\\d{1,2})$")
     private val RX_FORMATION = Regex("([3-5]-\\d-\\d(?:-\\d)?)\\s*([A-Da-d])?")
+    private val RX_BUBBLE = Regex("^(?:GR|GOL|G0L|DE[FI]|M[EÉé]D|MEI|ATA)?(\\d{2,3})(?:GR|GOL|DE[FI]|M[EÉé]D|MEI|ATA)?$", RegexOption.IGNORE_CASE)
     private val RX_BONUS = Regex("^\\+?(\\d{1,2})\\s*%$")
     // "+12" sem o "%" (separado pelo OCR) ou "+12%" com lixo do ícone em volta
     private val RX_BONUS_LOOSE = Regex("(?:^|[^0-9])\\+(\\d{1,2})(?:%|$)")
@@ -197,19 +198,32 @@ object Parsers {
         // Bolhas de força por setor (GOL, DEF, MEI, ATA): lidas pela POSIÇÃO, porque o rótulo pequeno o OCR erra.
         val bubbleX = listOf(0.631f, 0.676f, 0.721f, 0.766f)
         val bubbleKeys = listOf("x.gol", "x.def", "x.mid", "x.atk")
+        // O número da bolha às vezes vem grudado no rótulo ("MED73", "73MED") ou como "7 3": aceita esses casos.
+        val bubbles = ArrayList<Pair<Float, Int>>()
         for (t in o.tokens) {
-            val n = intTok(t) ?: continue
-            if (n !in 30..130 || t.yc !in 0.24f..0.31f || t.xc !in 0.60f..0.80f) continue
-            var bi = -1
-            var bd = 1f
-            for (i in bubbleX.indices) {
-                val dd = abs(t.xc - bubbleX[i])
-                if (dd < bd) {
-                    bd = dd
-                    bi = i
+            if (t.yc !in 0.22f..0.33f || t.xc !in 0.59f..0.81f) continue
+            val raw = t.text.trim().replace(" ", "")
+            val n = intTok(t) ?: RX_BUBBLE
+                .find(raw)?.groupValues?.get(1)?.toIntOrNull() ?: continue
+            if (n in 30..130) bubbles.add(Pair(t.xc, n))
+        }
+        val byX = bubbles.distinctBy { (it.first * 100).toInt() }.sortedBy { it.first }
+        if (byX.size == 4) {
+            // as quatro bolhas lidas: a ordem da esquerda para a direita é GOL, DEF, MEI, ATA
+            for (i in 0 until 4) f[bubbleKeys[i]] = Reading(byX[i].second.toString(), 0.85)
+        } else {
+            for ((x, n) in byX) {
+                var bi = -1
+                var bd = 1f
+                for (i in bubbleX.indices) {
+                    val dd = abs(x - bubbleX[i])
+                    if (dd < bd) {
+                        bd = dd
+                        bi = i
+                    }
                 }
+                if (bi >= 0 && bd <= 0.03f && !f.containsKey(bubbleKeys[bi])) f[bubbleKeys[bi]] = Reading(n.toString(), 0.85)
             }
-            if (bi >= 0 && bd <= 0.022f) f[bubbleKeys[bi]] = Reading(n.toString(), 0.85)
         }
         val equipa = o.tokens.firstOrNull { Txt.norm(it.text) == "equipa" && it.yc in 0.24f..0.34f }
         if (equipa != null) {
