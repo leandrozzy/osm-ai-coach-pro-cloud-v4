@@ -67,13 +67,13 @@ class AiTest {
     }
 
     @Test fun onlyGameOptionNamesSurviveCanonicalization() {
-        val base = Tactic("4-3-3", "Jogo de passes", 60, 60, 60, "À zona", "Não", "Normal", "Atacar apenas", "Manter posição", "Defender atrás", emptyList())
-        val ai = base.copy(playStyle = "Contra-ataque", tackle = "Combate", advAttack = "Apenas atacar", marking = "Individual")
+        val base = Tactic("4-3-3", "Jogo de passe", 60, 60, 60, "À zona", "Não", "Normal", "Atacar apenas", "Manter posições", "Defender atrás", emptyList())
+        val ai = base.copy(playStyle = "Contra-ataque", tackle = "Combate", advAttack = "Apenas atacar", marking = "Homem-a-homem")
         val c = TacticValidator.canonical(ai, base)
         assertEquals("Contra-ataque", c.playStyle)
         assertEquals("Normal", c.tackle)
         assertEquals("Atacar apenas", c.advAttack)
-        assertEquals("Individual", c.marking)
+        assertEquals("Homem-a-homem", c.marking)
     }
 
     @Test fun geminiRankingGivesFallbackModelsInOrder() {
@@ -105,7 +105,7 @@ class AiTest {
     }
 
     @Test fun tacticValidationRejectsBadSlidersAndFormation() {
-        val ok = JSONObject("""{"formation":"4-5-1","playStyle":"Jogo de passes","pressure":60,"mentality":40,"tempo":55,"marking":"À zona","offside":"Sim","tackle":"Agressivo"}""")
+        val ok = JSONObject("""{"formation":"4-5-1","playStyle":"Jogo de passe","pressure":60,"mentality":40,"tempo":55,"marking":"À zona","offside":"Sim","tackle":"Agressivo"}""")
         val (t, err) = TacticValidator.validate(ok, "Rigoroso")
         assertNull(err)
         assertEquals("Normal", t!!.tackle)

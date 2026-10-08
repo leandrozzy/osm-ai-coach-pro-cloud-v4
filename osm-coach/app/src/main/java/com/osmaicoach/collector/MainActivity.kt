@@ -1810,7 +1810,7 @@ private fun arrowSet(option: String): List<Triple<Float, Float, Color>> {
         n.contains("pressionar") -> listOf(Triple(0f, -1f, CY), Triple(-0.7f, -0.7f, OR), Triple(0.7f, -0.7f, OR))
         n.contains("defender atras") -> listOf(Triple(0f, 1f, OR), Triple(-0.7f, 0.7f, OR), Triple(0.7f, 0.7f, OR))
         n.contains("ajudar meio") || n.contains("apoiar meio") -> listOf(Triple(0f, 1f, OR), Triple(0f, -1f, CY))
-        n.contains("laterais") -> listOf(Triple(-1f, -0.6f, CY), Triple(1f, -0.6f, CY))
+        n.contains("atacantes") || n.contains("laterais") -> listOf(Triple(-1f, -0.6f, CY), Triple(1f, -0.6f, CY))
         else -> emptyList()
     }
 }
@@ -2151,7 +2151,7 @@ private fun Gauge(label: String, value: Int, color: Color, modifier: Modifier = 
             }
             Text(value.toString(), fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
         }
-        Text(label, fontSize = 11.sp, color = C.MUTED, textAlign = TextAlign.Center, maxLines = 2)
+        Text(label, fontSize = 11.sp, color = C.MUTED, textAlign = TextAlign.Center, maxLines = 3)
     }
 }
 
@@ -2391,21 +2391,26 @@ private fun SlotTactic(slot: Int, d: SlotData) {
     Panel {
         Text("Controles", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
         Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-            Gauge("Pressão", j.optInt("pressure"), Color(0xFFFF6B5C), Modifier.weight(1f))
-            Gauge("Mentalidade", j.optInt("mentality"), Color(0xFF3D8BFF), Modifier.weight(1f))
-            Gauge("Ritmo", j.optInt("tempo"), Color(0xFF3DDC84), Modifier.weight(1f))
+            // rótulos iguais aos do jogo: Pressão, Estilo e Temporização
+            Gauge("Pressão\n" + Osm.pressureLabel(j.optInt("pressure")), j.optInt("pressure"), Color(0xFFFF6B5C), Modifier.weight(1f))
+            Gauge("Estilo\n" + Osm.mentalityLabel(j.optInt("mentality")), j.optInt("mentality"), Color(0xFF3D8BFF), Modifier.weight(1f))
+            Gauge("Temporização\n" + Osm.tempoLabel(j.optInt("tempo")), j.optInt("tempo"), Color(0xFF3DDC84), Modifier.weight(1f))
         }
         Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            SettingChip("Marcação", j.optString("marking"), Modifier.weight(1f))
-            SettingChip("Impedimento", j.optString("offside"), Modifier.weight(1f))
-            SettingChip("Desarme", j.optString("tackle"), Modifier.weight(1f))
+            SettingChip("Marcação", Osm.marking(j.optString("marking")) ?: j.optString("marking"), Modifier.weight(1f))
+            SettingChip("Fora-de-jogo", j.optString("offside"), Modifier.weight(1f))
+            SettingChip("Desarme", Osm.tackle(j.optString("tackle")) ?: j.optString("tackle"), Modifier.weight(1f))
         }
     }
 
     Panel {
         Text("Avançadas por setor", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
         Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-            for ((label, opt) in listOf("Ataque" to j.optString("advAttack"), "Meio" to j.optString("advMid"), "Defesa" to j.optString("advDef"))) {
+            for ((label, opt) in listOf(
+                "Avançados" to (Osm.attack(j.optString("advAttack")) ?: j.optString("advAttack")),
+                "Médios" to (Osm.midfield(j.optString("advMid")) ?: j.optString("advMid")),
+                "Defesas" to (Osm.defense(j.optString("advDef")) ?: j.optString("advDef"))
+            )) {
                 Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
                     SectorIcon(opt)
                     Text(label, fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
@@ -2419,10 +2424,14 @@ private fun SlotTactic(slot: Int, d: SlotData) {
         Text("Como colocar no jogo", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
         val steps = listOf(
             "Tática → Formação" to j.optString("formation"),
-            "Estilo de jogo" to j.optString("playStyle"),
-            "Controles" to "Pressão ${j.optInt("pressure")} • Mentalidade ${j.optInt("mentality")} • Ritmo ${j.optInt("tempo")}",
-            "Marcação / Fora de jogo / Desarme" to "${j.optString("marking")} • ${j.optString("offside")} • ${j.optString("tackle")}",
-            "Avançadas" to "Ataque: ${j.optString("advAttack")} • Meio: ${j.optString("advMid")} • Defesa: ${j.optString("advDef")}"
+            "Estilo de jogo" to (Osm.style(j.optString("playStyle")) ?: j.optString("playStyle")),
+            "Desarme" to (Osm.tackle(j.optString("tackle")) ?: j.optString("tackle")),
+            "Táticas por sector" to "Avançados: ${Osm.attack(j.optString("advAttack")) ?: j.optString("advAttack")} • " +
+                "Médios: ${Osm.midfield(j.optString("advMid")) ?: j.optString("advMid")} • Defesas: ${Osm.defense(j.optString("advDef")) ?: j.optString("advDef")}",
+            "Pressão" to "${j.optInt("pressure")} — ${Osm.pressureLabel(j.optInt("pressure"))}",
+            "Estilo" to "${j.optInt("mentality")} — ${Osm.mentalityLabel(j.optInt("mentality"))}",
+            "Temporização" to "${j.optInt("tempo")} — ${Osm.tempoLabel(j.optInt("tempo"))}",
+            "Marcação / Fazer fora-de-jogo" to "${Osm.marking(j.optString("marking")) ?: j.optString("marking")} • ${j.optString("offside")}"
         )
         for ((i, st) in steps.withIndex()) {
             Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.Top) {

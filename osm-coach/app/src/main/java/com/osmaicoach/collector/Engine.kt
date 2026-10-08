@@ -3,8 +3,12 @@ package com.osmaicoach.collector
 import kotlin.math.exp
 
 object Formations {
-    /** Formações do OSM com a variante (A/B) como aparece no jogo. */
-    val OSM = listOf("4-3-3 A", "4-3-3 B", "4-4-2 A", "4-4-2 B", "4-2-3-1", "4-5-1", "5-3-2", "5-4-1 A")
+    /** As 24 formações da grade do OSM (com a variante A/B como aparece no jogo). */
+    val OSM = listOf(
+        "4-3-3 A", "4-3-3 B", "4-5-1", "4-2-3-1", "4-4-2 A", "4-4-2 B", "3-2-5", "3-2-3-2",
+        "3-3-4 A", "3-3-4 B", "3-4-3 A", "3-4-3 B", "3-3-2-2", "3-5-2", "4-2-4 A", "4-2-4 B",
+        "5-2-3 A", "5-2-3 B", "5-3-2", "5-3-1-1", "5-4-1 A", "5-4-1 B", "6-3-1 A", "6-3-1 B"
+    )
 
     /** Formações vistas nas telas do jogo (rivais, análise, meu plantel): entram no catálogo. */
     private val seen = java.util.concurrent.CopyOnWriteArraySet<String>()
@@ -210,6 +214,10 @@ object TacticEngine {
         val k = lines.last()
         val m = 10 - d - k
         var b = 0.0
+        // Formações extremas do OSM (3-2-5, 4-2-4, 6-3-1...) só quando a diferença de força pede muito.
+        if (k >= 4) b -= 3.0 * (k - 3) * (if ((diff ?: 0) >= 20) 1.0 else 2.0)
+        if (d >= 6 && (diff ?: 0) > -20) b -= 12.0
+        if (lines.size == 4 && lines[2] == 1 && (diff ?: 0) > -10) b -= 4.0
         if (diff != null) {
             if (diff >= 15) {
                 b += (k - 2) * 6.0
@@ -296,10 +304,10 @@ object TacticEngine {
         val defaultStyle = if (diff != null && diff >= 15 && wingers >= 2) "Jogar pelas alas"
         else if (diff != null && diff >= 15) "Remate à vista"
         else if (diff != null && diff <= -5) "Contra-ataque"
-        else "Jogo de passes"
+        else "Jogo de passe"
         // Aprendizado: se outro estilo já deu resultado claramente melhor (2+ jogos), usa o que funcionou.
         val styleStats = Learning.byStyle(inp.history)
-        val allowedStyles = listOf("Jogo de passes", "Jogar pelas alas", "Remate à vista", "Contra-ataque")
+        val allowedStyles = listOf("Jogo de passe", "Jogar pelas alas", "Remate à vista", "Contra-ataque")
         val curPts = styleStats.firstOrNull { it.formation == defaultStyle }?.let { Learning.points(it) } ?: 0
         val bestStyle = styleStats.filter { it.games >= 2 && it.formation in allowedStyles }.maxByOrNull { Learning.points(it) }
         var playStyle = defaultStyle
@@ -327,13 +335,13 @@ object TacticEngine {
                 disciplineNote = "Média de $avg faltas nos últimos ${foulRows.size} jogos: desarme Normal para evitar cartões."
             }
         }
-        val marking = if (inp.rivalAtk != null && inp.myDef != null && inp.rivalAtk - inp.myDef >= 5) "Individual" else "À zona"
+        val marking = if (inp.rivalAtk != null && inp.myDef != null && inp.rivalAtk - inp.myDef >= 5) "Homem-a-homem" else "À zona"
         val offside = if (inp.rivalAtk != null && inp.myDef != null && inp.myDef - inp.rivalAtk >= 5) "Sim" else "Não"
 
         val roles: Pair<String, String> = if (diff != null && diff >= 15) Pair("Atacar apenas", "Pressionar na frente")
-        else if (diff != null && diff >= 5) Pair("Atacar apenas", "Manter posição")
-        else if (diff != null && diff <= -5) Pair("Ajudar a defesa", "Ajudar a defesa")
-        else Pair("Atacar apenas", "Manter posição")
+        else if (diff != null && diff >= 5) Pair("Atacar apenas", "Manter posições")
+        else if (diff != null && diff <= -5) Pair("Ajudar a defender", "Ajudar a defesa")
+        else Pair("Atacar apenas", "Manter posições")
         val advAttack = roles.first
         val advMid = roles.second
         val advDef = "Defender atrás"
@@ -356,7 +364,7 @@ object TacticEngine {
         }
         if (inp.referee == "Rigoroso") notes.add("Árbitro rigoroso: desarme em Normal para evitar cartões.")
         if (inp.referee == "Brando" && tackle == "Agressivo") notes.add("Árbitro brando e rival fraco: desarme Agressivo é seguro.")
-        if (marking == "Individual") notes.add("Ataque do rival (${inp.rivalAtk}) supera sua defesa (${inp.myDef}): marcação homem a homem.")
+        if (marking == "Homem-a-homem") notes.add("Ataque do rival (${inp.rivalAtk}) supera sua defesa (${inp.myDef}): marcação homem a homem.")
         if (inp.fitness.isNotEmpty()) {
             val rawKeys = lineup(formation, inp.players)?.first?.flatten()?.filterNotNull()?.map { it.nameKey }?.toSet() ?: emptySet()
             val effKeys = best.second.flatten().filterNotNull().map { it.nameKey }.toSet()

@@ -269,22 +269,30 @@ object Pos {
 }
 
 /**
- * Valores reais das opções do OSM (como aparecem no jogo). Tudo que vem da IA, do OCR ou de versões antigas
- * passa por aqui para virar exatamente o texto do jogo.
+ * Valores reais das opções do OSM, conferidos no vídeo da tela "Define a tua tática" (OSM 26, português).
+ * Tudo que vem da IA, do OCR ou de versões antigas passa por aqui para virar exatamente o texto do jogo.
  */
 object Osm {
-    val STYLES = listOf("Jogar pelas alas", "Jogo de passes", "Contra-ataque", "Remate à vista", "Bola longa")
-    val MARKING = listOf("À zona", "Individual")
-    val TACKLES = listOf("Cauteloso", "Normal", "Agressivo", "Imprudente")
-    val ATTACK = listOf("Atacar apenas", "Ajudar meio-campo", "Ajudar a defesa")
-    val MIDFIELD = listOf("Pressionar na frente", "Manter posição", "Ajudar a defesa")
-    val DEFENSE = listOf("Defender atrás", "Laterais ofensivos", "Apoiar meio-campo")
+    val STYLES = listOf("Jogar pelas alas", "Jogo de passe", "Contra-ataque", "Remate à vista", "Bola longa")
+    val MARKING = listOf("À zona", "Homem-a-homem")
+    val TACKLES = listOf("Cuidadoso", "Normal", "Agressivo", "Extremo")
+    /** Avançados: "Atacar apenas" e "Ajudar a defender" vistos no jogo; a 3ª opção ainda não foi confirmada. */
+    val ATTACK = listOf("Atacar apenas", "Ajudar meio-campo", "Ajudar a defender")
+    val MIDFIELD = listOf("Pressionar na frente", "Manter posições", "Ajudar a defesa")
+    val DEFENSE = listOf("Defender atrás", "Defesas atacantes", "Apoiar meio-campo")
+
+    /** Rótulo que o jogo mostra para cada faixa dos controles deslizantes (0-100). */
+    fun pressureLabel(v: Int): String = band(v, "Não pressionar", "Ficar atrás", "Equilibrado", "Chegar perto do adversário", "Pressionar alto")
+    fun mentalityLabel(v: Int): String = band(v, "Super defensivo", "Defensivo", "Neutro", "Ofensivo", "Tudo ao ataque")
+    fun tempoLabel(v: Int): String = band(v, "Jogar atrás", "Construir de trás para a frente", "Fazer posse", "Passes rápidos", "Futebol ao primeiro toque")
+
+    private fun band(v: Int, vararg names: String): String = names[(v.coerceIn(0, 100) / 20).coerceAtMost(names.size - 1)]
 
     fun style(s: String?): String? {
         val n = Txt.norm(s ?: "")
         return when {
             n.contains("alas") -> "Jogar pelas alas"
-            n.contains("passe") -> "Jogo de passes"
+            n.contains("passe") -> "Jogo de passe"
             n.contains("contra") -> "Contra-ataque"
             n.contains("remate") -> "Remate à vista"
             n.contains("bola") || n.contains("long") -> "Bola longa"
@@ -296,7 +304,7 @@ object Osm {
         val n = Txt.norm(s ?: "")
         return when {
             n.contains("zona") -> "À zona"
-            n.contains("individ") || n.contains("homem") -> "Individual"
+            n.contains("individ") || n.contains("homem") -> "Homem-a-homem"
             else -> null
         }
     }
@@ -304,8 +312,8 @@ object Osm {
     fun tackle(s: String?): String? {
         val n = Txt.norm(s ?: "")
         return when {
-            n.contains("cautel") -> "Cauteloso"
-            n.contains("imprud") -> "Imprudente"
+            n.contains("cuidad") || n.contains("cautel") -> "Cuidadoso"
+            n.contains("extrem") || n.contains("imprud") -> "Extremo"
             n.contains("agress") -> "Agressivo"
             n.contains("normal") -> "Normal"
             else -> null
@@ -317,7 +325,7 @@ object Osm {
         return when {
             n.contains("atacar") -> "Atacar apenas"
             n.contains("meio") -> "Ajudar meio-campo"
-            n.contains("defe") -> "Ajudar a defesa"
+            n.contains("defe") -> "Ajudar a defender"
             else -> null
         }
     }
@@ -326,7 +334,7 @@ object Osm {
         val n = Txt.norm(s ?: "")
         return when {
             n.contains("pression") -> "Pressionar na frente"
-            n.contains("manter") -> "Manter posição"
+            n.contains("manter") -> "Manter posições"
             n.contains("ajudar") || n.contains("defesa") -> "Ajudar a defesa"
             else -> null
         }
@@ -335,7 +343,7 @@ object Osm {
     fun defense(s: String?): String? {
         val n = Txt.norm(s ?: "")
         return when {
-            n.contains("lateral") -> "Laterais ofensivos"
+            n.contains("atacante") || n.contains("lateral") -> "Defesas atacantes"
             n.contains("apoiar") || n.contains("meio") -> "Apoiar meio-campo"
             n.contains("defender") || n.contains("atras") -> "Defender atrás"
             else -> null
