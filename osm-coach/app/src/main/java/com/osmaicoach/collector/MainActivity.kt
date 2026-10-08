@@ -142,7 +142,8 @@ class MainActivity : ComponentActivity() {
             notifPerm.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         AppScope.scope.launch(Dispatchers.IO) { Notifier.reschedule(applicationContext) }
-        handleIntent(intent)
+        // Ao recriar a tela (girar o celular) o intent antigo continua aqui: não reabre o slot da notificação.
+        if (savedInstanceState == null) handleIntent(intent)
         setContent {
             MaterialTheme(
                 colorScheme = darkColorScheme(

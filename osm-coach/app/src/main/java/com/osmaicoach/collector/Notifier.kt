@@ -107,13 +107,27 @@ object Notifier {
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("notifier", Context.MODE_PRIVATE)
 
-    /** Recalcula os alarmes de cada slot a partir do horário do jogo guardado (calendário). */
-    suspend fun reschedule(ctx: Context) {
+    /** Um registro por slot (o jogo do último aviso "pre"), em vez de uma chave nova a cada jogo. */
+    private fun firedKey(slot: Int) = "fired_pre_$slot"
+
+    /**
+     * Recalcula os alarmes de cada slot a partir do horário do jogo guardado (calendário).
+     * [force]: o Android apaga os alarmes ao reiniciar o celular, mas as preferências continuam dizendo
+     * que eles existem; depois do boot é preciso armar tudo de novo.
+     */
+    suspend fun reschedule(ctx: Context, force: Boolean = false) {
         ensureChannels(ctx)
         val repo = Repo(ctx)
         val am = ctx.getSystemService(AlarmManager::class.java)
         val now = System.currentTimeMillis()
         val p = prefs(ctx)
+        // Limpa as chaves "fired_<slot>_<minuto>_pre" da versão anterior (uma por jogo, nunca apagadas).
+        val legacy = p.all.keys.filter { it.startsWith("fired_") && !it.startsWith("fired_pre_") }
+        if (legacy.isNotEmpty()) {
+            val e = p.edit()
+            legacy.forEach { e.remove(it) }
+            e.apply()
+        }
         for (slot in 1..4) {
             val nextAt = repo.fieldMap(slot)[K.MATCH_AT]?.value?.toLongOrNull()
             val wanted = if (nextAt == null) emptyList() else alarms(nextAt, now)
@@ -129,14 +143,13 @@ object Notifier {
                     continue
                 }
                 val stored = p.getLong(key, -1L)
-                if (stored < 0L || kotlin.math.abs(stored - at) > 2 * MIN) {
+                if (force || stored < 0L || kotlin.math.abs(stored - at) > 2 * MIN) {
                     setAlarm(ctx, am, slot, kind, at)
                     p.edit().putLong(key, at).apply()
                 }
             }
             if (nextAt != null && enabled(ctx, "pre") && dueNow(nextAt, now)) {
-                val fired = "fired_${slot}_${nextAt / MIN}_pre"
-                if (!p.getBoolean(fired, false)) fire(ctx, "pre", slot)
+                if (p.getLong(firedKey(slot), -1L) != nextAt / MIN) fire(ctx, "pre", slot)
             }
         }
     }
@@ -163,7 +176,7 @@ object Notifier {
         val head = "S$slot • $team vs $rival"
         if (kind == "pre") {
             if (!enabled(ctx, "pre")) return
-            if (nextAt != null) prefs(ctx).edit().putBoolean("fired_${slot}_${nextAt / MIN}_pre", true).apply()
+            if (nextAt != null) prefs(ctx).edit().putLong(firedKey(slot), nextAt / MIN).apply()
             val mins = if (nextAt != null) ((nextAt - now) / MIN).coerceAtLeast(0L).toString() else "~20"
             post(
                 ctx, CH_GAME, slot * 10 + 1, "⚽ Faltam $mins min: $head",
@@ -273,7 +286,7 @@ class BootReceiver : BroadcastReceiver() {
         val app = context.applicationContext
         AppScope.scope.launch(Dispatchers.IO) {
             try {
-                Notifier.reschedule(app)
+                Notifier.reschedule(app, force = true)
             } catch (e: Exception) {
                 Diag.lastError = "Notificação: " + (e.message ?: e.javaClass.simpleName)
             } finally {

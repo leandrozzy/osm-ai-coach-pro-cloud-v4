@@ -5,13 +5,18 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
 object AppScope {
-    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    // Sem handler, uma exceção não tratada num launch derruba o processo inteiro.
+    private val onError = CoroutineExceptionHandler { _, e ->
+        Diag.lastError = "Tarefa em segundo plano: " + (e.message ?: e.javaClass.simpleName)
+    }
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + onError)
 }
 
 /** Contadores e estado para a tela de diagnóstico. */
@@ -91,10 +96,16 @@ object GenState {
 
     fun get(kind: String, slot: Int): Job? = jobs["$kind:$slot"]
 
-    fun running(kind: String, slot: Int): Boolean = get(kind, slot)?.ok == null && get(kind, slot) != null
+    fun running(kind: String, slot: Int): Boolean = get(kind, slot).let { it != null && it.ok == null }
 
-    fun begin(kind: String, slot: Int) {
-        jobs["$kind:$slot"] = Job(kind, slot, System.currentTimeMillis(), 0L, null, null)
+    /** Marca a tarefa como iniciada; false se já havia uma igual em andamento (dois toques rápidos). */
+    fun begin(kind: String, slot: Int): Boolean {
+        var started = false
+        jobs.compute("$kind:$slot") { _, cur ->
+            if (cur != null && cur.ok == null) cur
+            else Job(kind, slot, System.currentTimeMillis(), 0L, null, null).also { started = true }
+        }
+        return started
     }
 
     fun finish(kind: String, slot: Int, ok: Boolean, error: String?) {
@@ -105,8 +116,7 @@ object GenState {
 
 fun startGeneration(ctx: Context, kind: String, slot: Int) {
     val app = ctx.applicationContext
-    if (GenState.running(kind, slot)) return
-    GenState.begin(kind, slot)
+    if (!GenState.begin(kind, slot)) return
     AppScope.scope.launch(Dispatchers.IO) {
         val r = try {
             when (kind) {
