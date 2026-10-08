@@ -23,10 +23,12 @@ class NotifierTest {
         assertEquals(at(2026, 10, 7, 22, 18), MatchClock.toMillis(null, "22:18", now))
     }
 
-    @Test fun timeThatPassedLongAgoMeansTomorrow() {
+    @Test fun timeOnlyCardThatAlreadyPassedMeansTomorrow() {
+        // card sem placar com hora já passada = próximo jogo é amanhã nesse horário
         val now = at(2026, 10, 7, 23, 50)
         assertEquals(at(2026, 10, 8, 0, 30), MatchClock.toMillis(null, "00:30", now))
-        assertEquals(at(2026, 10, 7, 22, 18), MatchClock.toMillis(null, "22:18", now))
+        assertEquals(at(2026, 10, 8, 22, 18), MatchClock.toMillis(null, "22:18", now))
+        assertEquals(at(2026, 10, 8, 20, 32), MatchClock.toMillis(null, "20:32", at(2026, 10, 7, 21, 0)))
     }
 
     @Test fun cardWithDateUsesThatDate() {

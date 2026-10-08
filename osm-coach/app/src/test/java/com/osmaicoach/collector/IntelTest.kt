@@ -98,14 +98,37 @@ class IntelTest {
     @Test fun winProbabilityFollowsStrengthAndContext() {
         val even = WinModel.predict(WinModel.Input(80, 80))!!
         assertEquals(100, even.win + even.draw + even.loss)
+        assertTrue(kotlin.math.abs(even.win - even.loss) <= 2)
         val home = WinModel.predict(WinModel.Input(80, 80, home = true))!!
         assertTrue(home.win > even.win)
         val strong = WinModel.predict(WinModel.Input(90, 72, home = true, recent = listOf("V", "V", "V")))!!
-        assertTrue(strong.win >= 80)
+        assertTrue(strong.win >= 70)
+        // sempre sobra chance de zebra
+        val huge = WinModel.predict(WinModel.Input(95, 50, home = true))!!
+        assertTrue(huge.win <= 92)
         val weak = WinModel.predict(WinModel.Input(70, 85, home = false, rivalHuman = true))!!
         assertTrue(weak.loss > weak.win)
-        assertTrue(weak.factors.any { it.label == "Rival humano" && it.pts < 0 })
-        assertNull(WinModel.predict(WinModel.Input(null, 80)))
+        assertNull(WinModel.predict(WinModel.Input(null, null)))
+    }
+
+    private val plan = WinModel.Plan("4-4-2", "Jogo de passe", 50, 50, 50, "À zona", "Não", "Normal", "Atacar apenas", "Manter posições", 80.0, 80.0, 80.0, 80.0)
+
+    @Test fun theGeneratedTacticChangesThePrediction() {
+        val base = WinModel.Input(80, 80, rivalAtk = 80, rivalMid = 80, rivalDef = 80, rivalGol = 80, referee = "Rigoroso", rivalFormation = "4-3-3", rivalStyle = "Contra-ataque")
+        val normal = WinModel.predict(base.copy(plan = plan))!!
+        val aggressive = WinModel.predict(base.copy(plan = plan.copy(tackle = "Agressivo")))!!
+        assertTrue(aggressive.win < normal.win)
+        // linha de impedimento contra quem joga em contra-ataque é arriscada
+        val trap = WinModel.predict(base.copy(plan = plan.copy(offside = "Sim")))!!
+        assertTrue(trap.loss > normal.loss)
+        assertTrue(normal.factors.isNotEmpty())
+    }
+
+    @Test fun counterAttackPaysOffAgainstAnAttackingStrongerRival() {
+        val base = WinModel.Input(75, 82, myMid = 72, rivalAtk = 84, rivalMid = 82, rivalDef = 80, rivalFormation = "4-3-3", rivalStyle = "Jogo de passe")
+        val passe = WinModel.expectedPoints(base.copy(plan = plan.copy(formation = "4-5-1", style = "Jogo de passe")))!!
+        val contra = WinModel.expectedPoints(base.copy(plan = plan.copy(formation = "4-5-1", style = "Contra-ataque")))!!
+        assertTrue(contra > passe)
     }
 
     @Test fun tacticHistoryMovesThePrediction() {

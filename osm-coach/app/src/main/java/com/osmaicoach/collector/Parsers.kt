@@ -16,6 +16,8 @@ object Parsers {
     private val RX_SCORE = Regex("^(\\d{1,2})\\s*[-–—]\\s*(\\d{1,2})$")
     private val RX_FORMATION = Regex("([3-5]-\\d-\\d(?:-\\d)?)\\s*([A-Da-d])?")
     private val RX_BONUS = Regex("^\\+?(\\d{1,2})\\s*%$")
+    // "+12" sem o "%" (separado pelo OCR) ou "+12%" com lixo do ícone em volta
+    private val RX_BONUS_LOOSE = Regex("(?:^|[^0-9])\\+(\\d{1,2})(?:%|$)")
     private val RX_SELLING = Regex("vender jogadores\\s*(\\d)\\s*/\\s*(\\d)")
 
     private fun intTok(t: OcrToken): Int? {
@@ -128,12 +130,16 @@ object Parsers {
             // Times humanos mostram o BÔNUS (+N%) no círculo; times de CPU mostram a força.
             var leftBonus: Int? = null
             var rightBonus: Int? = null
-            for (t in o.tokens) {
-                val m = RX_BONUS.find(t.text.trim()) ?: continue
-                if (t.yc !in 0.20f..0.34f) continue
+            // O OCR às vezes separa "+12" e "%" ou junta com o ícone: procura em tokens e linhas, numa área maior.
+            val bonusCands = o.tokens.map { Triple(it.text, it.xc, it.yc) } + o.lines.map { Triple(it.text, it.xc, it.yc) }
+            for ((txt, xc, yc) in bonusCands) {
+                if (yc !in 0.17f..0.36f) continue
+                val t = txt.trim().replace(" ", "")
+                val m = RX_BONUS.find(t) ?: RX_BONUS_LOOSE.find(t) ?: continue
                 val v = m.groupValues[1].toIntOrNull() ?: continue
-                if (t.xc in 0.28f..0.40f) leftBonus = v
-                if (t.xc in 0.60f..0.72f) rightBonus = v
+                if (v !in 1..60) continue
+                if (xc in 0.24f..0.42f && leftBonus == null) leftBonus = v
+                if (xc in 0.58f..0.76f && rightBonus == null) rightBonus = v
             }
             val myBonus = if (mineLeft) leftBonus else rightBonus
             val rivalBonus = if (mineLeft) rightBonus else leftBonus

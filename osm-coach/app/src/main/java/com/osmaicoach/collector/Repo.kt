@@ -271,6 +271,15 @@ class Repo(private val ctx: Context) {
         // Horário real do próximo jogo (o card mostra "HH:mm"): ignora copa da qual já fui eliminado e jogos
         // cujo horário já passou. O mesmo card confirma rival e mando de campo (evidência cruzada).
         val all = dao.matchesOf(slot)
+        // Apelido sob o nome do rival nos cards do calendário (ida ou volta): mais uma fonte para confirmar humano.
+        val rivalNow = fieldMap(slot)[K.RIVAL_TEAM]?.value?.let { Txt.key(it) }
+        if (rivalNow != null && rivalNow.length >= 3) {
+            val nk = ex.matches.firstOrNull { m ->
+                m.opponentNick != null && Evidence.plausibleNick(m.opponentNick) &&
+                    m.opponent != null && Txt.sim(Txt.key(m.opponent), rivalNow) >= 0.85
+            }?.opponentNick
+            if (nk != null) changed += recordEvidence(slot, mapOf(K.RIVAL_NICK to nk.trim()), "CALENDAR", now)
+        }
         val next = Fixtures.next(all, now)
         if (next != null) {
             val at = Fixtures.kickoff(next)
@@ -677,6 +686,12 @@ class Repo(private val ctx: Context) {
     /** Apelido confirmado (peso >= 2) => rival humano; sem confirmação, um "Sim" automático antigo é desfeito. */
     private suspend fun confirmHuman(slot: Int, j: org.json.JSONObject, now: Long): Int {
         val ok = Evidence.confirmed(j, K.RIVAL_NICK)
+        // Humano já certo (marcado à mão ou Batalha): basta uma tela para gravar o apelido.
+        val human = dao.fieldsOf(slot).firstOrNull { it.fkey == K.RIVAL_HUMAN }
+        if (ok == null && human != null && human.fvalue == "Sim" && (human.source == "manual" || human.source == "hub")) {
+            val one = Evidence.best(j, K.RIVAL_NICK) ?: return 0
+            return putFields(slot, mapOf(K.RIVAL_NICK to Reading(one.value, 0.85)), "evidencia", now)
+        }
         if (ok != null) {
             return putFields(slot, mapOf(K.RIVAL_NICK to Reading(ok.value, 0.9), K.RIVAL_HUMAN to Reading("Sim", 0.9)), "evidencia", now)
         }
