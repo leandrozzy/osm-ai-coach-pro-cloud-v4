@@ -188,6 +188,12 @@ object Control {
         AppScope.scope.launch {
             try {
                 Processor.run(ctx.applicationContext, id)
+                try {
+                    Notifier.reschedule(ctx.applicationContext)
+                    Notifier.directorSummary(ctx.applicationContext)
+                } catch (e: Exception) {
+                    Diag.lastError = "Notificações: " + (e.message ?: e.javaClass.simpleName)
+                }
             } catch (e: Exception) {
                 Diag.lastError = "Processamento: " + (e.message ?: e.javaClass.simpleName)
                 ProcessState.finish("Erro no processamento: " + (e.message ?: e.javaClass.simpleName))

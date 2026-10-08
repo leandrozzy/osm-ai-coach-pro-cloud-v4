@@ -314,6 +314,13 @@ class FramePipeline private constructor(private val ctx: Context) {
             if (changed > 0) {
                 Diag.extracted.addAndGet(changed)
                 Diag.lastUpdateAt = now
+                if (type == ScreenType.PREGAME || type == ScreenType.CALENDAR) {
+                    try {
+                        Notifier.reschedule(ctx)
+                    } catch (e: Exception) {
+                        Diag.lastError = "Alarmes: " + (e.message ?: e.javaClass.simpleName)
+                    }
+                }
             }
             val dataType = type == ScreenType.SQUAD || type == ScreenType.CALENDAR ||
                 type == ScreenType.MARKET || type == ScreenType.PREGAME || type == ScreenType.REPORT

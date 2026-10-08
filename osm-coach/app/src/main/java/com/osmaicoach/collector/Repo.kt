@@ -238,6 +238,12 @@ class Repo(private val ctx: Context) {
             if (ex.matches.isNotEmpty()) learn(slot, "calendário", "Calendário de outro time ignorado (${ot ?: "sem título"}).", now)
             return changed
         }
+        // Horário real do jogo: o card do próximo jogo mostra "HH:mm" no lugar da data.
+        val nextCard = ex.matches.filter { it.result == null && it.round != null && it.time != null }.minByOrNull { it.round ?: 999 }
+        if (nextCard != null) {
+            val at = MatchClock.toMillis(nextCard.date, nextCard.time ?: "", now)
+            if (at != null) changed += putFields(slot, mapOf(K.MATCH_AT to Reading(at.toString(), 0.95)), source, now)
+        }
         for (m in ex.matches) {
             val old = dao.match(slot, m.key)
             val n = MatchEntity(

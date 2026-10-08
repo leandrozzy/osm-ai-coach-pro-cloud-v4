@@ -26,6 +26,13 @@ object FieldMerge {
         val v = incoming.value.trim()
         if (old == null || !known(old.value)) return StoredField(v, incoming.conf, now)
         if (old.value == v) return if (incoming.conf > old.conf) StoredField(v, incoming.conf, now) else null
+        if (key == K.MATCH_AT) {
+            // O horário do calendário (confiança alta) é o do jogo. A contagem do pré-jogo só vale se
+            // ainda não houver horário futuro guardado.
+            val oldT = old.value.toLongOrNull()
+            val past = oldT != null && oldT < now - 60000L
+            return if (past || incoming.conf >= old.conf) StoredField(v, incoming.conf, now) else null
+        }
         val replace = if (key in VOLATILE) {
             incoming.conf >= 0.7 && incoming.conf >= old.conf - 0.1
         } else {

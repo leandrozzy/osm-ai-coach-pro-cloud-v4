@@ -1,15 +1,19 @@
 package com.osmaicoach.collector
 
+import android.Manifest
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -45,6 +49,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -109,10 +114,35 @@ private object C {
 }
 
 class MainActivity : ComponentActivity() {
+    private val notifPerm = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        AppScope.scope.launch(Dispatchers.IO) { Notifier.reschedule(applicationContext) }
+    }
+
+    private fun handleIntent(i: Intent?) {
+        val slot = i?.getIntExtra("slot", 0) ?: 0
+        if (slot in 1..4) {
+            Route.tab = i?.getIntExtra("tab", 4) ?: 4
+            Route.slot = slot
+            Route.nonce++
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Settings.migrate(applicationContext)
         AppScope.scope.launch { Repo(applicationContext).purgeLegacy() }
+        Notifier.ensureChannels(applicationContext)
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            notifPerm.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        AppScope.scope.launch(Dispatchers.IO) { Notifier.reschedule(applicationContext) }
+        handleIntent(intent)
         setContent {
             MaterialTheme(
                 colorScheme = darkColorScheme(
@@ -515,9 +545,12 @@ private suspend fun tacticFor(repo: Repo, slot: Int, round: Int?): Boolean {
 
 private fun countdown(ms: Long): String {
     val d = ms - System.currentTimeMillis()
-    if (d <= 0L) return "horário passou — releia o pré-jogo"
-    val m = d / 60000L
-    return if (m >= 60) "em ${m / 60}h ${m % 60}min" else "em $m min"
+    if (d > 0L) {
+        val m = d / 60000L
+        return if (m >= 60) "em ${m / 60}h ${m % 60}min" else "em $m min"
+    }
+    if (d > -3L * 3600000L) return "já começou — registre o resultado"
+    return "horário antigo — releia o calendário"
 }
 
 private suspend fun loadToday(ctx: Context): TodayData {
@@ -557,6 +590,15 @@ private fun App() {
     // Botão Voltar do Android: fecha o slot aberto, depois volta para Hoje (em vez de fechar o app).
     BackHandler(enabled = openSlot > 0) { openSlot = 0 }
     BackHandler(enabled = openSlot == 0 && tab != 0) { tab = 0 }
+    // Toque numa notificação: abre o slot na aba certa.
+    LaunchedEffect(Route.nonce) {
+        if (Route.slot > 0) {
+            tab = 2
+            openSlot = Route.slot
+            openTab = Route.tab
+            Route.slot = 0
+        }
+    }
     Scaffold(
         containerColor = C.BG,
         bottomBar = {
@@ -702,7 +744,7 @@ private fun SlotCard(s: SlotSummary, onClick: () -> Unit, onTactic: () -> Unit) 
                 }
                 if (s.nextAt != null) {
                     Row(Modifier.padding(top = 2.dp)) {
-                        Pill("⏱ " + countdown(s.nextAt))
+                        Pill("⏱ " + fmtTime(s.nextAt) + " • " + countdown(s.nextAt))
                         Box(Modifier.clickable { onTactic() }) { Pill(if (s.tacticReady) "Tática ✔" else "Gerar tática →", s.tacticReady) }
                     }
                 }
@@ -2264,6 +2306,52 @@ private fun SlotLearning(slot: Int, d: SlotData) {
 }
 
 @Composable
+private fun SwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, fontSize = 13.sp, modifier = Modifier.weight(1f))
+        Switch(checked = checked, onCheckedChange = onChange)
+    }
+}
+
+@Composable
+private fun NotificationsPanel() {
+    val ctx = LocalContext.current
+    var pre by remember { mutableStateOf(Notifier.enabled(ctx, "pre")) }
+    var tac by remember { mutableStateOf(Notifier.enabled(ctx, "tactic")) }
+    var res by remember { mutableStateOf(Notifier.enabled(ctx, "result")) }
+    var dir by remember { mutableStateOf(Notifier.enabled(ctx, "director")) }
+    fun toggle(key: String, v: Boolean) {
+        Settings.put(ctx, "notif_$key", if (v) "1" else "0")
+        AppScope.scope.launch(Dispatchers.IO) { Notifier.reschedule(ctx.applicationContext) }
+    }
+    Panel {
+        Text("Notificações", fontWeight = FontWeight.Bold)
+        Text(
+            if (Notifier.canPost(ctx)) "Permissão concedida ✔" else "⚠ O Android ainda não liberou as notificações deste app.",
+            fontSize = 12.sp, color = if (Notifier.canPost(ctx)) C.OK else C.WARN, modifier = Modifier.padding(top = 2.dp)
+        )
+        SwitchRow("20 min antes de cada jogo: reler o pré-jogo e a análise do rival", pre) { pre = it; toggle("pre", it) }
+        SwitchRow("1 h antes, se a tática da rodada ainda não foi gerada", tac) { tac = it; toggle("tactic", it) }
+        SwitchRow("30 min depois do jogo: registrar ou ler o resultado", res) { res = it; toggle("result", it) }
+        SwitchRow("Alertas do diretor ao encerrar a leitura (treino livre, preço, estádio, meta)", dir) { dir = it; toggle("director", it) }
+        Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { Notifier.test(ctx.applicationContext) }, modifier = Modifier.weight(1f)) { Text("Testar", fontSize = 12.sp) }
+            if (!Notifier.canPost(ctx)) {
+                OutlinedButton(
+                    onClick = {
+                        val i = Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                            .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, ctx.packageName)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        ctx.startActivity(i)
+                    },
+                    modifier = Modifier.weight(1f)
+                ) { Text("Liberar", fontSize = 12.sp) }
+            }
+        }
+    }
+}
+
+@Composable
 private fun SettingsTab() {
     val ctx = LocalContext.current
     val tick = rememberTick(2000L)
@@ -2279,6 +2367,7 @@ private fun SettingsTab() {
     var saved by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
         Text("Ajustes", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
+        NotificationsPanel()
         Panel {
             Text("Serviço de leitura", fontWeight = FontWeight.Bold)
             KV("Acessibilidade ativada", if (serviceEnabled(ctx)) "sim" else "NÃO")
