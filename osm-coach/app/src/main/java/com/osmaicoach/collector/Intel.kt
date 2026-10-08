@@ -59,18 +59,39 @@ object Fixtures {
         return de < now
     }
 
-    /** Próximo jogo de verdade: sem resultado, não anulado pela eliminação da copa e ainda não começado. */
-    fun next(ms: List<MatchEntity>, now: Long): MatchEntity? =
-        ms.filter { it.round != null && it.result == null && !void(it, ms) && !started(it, now) }.minByOrNull { it.round!! }
+    /**
+     * O jogo já aconteceu? A ordem das rodadas manda: a "próxima rodada" do pré-jogo (curRound) ainda não foi
+     * jogada até o horário dela (curAt) passar; rodadas antes dela já foram; rodadas depois, não. O card só com
+     * a hora ("22:18") não diz o dia, então nunca decide sozinho quando a rodada atual é conhecida.
+     */
+    fun happened(m: MatchEntity, now: Long, curRound: Int?, curAt: Long?): Boolean {
+        if (m.result != null || m.scoreMine != null) return true
+        val r = m.round
+        if (curRound != null && r != null) {
+            return when {
+                r < curRound -> true
+                r > curRound -> false
+                else -> curAt != null && curAt <= now
+            }
+        }
+        return started(m, now)
+    }
+
+    /** Próximo jogo de verdade: sem resultado, não anulado pela eliminação da copa e que ainda não aconteceu. */
+    fun next(ms: List<MatchEntity>, now: Long, curRound: Int? = null, curAt: Long? = null): MatchEntity? =
+        ms.filter { it.round != null && it.result == null && !void(it, ms) && !happened(it, now, curRound, curAt) }
+            .minByOrNull { it.round!! }
 
     /**
-     * Jogo que já aconteceu pelo calendário (data/hora do card passou) e ainda não tem placar nem análise lida.
-     * Só esse pede resultado; sem data/hora no card, nunca pede.
+     * Jogo que acabou de acontecer (a rodada atual depois do horário, ou a anterior) e ainda não tem placar nem
+     * análise lida. Só esse pede resultado; rodadas antigas sem placar ficam na aba Resultado, sem alerta.
      */
-    fun awaitingResult(ms: List<MatchEntity>, scoredRounds: Set<Int>, now: Long): MatchEntity? =
+    fun awaitingResult(ms: List<MatchEntity>, scoredRounds: Set<Int>, now: Long, curRound: Int? = null, curAt: Long? = null): MatchEntity? =
         ms.filter {
-            it.round != null && it.result == null && it.scoreMine == null && !void(it, ms) &&
-                (it.time != null || it.date != null) && started(it, now) && it.round !in scoredRounds
+            val r = it.round
+            r != null && it.result == null && it.scoreMine == null && !void(it, ms) && r !in scoredRounds &&
+                (it.time != null || it.date != null || curRound != null) && happened(it, now, curRound, curAt) &&
+                (curRound == null || r >= curRound - 1)
         }.maxByOrNull { it.round!! }
 }
 
@@ -155,8 +176,19 @@ object WinModel {
     data class Factor(val label: String, val pts: Double)
     data class Prob(
         val win: Int, val draw: Int, val loss: Int, val factors: List<Factor>, val confidence: String,
-        val xgMine: Double, val xgOpp: Double
+        val xgMine: Double, val xgOpp: Double,
+        /** Placar mais provável (meus gols, gols do rival). */
+        val likely: Pair<Int, Int> = Pair(1, 1)
     ) {
+        /** Resumo em palavras para quem não quer ler números. */
+        val verdict: String get() = when {
+            win >= 65 -> "Favorito claro"
+            win >= 50 -> "Favorito"
+            kotlin.math.abs(win - loss) <= 10 -> "Jogo equilibrado"
+            loss >= 50 -> "Azarão — cuidado"
+            else -> "Leve desvantagem"
+        }
+
         /** Pontos esperados (3 por vitória, 1 por empate): critério para comparar táticas. */
         val points: Double get() = (3.0 * win + draw) / 100.0
     }
@@ -389,6 +421,14 @@ object WinModel {
             known >= 3 -> "média"
             else -> "baixa"
         }
-        return Prob(win, draw, loss, factors, conf, all[3], all[4])
+        val a = poisson(all[3])
+        val b = poisson(all[4])
+        var best = Pair(0, 0)
+        var bp = -1.0
+        for (x in 0..6) for (y in 0..6) if (a[x] * b[y] > bp) {
+            bp = a[x] * b[y]
+            best = Pair(x, y)
+        }
+        return Prob(win, draw, loss, factors, conf, all[3], all[4], best)
     }
 }

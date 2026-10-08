@@ -11,6 +11,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import kotlin.coroutines.resume
@@ -79,7 +80,7 @@ class CaptureService : AccessibilityService() {
             while (isActive) {
                 val sid = Control.activeSession(applicationContext)
                 // Botão "Encerrar" por cima do jogo enquanto captura (some quando o próprio app está na tela).
-                withContext(Dispatchers.Main) { syncOverlay(sid != null && !AppVisible.resumed) }
+                withContext(Dispatchers.Main) { syncOverlay(sid != null) }
                 if (sid == null) {
                     delay(1500L)
                     continue
@@ -101,9 +102,14 @@ class CaptureService : AccessibilityService() {
         }
     }
 
+    private var overlayBox: LinearLayout? = null
+    private var toggleView: TextView? = null
+
     private fun removeOverlay() {
-        val v = overlay ?: return
+        val v = overlayBox ?: return
+        overlayBox = null
         overlay = null
+        toggleView = null
         try {
             (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(v)
         } catch (e: Exception) {
@@ -111,7 +117,30 @@ class CaptureService : AccessibilityService() {
         }
     }
 
-    /** Chip arrastável na borda esquerda. 1º toque arma ("toque de novo"), 2º toque em até 4 s encerra. */
+    /** Chamado pela tela do app ao abrir/fechar: troca o rótulo do botão de alternar na hora. */
+    fun refreshOverlay() {
+        mainExecutor.execute { updateToggle() }
+    }
+
+    private fun updateToggle() {
+        toggleView?.text = if (AppVisible.resumed) "⚽ OSM" else "📱 App"
+    }
+
+    private fun chip(text: String, color: Int, dp: Float): TextView = TextView(this).apply {
+        this.text = text
+        setTextColor(android.graphics.Color.WHITE)
+        textSize = 12f
+        setPadding((12 * dp).toInt(), (7 * dp).toInt(), (12 * dp).toInt(), (7 * dp).toInt())
+        background = GradientDrawable().apply {
+            cornerRadius = 40 * dp
+            setColor(color)
+        }
+    }
+
+    /**
+     * Botões por cima de tudo enquanto captura: alternar OSM <-> app e Encerrar (toque duplo para confirmar).
+     * Arrastáveis pela borda da tela.
+     */
     @SuppressLint("ClickableViewAccessibility")
     private fun syncOverlay(show: Boolean) {
         if (!show) {
@@ -124,20 +153,20 @@ class CaptureService : AccessibilityService() {
                 armedAt = 0L
                 cur.text = "■ Encerrar"
             }
+            updateToggle()
             return
         }
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
         val dp = resources.displayMetrics.density
-        val tv = TextView(this).apply {
-            text = "■ Encerrar"
-            setTextColor(android.graphics.Color.WHITE)
-            textSize = 12f
-            setPadding((12 * dp).toInt(), (7 * dp).toInt(), (12 * dp).toInt(), (7 * dp).toInt())
-            background = GradientDrawable().apply {
-                cornerRadius = 40 * dp
-                setColor(0xE6D32F2F.toInt())
-            }
-            alpha = 0.9f
+        val end = chip("■ Encerrar", 0xE6D32F2F.toInt(), dp)
+        val toggle = chip("📱 App", 0xE61F6BFF.toInt(), dp)
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            alpha = 0.92f
+            addView(toggle)
+            addView(end, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = (6 * dp).toInt()
+            })
         }
         val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
@@ -147,37 +176,63 @@ class CaptureService : AccessibilityService() {
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             x = 0
-            y = (resources.displayMetrics.heightPixels * 0.42f).toInt()
+            y = (resources.displayMetrics.heightPixels * 0.40f).toInt()
         }
-        var downX = 0f
-        var downY = 0f
-        var startX = 0
-        var startY = 0
-        var moved = false
-        tv.setOnTouchListener { v: View, e: MotionEvent ->
-            when (e.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    downX = e.rawX; downY = e.rawY; startX = lp.x; startY = lp.y; moved = false
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    val dx = e.rawX - downX
-                    val dy = e.rawY - downY
-                    if (kotlin.math.abs(dx) > 12 * dp || kotlin.math.abs(dy) > 12 * dp) moved = true
-                    if (moved) {
-                        lp.x = startX + dx.toInt()
-                        lp.y = startY + dy.toInt()
-                        try { wm.updateViewLayout(v, lp) } catch (ex: Exception) { }
+        fun dragOrTap(v: View, onTap: () -> Unit) {
+            var downX = 0f
+            var downY = 0f
+            var startX = 0
+            var startY = 0
+            var moved = false
+            v.setOnTouchListener { _: View, e: MotionEvent ->
+                when (e.action) {
+                    MotionEvent.ACTION_DOWN -> {
+                        downX = e.rawX; downY = e.rawY; startX = lp.x; startY = lp.y; moved = false
                     }
+                    MotionEvent.ACTION_MOVE -> {
+                        val dx = e.rawX - downX
+                        val dy = e.rawY - downY
+                        if (kotlin.math.abs(dx) > 12 * dp || kotlin.math.abs(dy) > 12 * dp) moved = true
+                        if (moved) {
+                            lp.x = startX + dx.toInt()
+                            lp.y = startY + dy.toInt()
+                            try { wm.updateViewLayout(box, lp) } catch (ex: Exception) { }
+                        }
+                    }
+                    MotionEvent.ACTION_UP -> if (!moved) onTap()
                 }
-                MotionEvent.ACTION_UP -> if (!moved) onOverlayTap()
+                true
             }
-            true
         }
+        dragOrTap(end) { onOverlayTap() }
+        dragOrTap(toggle) { onToggleTap() }
         try {
-            wm.addView(tv, lp)
-            overlay = tv
+            wm.addView(box, lp)
+            overlayBox = box
+            overlay = end
+            toggleView = toggle
+            updateToggle()
         } catch (e: Exception) {
-            Diag.lastError = "Botão Encerrar: " + (e.message ?: e.javaClass.simpleName)
+            Diag.lastError = "Botões flutuantes: " + (e.message ?: e.javaClass.simpleName)
+        }
+    }
+
+    /** No app vai para o OSM; no OSM (ou em outro lugar) volta para o app. A captura continua. */
+    private fun onToggleTap() {
+        try {
+            if (AppVisible.resumed) {
+                val i = packageManager.getLaunchIntentForPackage(OSM_PACKAGE) ?: return
+                i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(i)
+            } else {
+                startActivity(
+                    android.content.Intent(this, MainActivity::class.java).addFlags(
+                        android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            Diag.lastError = "Alternar app/OSM: " + (e.message ?: e.javaClass.simpleName)
         }
     }
 

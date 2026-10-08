@@ -65,6 +65,21 @@ class IntelTest {
         assertNull(Fixtures.awaitingResult(listOf(m(26, "X")), emptySet(), at(2026, 12, 1, 0, 0)))
     }
 
+    @Test fun roundOrderDecidesWhenAGameHappened() {
+        // card do próximo jogo (J25) lido ontem às 21h com "22:18": sem a rodada atual parecia já jogado
+        val readYesterday = at(2026, 10, 7, 23, 0)
+        val now = at(2026, 10, 8, 8, 47)
+        val tonight = at(2026, 10, 8, 22, 18)
+        val ms = listOf(m(24, "Dinamo", result = "V"), m(25, "FK Atyrau", time = "22:18", readAt = readYesterday))
+        assertNull(Fixtures.awaitingResult(ms, emptySet(), now, 25, tonight))
+        assertEquals(25, Fixtures.next(ms, now, 25, tonight)?.round)
+        // passou do horário: agora sim pede o resultado
+        assertEquals(25, Fixtures.awaitingResult(ms, emptySet(), at(2026, 10, 8, 22, 40), 25, tonight)?.round)
+        // rodada antiga sem placar não vira alerta
+        val old = listOf(m(10, "X", date = "01/09/26"), m(25, "FK Atyrau", time = "22:18", readAt = readYesterday))
+        assertNull(Fixtures.awaitingResult(old, emptySet(), now, 25, tonight))
+    }
+
     @Test fun backgroundTextIsNeverANick() {
         assertFalse(Evidence.plausibleNick("25 Anniversary"))
         assertFalse(Evidence.plausibleNick("Aniversário"))

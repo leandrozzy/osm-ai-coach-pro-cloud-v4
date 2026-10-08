@@ -101,7 +101,8 @@ class Repo(private val ctx: Context) {
                 learn(slot, "rival", "Rival mudou de ${old.fvalue} para ${newRival.value}: dados do rival anterior foram descartados.", now)
             }
         }
-        return putTracked(slot, ex.fields, source, "PREGAME", now)
+        val n = putTracked(slot, ex.fields, source, "PREGAME", now)
+        return n + estimateMid(slot, "rival.", now) + estimateMid(slot, "my.", now)
     }
 
     private suspend fun applySquad(slot: Int, ex: Extraction, source: String, now: Long): Int {
@@ -140,6 +141,7 @@ class Repo(private val ctx: Context) {
             }
         }
         changed += putTracked(slot, mapped, source, "SQUAD", now)
+        changed += estimateMid(slot, prefix, now)
         if (owner == "RIVAL" && nick != null && Evidence.plausibleNick(nick)) {
             changed += recordEvidence(slot, mapOf(K.RIVAL_NICK to nick.trim()), "SQUAD", now)
         }
@@ -280,14 +282,36 @@ class Repo(private val ctx: Context) {
             }?.opponentNick
             if (nk != null) changed += recordEvidence(slot, mapOf(K.RIVAL_NICK to nk.trim()), "CALENDAR", now)
         }
-        val next = Fixtures.next(all, now)
+        val fNow = fieldMap(slot)
+        val curRound = fNow[K.ROUND]?.value?.toIntOrNull()
+        val curAt = fNow[K.MATCH_AT]?.value?.toLongOrNull()
+        val next = Fixtures.next(all, now, curRound, curAt)
         if (next != null) {
-            val at = Fixtures.kickoff(next)
-            if (at != null && next.time != null) changed += putFields(slot, mapOf(K.MATCH_AT to Reading(at.toString(), 0.95)), source, now)
+            val t = next.time
+            if (t != null) {
+                // Card só com a hora não diz o dia: se o horário guardado (contagem do pré-jogo) já bate com essa hora
+                // e está no futuro, ele é o certo; senão vale a próxima ocorrência dessa hora a partir de agora.
+                val hm = Regex("^(\\d{1,2}):(\\d{2})$").find(t.trim())
+                val keep = next.date == null && curAt != null && curAt > now && hm != null && run {
+                    val c = java.util.Calendar.getInstance()
+                    c.timeInMillis = curAt
+                    val a = c.get(java.util.Calendar.HOUR_OF_DAY) * 60 + c.get(java.util.Calendar.MINUTE)
+                    val b = hm.groupValues[1].toInt() * 60 + hm.groupValues[2].toInt()
+                    kotlin.math.abs(a - b) <= 2
+                }
+                val at = if (next.date != null) Fixtures.kickoff(next) else MatchClock.toMillis(null, t, now)
+                if (!keep && at != null) changed += putFields(slot, mapOf(K.MATCH_AT to Reading(at.toString(), 0.95)), source, now)
+            }
             val ev = LinkedHashMap<String, String>()
             Fixtures.opponent(next)?.let { ev[K.RIVAL_TEAM] = it }
             next.home?.let { ev[K.HOME] = if (it) "Casa" else "Fora" }
             if (ev.isNotEmpty()) changed += recordEvidence(slot, ev, "CALENDAR", now)
+            // Card do próximo rival lido com o nome e SEM apelido embaixo: rival é CPU (se nada confirmou humano).
+            val opp = Fixtures.opponent(next)
+            val rk = fNow[K.RIVAL_TEAM]?.value?.let { Txt.key(it) }
+            if (opp != null && next.opponentNick == null && rk != null && Txt.sim(Txt.key(opp), rk) >= 0.85) {
+                changed += putFields(slot, mapOf(K.RIVAL_HUMAN to Reading("Não", 0.7)), source, now)
+            }
         }
         return changed
     }
@@ -648,6 +672,28 @@ class Repo(private val ctx: Context) {
             val linked = j.has("mineHome") && m?.scoreMine != null && (tl == null || !tl.isNull("result"))
             if (!linked) linkResult(slot, round, j, now)
         }
+    }
+
+    /**
+     * Bolha do MEI (MED) não lida: a força do time é a média dos 11, então MEI = (11 x força - GOL - d x DEF - a x ATA) / m,
+     * com d/m/a da formação (sem formação: 4-3-3). Gravada com confiança baixa: a leitura real substitui.
+     */
+    private suspend fun estimateMid(slot: Int, prefix: String, now: Long): Int {
+        val f = fieldMap(slot)
+        if (FieldMerge.known(f[prefix + "mid"]?.value)) return 0
+        val st = (if (prefix == "my.") f[K.MY_STRENGTH] else f[K.RIVAL_STRENGTH])?.value?.toIntOrNull() ?: return 0
+        val gol = f[prefix + "gol"]?.value?.toIntOrNull() ?: return 0
+        val def = f[prefix + "def"]?.value?.toIntOrNull() ?: return 0
+        val atk = f[prefix + "atk"]?.value?.toIntOrNull() ?: return 0
+        val lines = Formations.lines(f[prefix + "formation"]?.value ?: "").ifEmpty { listOf(4, 3, 3) }
+        val d = lines.first()
+        val a = lines.last()
+        val m = 10 - d - a
+        if (m <= 0) return 0
+        val mid = Math.round((11.0 * st - gol - d * def - a * atk) / m).toInt()
+        if (mid !in 30..130 || kotlin.math.abs(mid - st) > 15) return 0
+        dao.putField(FieldEntity(slot, prefix + "mid", mid.toString(), 0.5, now, "estimativa"))
+        return 1
     }
 
     // ------------------------------------------------------------------ evidências cruzadas
