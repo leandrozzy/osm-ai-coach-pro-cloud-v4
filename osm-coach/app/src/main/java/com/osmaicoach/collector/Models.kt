@@ -276,8 +276,8 @@ object Osm {
     val STYLES = listOf("Jogar pelas alas", "Jogo de passe", "Contra-ataque", "Remate à vista", "Bola longa")
     val MARKING = listOf("À zona", "Homem-a-homem")
     val TACKLES = listOf("Cuidadoso", "Normal", "Agressivo", "Extremo")
-    /** Avançados: "Atacar apenas" e "Ajudar a defender" vistos no jogo; a 3ª opção ainda não foi confirmada. */
-    val ATTACK = listOf("Atacar apenas", "Ajudar meio-campo", "Ajudar a defender")
+    /** Avançados, na ordem do jogo. */
+    val ATTACK = listOf("Atacar apenas", "Apoiar meio-campo", "Ajudar a defender")
     val MIDFIELD = listOf("Pressionar na frente", "Manter posições", "Ajudar a defesa")
     val DEFENSE = listOf("Defender atrás", "Defesas atacantes", "Apoiar meio-campo")
 
@@ -324,7 +324,7 @@ object Osm {
         val n = Txt.norm(s ?: "")
         return when {
             n.contains("atacar") -> "Atacar apenas"
-            n.contains("meio") -> "Ajudar meio-campo"
+            n.contains("meio") -> "Apoiar meio-campo"
             n.contains("defe") -> "Ajudar a defender"
             else -> null
         }
