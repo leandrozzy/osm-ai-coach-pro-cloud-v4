@@ -199,6 +199,27 @@ private fun openOsm(ctx: Context): Boolean {
     return true
 }
 
+/**
+ * Bateria sem restrição: pede direto ao Android ("Permitir que o app rode em segundo plano?") para ESTE app.
+ * A lista geral de otimização esconde o app em muitos celulares. Se o pedido não abrir, vai para Info do app
+ * (lá: Bateria → Sem restrição).
+ */
+@android.annotation.SuppressLint("BatteryLife")
+private fun openBatterySettings(ctx: Context) {
+    if (batteryUnrestricted(ctx)) {
+        openSettings(ctx, android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, true)
+        return
+    }
+    val req = Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+        .setData(Uri.parse("package:" + ctx.packageName))
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    try {
+        ctx.startActivity(req)
+    } catch (e: Exception) {
+        openSettings(ctx, android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, true)
+    }
+}
+
 private fun openSettings(ctx: Context, action: String, pkg: Boolean = false) {
     val i = Intent(action)
     if (pkg) i.data = Uri.parse("package:" + ctx.packageName)
@@ -788,7 +809,7 @@ private fun SetupBanner(ctx: Context, enabled: Boolean, connected: Boolean, batt
                 }
                 if (!batteryOk) {
                     PendingRow("Bateria sem restrição (evita o Android desligar a leitura)", "Bateria") {
-                        openSettings(ctx, android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                        openBatterySettings(ctx)
                     }
                 }
                 if (!hasKey) PendingRow("Chave de IA (Google AI Studio) para tática e mercado", "Ajustes", onGoSettings)
@@ -2980,7 +3001,7 @@ private fun NotificationsPanel() {
         }
         if (!battery) {
             PendingRow("Bateria sem restrição para este app", "Bateria") {
-                openSettings(ctx, android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                openBatterySettings(ctx)
             }
         }
         Text(
@@ -3042,7 +3063,7 @@ private fun SettingsTab() {
                 modifier = Modifier.fillMaxWidth()
             ) { Text("Info do app (permitir configurações restritas)") }
             OutlinedButton(
-                onClick = { openSettings(ctx, android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS) },
+                onClick = { openBatterySettings(ctx) },
                 modifier = Modifier.fillMaxWidth()
             ) { Text("Bateria: não otimizar este app") }
         }
