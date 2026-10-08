@@ -1,190 +1,225 @@
 from pathlib import Path
 
-ROOT = Path(".")
-PKG = ROOT / "android-collector/app/src/main/java/com/osmaicoach/collector"
-MAIN = PKG / "MainActivity.kt"
-PROCESSOR = PKG / "NativeSessionProcessor.kt"
-REPO = PKG / "SessionRepository.kt"
-LOCAL = PKG / "LocalOcrExtractor.kt"
+ROOT = Path(__file__).resolve().parent
+MAIN = ROOT / 'android-collector/app/src/main/java/com/osmaicoach/collector/MainActivity.kt'
+PROC = ROOT / 'android-collector/app/src/main/java/com/osmaicoach/collector/NativeSessionProcessor.kt'
+LOCAL = ROOT / 'android-collector/app/src/main/java/com/osmaicoach/collector/LocalOcrExtractor.kt'
+TRACK = ROOT / 'android-collector/app/src/main/java/com/osmaicoach/collector/SlotNavigationTracker.kt'
+TRACK_SOURCE = ROOT / 'SlotNavigationTracker.V26.kt'
 
-for f in (MAIN, PROCESSOR, REPO, LOCAL):
+for f in (MAIN, PROC, LOCAL, TRACK, TRACK_SOURCE):
     if not f.exists():
-        raise SystemExit(f"Arquivo não encontrado: {f}")
+        raise SystemExit(f'ERRO: arquivo ausente: {f}')
 
-# 1) MainActivity
-text = MAIN.read_text(encoding="utf-8")
-text = text.replace(
-    'val ocrPrefs=context.getSharedPreferences("native_processor_v7",MODE_PRIVATE)',
-    'val ocrPrefs=this@MainActivity.getSharedPreferences("native_processor_v7",MODE_PRIVATE)'
-)
-if 'DetailLine("APIs","Configuradas no backend/Vercel")' not in text:
-    text = text.replace(
-        'DetailLine("Processamento","OCR local + IA Cloud")',
-        'DetailLine("Processamento","OCR local + IA Cloud")\n'
-        '                                DetailLine("APIs","Configuradas no backend/Vercel")'
-    )
-MAIN.write_text(text, encoding="utf-8")
+TRACK.write_text(TRACK_SOURCE.read_text(encoding='utf-8'), encoding='utf-8')
 
-# 2) SessionRepository: reclassificar frames após OCR
-repo = REPO.read_text(encoding="utf-8")
-if 'fun updateLatestFrameClassification' not in repo:
-    marker = '    fun latestFrameBase64(index:Int):String?{\n'
-    method = '''    @Synchronized
-    fun updateLatestFrameClassification(classifications: Map<Int, ScreenClassifier.Result>) {
-        val id=context.getSharedPreferences("collector",Context.MODE_PRIVATE)
-            .getString("latest_session_id",null) ?: return
-        val file=File(File(root,id),"session.json")
-        if(!file.exists()) return
-        runCatching {
-            val json=JSONObject(file.readText())
-            val frames=json.optJSONArray("frames") ?: return@runCatching
-            for(i in 0 until frames.length()){
-                val frame=frames.getJSONObject(i)
-                val index=frame.optInt("index",i)
-                val c=classifications[index] ?: continue
-                frame.put("screenType",c.type)
-                frame.put("screenTitle",c.title.take(80))
+local = LOCAL.read_text(encoding='utf-8')
+if 'suspend fun readHubCards(file: File)' not in local:
+    marker = '    fun applyToSlot(slot: NativeSlotData, texts: List<String>) {'
+    if marker not in local:
+        raise SystemExit('ERRO: ponto de inserção LocalOcrExtractor não encontrado')
+    method = '''    suspend fun readHubCards(file: File): List<String> {
+        val bitmap = BitmapFactory.decodeFile(file.absolutePath) ?: return emptyList()
+        return try {
+            val result = recognizer.process(InputImage.fromBitmap(bitmap, 0)).await()
+            data class HubLine(val text: String, val x: Int, val y: Int)
+            val lines = result.textBlocks.flatMap { it.lines }.mapNotNull { line ->
+                val box = line.boundingBox ?: return@mapNotNull null
+                val value = line.text.trim()
+                if (value.isBlank()) return@mapNotNull null
+                HubLine(value, box.centerX(), box.centerY())
             }
-            file.writeText(json.toString(2))
-        }
-    }
-
-'''
-    if marker not in repo:
-        raise SystemExit("Não encontrei ponto para adicionar reclassificação no SessionRepository.")
-    repo = repo.replace(marker, method + marker, 1)
-REPO.write_text(repo, encoding="utf-8")
-
-# 3) Local OCR: árbitro só aceita valores plausíveis
-local = LOCAL.read_text(encoding="utf-8")
-old_ref = '        extractLabeled(lines, listOf("árbitro","arbitro","referee"))?.let { if (slot.referee=="NI") slot.referee=it }\n'
-new_ref = '''        extractLabeled(lines, listOf("árbitro","arbitro","referee"))?.let { candidate ->
-            val r = normalize(candidate)
-            val valid = listOf("verde","azul","amarelo","laranja","vermelho","green","blue","yellow","orange","red",
-                "muito rigoroso","rigoroso","medio","médio","tolerante","leniente").any { r.contains(normalize(it)) }
-            if (slot.referee=="NI" && valid) slot.referee=candidate
-        }
-'''
-if old_ref in local:
-    local = local.replace(old_ref, new_ref, 1)
-LOCAL.write_text(local, encoding="utf-8")
-
-# 4) Processor
-p = PROCESSOR.read_text(encoding="utf-8")
-
-old_img = 'put("url",encoded.first);put("width",encoded.second.first);put("height",encoded.second.second);put("frameIndex",index)'
-new_img = 'put("url",encoded.first);put("width",encoded.second.first);put("height",encoded.second.second);put("frameIndex",index);put("region","full")'
-if old_img in p:
-    p = p.replace(old_img, new_img)
-
-needle = '''        segments.forEachIndexed{slotIndex,indices->
-            val slot=slots[slotIndex.coerceIn(0,3)]
-            val texts=indices.mapNotNull{ocrByIndex[it]}.filter{it.isNotBlank()}
-            local.applyToSlot(slot,texts)
-            slot.lastUpdated=System.currentTimeMillis()
-        }
-        store.saveAll(slots)
-'''
-replacement = '''        val classifications = ocrByIndex.mapValues { (_, text) -> ScreenClassifier.classify(text) }
-        repository.updateLatestFrameClassification(classifications)
-
-        segments.forEachIndexed{slotIndex,indices->
-            val slot=slots[slotIndex.coerceIn(0,3)]
-            val relevant=indices.filter { idx ->
-                when(classifications[idx]?.type) {
-                    "match","squad","calendar","club","training","market","tactics","result" -> true
-                    else -> false
+            if (lines.isEmpty()) return emptyList()
+            val roundRegex = Regex("""\\b\\d{1,2}\\s*/\\s*\\d{1,2}\\b""")
+            val slotRegex = Regex("""\\bslot\\s*[1-4]\\b""", RegexOption.IGNORE_CASE)
+            var anchors = lines.filter { line ->
+                roundRegex.containsMatchIn(normalize(line.text)) || slotRegex.containsMatchIn(normalize(line.text))
+            }
+            anchors = anchors.sortedBy { it.y }.fold(mutableListOf()) { acc, item ->
+                val duplicate = acc.any { old ->
+                    kotlin.math.abs(old.x - item.x) < bitmap.width * 0.08 &&
+                    kotlin.math.abs(old.y - item.y) < bitmap.height * 0.035
                 }
+                if (!duplicate) acc += item
+                acc
             }
-            val source=if(relevant.isNotEmpty())relevant else indices
-            val texts=source.mapNotNull{ocrByIndex[it]}.filter{it.isNotBlank()}
-            local.applyToSlot(slot,texts)
-            slot.lastUpdated=System.currentTimeMillis()
-        }
-        store.saveAll(slots)
-'''
-if needle not in p:
-    raise SystemExit("Não encontrei o bloco de aplicação local do Processor.")
-p = p.replace(needle, replacement, 1)
-
-old_jobs = '''        val jobs=mutableListOf<Triple<Int,String,List<Int>>>()
-        segments.forEachIndexed{i,rows->
-            jobs+=Triple(i,"match",rows)
-            jobs+=Triple(i,"squad",rows)
-            jobs+=Triple(i,"calendar",rows)
-        }
-'''
-new_jobs = '''        fun rowsForType(rows:List<Int>, type:String):List<Int>{
-            val direct=rows.filter { classifications[it]?.type==type }
-            if(direct.isNotEmpty()) return direct
-            val fallbackTypes=when(type){
-                "match" -> setOf("club","tactics","result")
-                "squad" -> setOf("training","market")
-                "calendar" -> setOf("ranking")
-                else -> emptySet()
+            if (anchors.size < 3) return emptyList()
+            anchors = anchors.take(4)
+            val rowTolerance = (bitmap.height * 0.075f).toInt().coerceAtLeast(50)
+            val ordered = anchors.sortedWith(Comparator { a, b ->
+                val dy = a.y - b.y
+                if (kotlin.math.abs(dy) <= rowTolerance) a.x - b.x else dy
+            })
+            val groups = MutableList(ordered.size) { mutableListOf<HubLine>() }
+            lines.forEach { line ->
+                var best = 0
+                var bestDistance = Double.MAX_VALUE
+                ordered.forEachIndexed { i, anchor ->
+                    val dx = (line.x - anchor.x).toDouble() / bitmap.width.coerceAtLeast(1)
+                    val dy = (line.y - anchor.y).toDouble() / bitmap.height.coerceAtLeast(1)
+                    val distance = dx * dx + dy * dy
+                    if (distance < bestDistance) { bestDistance = distance; best = i }
+                }
+                groups[best] += line
             }
-            val related=rows.filter { classifications[it]?.type in fallbackTypes }
-            return if(related.isNotEmpty()) related else rows
-        }
-
-        val jobs=mutableListOf<Triple<Int,String,List<Int>>>()
-        segments.forEachIndexed{i,rows->
-            jobs+=Triple(i,"match",rowsForType(rows,"match"))
-            jobs+=Triple(i,"squad",rowsForType(rows,"squad"))
-            jobs+=Triple(i,"calendar",rowsForType(rows,"calendar"))
-        }
-'''
-if old_jobs not in p:
-    raise SystemExit("Não encontrei o bloco de jobs do Processor.")
-p = p.replace(old_jobs, new_jobs, 1)
-
-old_apply = '''            }else{
-                runCatching{applyResult(slot,result.first,result.second)}
-                    .onSuccess{success++}
-                    .onFailure{failed++;lastError="S${slot.id} $friendly: ${it.message?:"falha ao aplicar"}"}
+            groups.map { group ->
+                group.sortedWith(compareBy<HubLine> { it.y }.thenBy { it.x })
+                    .joinToString("\\n") { it.text }.take(5000)
             }
-'''
-new_apply = '''            }else{
-                val before=knownCount(slot)
-                runCatching{applyResult(slot,result.first,result.second)}
-                    .onSuccess{
-                        val after=knownCount(slot)
-                        if(after>before){
-                            success++
-                        }else{
-                            failed++
-                            lastError="S${slot.id} $friendly: resposta recebida, mas sem dados úteis para este slot"
-                        }
-                    }
-                    .onFailure{failed++;lastError="S${slot.id} $friendly: ${it.message?:"falha ao aplicar"}"}
-            }
-'''
-if old_apply not in p:
-    raise SystemExit("Não encontrei o contador de sucesso do Processor.")
-p = p.replace(old_apply, new_apply, 1)
-
-if 'private fun knownCount(slot:NativeSlotData)' not in p:
-    marker = '    private fun sample(rows:List<Int>,max:Int):List<Int>{\n'
-    helper = '''    private fun knownCount(slot:NativeSlotData):Int {
-        val values=listOf(
-            slot.team,slot.competition,slot.nextRival,slot.matchDate,slot.matchTime,slot.venue,slot.referee,
-            slot.myStrength,slot.rivalStrength,slot.myValue,slot.rivalValue,
-            slot.myGoalkeeper,slot.myDefense,slot.myMidfield,slot.myAttack,
-            slot.rivalGoalkeeper,slot.rivalDefense,slot.rivalMidfield,slot.rivalAttack,
-            slot.rivalFormation,slot.rivalPlan,slot.marking,slot.offside,
-            slot.secretTraining,slot.trainingCamp,slot.stadium,slot.bonus
-        )
-        return values.count { it.isNotBlank() && it!="NI" && it!="null" } +
-            (if(slot.squadCount>0)1 else 0) +
-            (if(slot.calendarCount>0)1 else 0)
+        } catch (_: Throwable) {
+            emptyList()
+        } finally {
+            bitmap.recycle()
+        }
     }
 
 '''
-    if marker not in p:
-        raise SystemExit("Não encontrei ponto para adicionar knownCount.")
-    p = p.replace(marker, helper + marker, 1)
+    local = local.replace(marker, method + marker, 1)
+LOCAL.write_text(local, encoding='utf-8')
 
-PROCESSOR.write_text(p, encoding="utf-8")
+proc = PROC.read_text(encoding='utf-8')
+old_route = '''        val classifications = ocrByIndex.mapValues { (_, text) -> ScreenClassifier.classify(text) }
 
-print("apply_native_current.py concluído.")
-print("Melhorias: classificação por OCR, seleção correta de telas por tipo, Sessions reclassificada e sucesso somente com dados úteis.")
+        val tracked = SlotNavigationTracker.assign(session, ocrByIndex, slots)'''
+new_route = '''        val classifications = ocrByIndex.mapValues { (_, text) -> ScreenClassifier.classify(text) }
+
+        var hubCards: List<String> = emptyList()
+        val hubCandidates = ocrByIndex.entries
+            .filter { (_, text) -> SlotNavigationTracker.looksLikeHub(text) }
+            .map { it.key }
+
+        for (index in hubCandidates.take(4)) {
+            val file = repository.frameFile(session, index) ?: continue
+            val cards = withTimeoutOrNull(12000L) { local.readHubCards(file) } ?: emptyList()
+            if (cards.count { it.isNotBlank() } >= 3) {
+                hubCards = cards
+                break
+            }
+        }
+
+        prefs.edit().putInt("hub_cards_detected", hubCards.count { it.isNotBlank() }).apply()
+
+        val tracked = SlotNavigationTracker.assign(session, ocrByIndex, slots, hubCards)'''
+if old_route not in proc:
+    raise SystemExit('ERRO: bloco de roteamento não encontrado')
+proc = proc.replace(old_route, new_route, 1)
+
+# V25-style persistence fix if source is still pre-V25.
+old_early = '''        if (segments.all { it.isEmpty() }) {
+            prefs.edit()
+                .putString("slot_tracker_summary", tracked.summary)
+                .putInt("slot_hub_frames", tracked.hubFrames.size)
+                .putInt("slot_unassigned_frames", session.frames.size)
+                .apply()
+
+            val message = "Sessão preservada: nenhuma visita foi ligada com segurança a S1-S4. Os dados anteriores foram mantidos."
+            onProgress(
+                Progress(
+                    false,
+                    total,
+                    total,
+                    "Sessão preservada — rastreamento pendente",
+                    0,
+                    1,
+                    "slot-map",
+                    message
+                )
+            )
+            return@withContext true
+        }
+
+        prefs.edit()
+            .putString("slot_tracker_summary", tracked.summary)
+            .putInt("slot_hub_frames", tracked.hubFrames.size)
+            .putInt("slot_unassigned_frames", session.frames.size - frameToSlot.count { it.value in 1..4 })
+            .apply()
+
+        repository.updateFrameAnalysis(session.id,
+            ocrByIndex.mapValues { (index,text) ->
+                val c=classifications[index] ?: ScreenClassifier.Result("other","Tela do OSM")
+                FrameAnalysisUpdate(
+                    slotId=frameToSlot[index] ?: 0,
+                    screenType=c.type,
+                    screenTitle=c.title,
+                    ocrText=text.take(500),
+                    analysisState=when {
+                        index in tracked.hubFrames -> "Central dos slots"
+                        text.isBlank() -> "sem OCR"
+                        (frameToSlot[index] ?: 0) == 0 -> "Aguardando identificação do slot"
+                        else -> "OCR ✓"
+                    },
+                    extractedFields=0
+                )
+            }
+        )'''
+new_early = '''        repository.updateFrameAnalysis(session.id,
+            ocrByIndex.mapValues { (index,text) ->
+                val c=classifications[index] ?: ScreenClassifier.Result("other","Tela do OSM")
+                FrameAnalysisUpdate(
+                    slotId=frameToSlot[index] ?: 0,
+                    screenType=c.type,
+                    screenTitle=c.title,
+                    ocrText=text.take(500),
+                    analysisState=when {
+                        index in tracked.hubFrames -> "Central dos slots"
+                        text.isBlank() -> "sem OCR"
+                        (frameToSlot[index] ?: 0) == 0 -> "OCR ✓ · slot ainda não confirmado"
+                        else -> "OCR ✓"
+                    },
+                    extractedFields=0
+                )
+            }
+        )
+
+        prefs.edit()
+            .putString("slot_tracker_summary", tracked.summary)
+            .putInt("slot_hub_frames", tracked.hubFrames.size)
+            .putInt("slot_unassigned_frames", session.frames.size - frameToSlot.count { it.value in 1..4 })
+            .apply()
+
+        if (segments.all { it.isEmpty() }) {
+            val message = "OCR concluído; nenhuma visita teve identidade suficiente para S1-S4. Nenhum dado foi inventado."
+            onProgress(Progress(false, session.frames.size, session.frames.size, "OCR concluído · slots não confirmados", 0, 1, "slot-map", message))
+            return@withContext true
+        }'''
+if old_early in proc:
+    proc = proc.replace(old_early, new_early, 1)
+PROC.write_text(proc, encoding='utf-8')
+
+main = MAIN.read_text(encoding='utf-8')
+main = main.replace(
+'''        val servicePermission = isAccessibilityServiceEnabledInSettings()
+        val serviceConnected = isAccessibilityServiceActuallyConnected()
+        val serviceReady = servicePermission
+        val recording = CollectorState.isRecording() || repo.current()?.state == "recording"''',
+'''        val servicePermission = isAccessibilityServiceEnabledInSettings()
+        val serviceConnected = isAccessibilityServiceActuallyConnected()
+        val recording = CollectorState.isRecording() || repo.current()?.state == "recording"
+        val serviceReady = servicePermission || serviceConnected''')
+old_completion = '''    private fun completion(s:NativeSlotData):Int {
+        val values=listOf(
+            s.team,s.competition,s.nextRival,s.matchDate,s.venue,s.referee,s.myStrength,s.rivalStrength,
+            s.myValue,s.rivalValue,s.rivalFormation,s.rivalPlan,s.marking,s.offside,s.secretTraining,s.trainingCamp
+        )
+        val filled=values.count{it!="NI"&&it.isNotBlank()}
+        return ((filled.toDouble()/values.size)*100).toInt()
+    }'''
+new_completion = '''    private fun completion(s:NativeSlotData):Int {
+        if (s.team=="NI" || s.team.isBlank() || s.competition=="NI" || s.competition.isBlank()) return 0
+        val values=listOf(
+            s.team,s.competition,s.nextRival,s.matchDate,s.venue,s.referee,s.myStrength,s.rivalStrength,
+            s.myValue,s.rivalValue,s.rivalFormation,s.rivalPlan,s.marking,s.offside,s.secretTraining,s.trainingCamp
+        )
+        val filled=values.count{it!="NI"&&it.isNotBlank()}
+        return ((filled.toDouble()/values.size)*100).toInt()
+    }'''
+main = main.replace(old_completion, new_completion, 1)
+for oldver in ('V23.2','V24.0','V25.0'):
+    main = main.replace(f'DetailLine("Versão nativa","{oldver} · ${{BuildConfig.VERSION_NAME}}")', 'DetailLine("Versão nativa","V26.0 · ${BuildConfig.VERSION_NAME}")')
+MAIN.write_text(main, encoding='utf-8')
+
+checks = [(TRACK,'cards=${usableCards.count'), (LOCAL,'suspend fun readHubCards(file: File)'), (PROC,'hub_cards_detected'), (MAIN,'V26.0')]
+for file, token in checks:
+    if token not in file.read_text(encoding='utf-8'):
+        raise SystemExit(f'ERRO validação {file.name}: {token}')
+print('V26 APLICADA COM SUCESSO')

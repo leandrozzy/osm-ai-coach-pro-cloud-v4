@@ -77,7 +77,7 @@ export function parseMatchText(text='',context={}){
  if(!isRivalNickname(out.rivalNickname,context))out.rivalNickname=NI;
  const parsed={...out,...parseRivalReportText(text,context)};
  parsed._evidence={};
- for(const field of ['myStrength','rivalStrength','human','location','referee'])if(parsed[field]!==undefined&&parsed[field]!==null&&parsed[field]!==NI)parsed._evidence[field]={kind:'explicit-label',value:parsed[field]};
+ for(const field of ['myStrength','rivalStrength','human','location','referee','secretTraining','trainingCamp','myTrainingCamp'])if(parsed[field]!==undefined&&parsed[field]!==null&&parsed[field]!==NI)parsed._evidence[field]={kind:'explicit-label',value:parsed[field]};
  return parsed;
 }
 export function mergeMatchTexts(texts=[],context={}){const out={_schemaVersion:3,_sources:{},_evidence:{}};for(let i=0;i<texts.length;i++){const obj=parseMatchText(texts[i],context);for(const [k,v] of Object.entries(obj)){if(k.startsWith('_')||v==null||v===NI)continue;out[k]=v;out._sources[k]='OCR tela '+(i+1);if(obj._evidence?.[k])out._evidence[k]={...obj._evidence[k],source:out._sources[k]};}}return out;}
