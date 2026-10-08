@@ -270,7 +270,9 @@ object Parsers {
                     strength = strength,
                     valueText = value,
                     training = img?.let { PixelProbe.orangeShirt(it, a.yc) },
-                    forSale = null
+                    forSale = null,
+                    cond = img?.let { PixelProbe.barFill(it, 0.757f, 0.800f, a.yc) },
+                    morale = img?.let { PixelProbe.barFill(it, 0.808f, 0.850f, a.yc) }
                 )
             )
         }
@@ -514,8 +516,8 @@ object Parsers {
         val f = LinkedHashMap<String, Reading>()
         if (img == null) return Extraction(ScreenType.STADIUM, fields = f)
         val cards = listOf(
-            Triple("capacidade", K.MY_STAD_CAP, "Capacidade"),
             Triple("relvado", K.MY_STAD_PITCH, "Relvado"),
+            Triple("capacidade", K.MY_STAD_CAP, "Capacidade"),
             Triple("treino", K.MY_STAD_TRAIN, "Treino")
         )
         val parts = ArrayList<String>()
@@ -528,6 +530,22 @@ object Parsers {
             }
         }
         if (parts.size >= 2) f[K.MY_STADIUM] = Reading(parts.joinToString(" • "), 0.85)
+        // Situação de cada card (máximo / concluir / custo + tempo do próximo melhoramento).
+        val status = ArrayList<String>()
+        for ((word, _, label) in cards) {
+            val ln = o.lines.firstOrNull { Txt.norm(it.text) == word && it.yc in 0.20f..0.45f } ?: continue
+            val region = o.lines.filter { abs(it.xc - ln.xc) <= 0.14f && it.yc in 0.60f..0.95f }
+            val text = Txt.norm(region.joinToString(" ") { it.text })
+            val st = if (text.contains("maximo")) "máximo"
+            else if (text.contains("concluir")) "concluir melhoria"
+            else {
+                val cost = Regex("(\\d{1,3}(?:[.,]\\d)?\\s*[km])\\b").find(text)?.groupValues?.get(1)?.replace(" ", "")?.uppercase()
+                val time = Regex("(\\d{1,3})\\s*h\\b").find(text)?.groupValues?.get(1)
+                if (cost != null) cost + (if (time != null) " + ${time}h" else "") else null
+            }
+            if (st != null) status.add("$label: $st")
+        }
+        if (status.isNotEmpty()) f[K.MY_STAD_STATUS] = Reading(status.joinToString(" • "), 0.8)
         return Extraction(ScreenType.STADIUM, fields = f)
     }
 

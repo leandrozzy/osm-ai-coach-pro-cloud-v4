@@ -196,6 +196,27 @@ class EngineTest {
         assertTrue(r.tactic.notes.any { it.contains("faltas") })
     }
 
+    @Test fun tiredStarIsRotatedOutOfTheLineup() {
+        val fit = mapOf(Txt.key("Mbeumo") to Pair(20, 80))
+        val r = TacticEngine.recommend(input(91, 61).copy(fitness = fit))!!
+        val names = r.rows.flatten().filterNotNull().map { it.name }
+        assertFalse(names.contains("Mbeumo"))
+        assertTrue(r.tactic.notes.any { it.contains("Rotação: Mbeumo") })
+        val rested = TacticEngine.recommend(input(91, 61))!!
+        assertTrue(rested.rows.flatten().filterNotNull().any { it.name == "Mbeumo" })
+    }
+
+    @Test fun stadiumPlanComparesUpgradeCostWithCash() {
+        val st = "Capacidade: máximo • Relvado: concluir melhoria • Treino: 501K + 18h"
+        val poor = mapOf(K.MY_STAD_STATUS to StoredField(st, 0.8, 1L), K.CASH to StoredField("120K", 0.8, 1L))
+        val p1 = Director.stadiumPlan(poor)!!
+        assertTrue(p1.contains("melhoria pronta"))
+        assertTrue(p1.contains("faltam"))
+        val rich = mapOf(K.MY_STAD_STATUS to StoredField(st, 0.8, 1L), K.CASH to StoredField("1,2M", 0.8, 1L))
+        assertTrue(Director.stadiumPlan(rich)!!.contains("cabe no caixa agora"))
+        assertNull(Director.stadiumPlan(emptyMap()))
+    }
+
     @Test fun winForecastGrowsWithStrengthDifference() {
         assertTrue(Forecast.winPercent(30, true) > 85)
         assertTrue(Forecast.winPercent(-30, false) < 15)

@@ -68,6 +68,11 @@ class ManualTest {
         assertNull(ManualFields.normalize(K.MY_STAD_PITCH, "4"))
     }
 
+    @Test fun seasonGoalIsANumber() {
+        assertEquals("6", ManualFields.normalize(K.MY_OBJECTIVE, " 6 "))
+        assertNull(ManualFields.normalize(K.MY_OBJECTIVE, "top 6"))
+    }
+
     @Test fun everyMissingFieldHasAManualSpec() {
         for (item in Completeness.ITEMS + Completeness.HUMAN_ONLY) {
             assertNotNull("sem especificação manual para ${item.key}", ManualFields.SPECS[item.key])

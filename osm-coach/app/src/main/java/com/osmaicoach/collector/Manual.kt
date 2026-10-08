@@ -6,12 +6,12 @@ object ManualFields {
 
     private val YES_NO = listOf("Sim", "Não")
     private val STYLES = listOf("Jogo de passe", "Jogar pelas alas", "Remate à vista", "Contra-ataque", "Bolas longas")
-    private const val STADIUM_HINT = "Menu → Estádio: o nível é o número de ESTRELAS douradas do card"
+    private const val STADIUM_HINT = "Menu → Estádio: o nível é o número de ESTRELAS douradas do card (Relvado = nível do estádio)"
     private const val ANALYSIS = "Analista de dados → Relatório do analista → tela com a nota à esquerda (alterne Tática e Equipa inicial)"
 
     private val NUMERIC = setOf(
         K.ROUND, K.ROUND_DONE, K.ROUND_TOTAL, K.LEAGUE_POS, K.POINTS, K.MY_STRENGTH, K.RIVAL_STRENGTH,
-        K.MY_GOL, K.MY_DEF, K.MY_MID, K.MY_ATK, K.RIVAL_GOL, K.RIVAL_DEF, K.RIVAL_MID, K.RIVAL_ATK
+        K.MY_OBJECTIVE, K.MY_GOL, K.MY_DEF, K.MY_MID, K.MY_ATK, K.RIVAL_GOL, K.RIVAL_DEF, K.RIVAL_MID, K.RIVAL_ATK
     )
     private val MONEY = setOf(K.MY_VALUE, K.RIVAL_VALUE, K.CASH)
 
@@ -33,6 +33,7 @@ object ManualFields {
         Spec(K.REFEREE, "Árbitro", listOf("Brando", "Médio", "Rigoroso"), "Pré-jogo (termômetro do árbitro)", "Brando"),
         Spec(K.MY_STRENGTH, "Minha força", null, "Pré-jogo (círculo azul)", "91"),
         Spec(K.RIVAL_STRENGTH, "Força do rival", null, "Pré-jogo (círculo vermelho)", "61"),
+        Spec(K.MY_OBJECTIVE, "Objetivo da temporada (posição)", null, "Plantel do seu time (topo: Objetivo)", "6"),
         Spec(K.MY_VALUE, "Valor do meu elenco", null, "Plantel (topo)", "289M"),
         Spec(K.RIVAL_VALUE, "Valor do elenco rival", null, "Plantel do rival (topo)", "27,5M"),
         Spec(K.MY_GOL, "Meu GOL", null, "Plantel (bolhas Gr/Def/Méd/Ata)", "88"),
@@ -53,9 +54,9 @@ object ManualFields {
         Spec(K.RIVAL_LOGIN_BONUS, "Bônus do rival (login)", null, "Pré-jogo (círculo do rival, +N%, só humano)", "+3%"),
         Spec(K.STADIUM, "Nível do estádio do rival", null, ANALYSIS, "Nível 1"),
         Spec(K.MY_STADIUM, "Meu estádio", null, "Menu → Estádio", "Capacidade 3 • Relvado 2 • Treino 1"),
-        Spec(K.MY_STAD_CAP, "Estádio: capacidade (estrelas)", listOf("1", "2", "3"), STADIUM_HINT, "3"),
-        Spec(K.MY_STAD_PITCH, "Estádio: relvado (estrelas)", listOf("1", "2", "3"), STADIUM_HINT, "2"),
-        Spec(K.MY_STAD_TRAIN, "Estádio: treino (estrelas)", listOf("1", "2", "3"), STADIUM_HINT, "1"),
+        Spec(K.MY_STAD_CAP, "Capacidade do estádio (receita por jogo)", listOf("1", "2", "3"), STADIUM_HINT, "3"),
+        Spec(K.MY_STAD_PITCH, "Nível do estádio (relvado: bônus de jogar em casa)", listOf("1", "2", "3"), STADIUM_HINT, "2"),
+        Spec(K.MY_STAD_TRAIN, "Treino do estádio (evolução nos treinos)", listOf("1", "2", "3"), STADIUM_HINT, "1"),
         Spec(K.MY_BONUS, "Meu bônus", null, "Pré-jogo (círculo do seu time, +N%)", "+3%")
     ).associateBy { it.key }
 

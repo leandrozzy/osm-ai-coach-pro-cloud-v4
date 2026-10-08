@@ -1,6 +1,7 @@
 package com.osmaicoach.collector
 
 import android.content.Context
+import org.json.JSONArray
 import org.json.JSONObject
 
 /** Rodada do relatório de resultado em andamento (o cabeçalho com "Jornada N" só aparece no topo da tela). */
@@ -57,7 +58,11 @@ class Repo(private val ctx: Context) {
             ScreenType.SQUAD -> applySquad(slot, ex, source, now)
             ScreenType.CALENDAR -> applyCalendar(slot, ex, source, now)
             ScreenType.MARKET -> applyMarket(slot, ex, source, now)
-            ScreenType.REPORT -> putFields(slot, ex.fields, source, now)
+            ScreenType.REPORT -> {
+                val n = putFields(slot, ex.fields, source, now)
+                recordRivalProfile(slot, ex.fields, now)
+                n
+            }
             ScreenType.STADIUM -> putFields(slot, ex.fields, source, now)
             ScreenType.RESULT -> applyResult(slot, ex, now)
             else -> 0
@@ -139,6 +144,7 @@ class Repo(private val ctx: Context) {
         if (owner != "MY") return changed
 
         val existing = dao.playersOf(slot).filter { it.owner == owner }
+        val cm = LinkedHashMap<String, Pair<Int, Int>>()
         for (p in ex.players) {
             var key = Txt.key(p.name)
             if (existing.none { it.nameKey == key }) {
@@ -152,6 +158,7 @@ class Repo(private val ctx: Context) {
                 if (near != null) key = near.nameKey else if (twin != null) key = twin.nameKey
             }
             val old = dao.player(slot, owner, key)
+            if (p.cond != null && p.morale != null) cm[key] = Pair(p.cond, p.morale)
             val n = PlayerEntity(
                 slotId = slot, owner = owner, nameKey = key,
                 name = chooseName(old?.name, p.name),
@@ -168,6 +175,18 @@ class Repo(private val ctx: Context) {
                 dao.putPlayer(n)
                 changed++
             }
+        }
+        if (cm.isNotEmpty()) {
+            val cur = dao.plan(slot, "cm")?.json?.let { try { JSONObject(it) } catch (e: Exception) { null } } ?: JSONObject()
+            var cmChanged = false
+            for ((k, v) in cm) {
+                val a = JSONArray().put(v.first).put(v.second)
+                if (cur.optJSONArray(k)?.toString() != a.toString()) {
+                    cur.put(k, a)
+                    cmChanged = true
+                }
+            }
+            if (cmChanged) dao.putPlan(PlanEntity(slot, "cm", cur.toString(), now))
         }
         if (ex.players.isNotEmpty()) {
             val all = dao.playersOf(slot).filter { it.owner == owner }
@@ -287,6 +306,136 @@ class Repo(private val ctx: Context) {
                 mine, opp, result, name, old?.opponentNick, System.currentTimeMillis()
             )
         )
+    }
+
+    /** Condição e moral (0 a 100) de cada jogador, lidas das barras da tela do Plantel. */
+    suspend fun fitness(slot: Int): Map<String, Pair<Int, Int>> {
+        val p = dao.plan(slot, "cm") ?: return emptyMap()
+        val out = HashMap<String, Pair<Int, Int>>()
+        try {
+            val j = org.json.JSONObject(p.json)
+            for (k in j.keys()) {
+                val a = j.optJSONArray(k) ?: continue
+                out[k] = Pair(a.optInt(0), a.optInt(1))
+            }
+        } catch (e: Exception) {
+            return emptyMap()
+        }
+        return out
+    }
+
+    // ------------------------------------------------------------------ perfil do rival humano
+
+    private fun profileKind(nick: String): String = "rp_" + Txt.key(nick).take(24)
+
+    private suspend fun recordRivalProfile(slot: Int, fields: Map<String, Reading>, now: Long) {
+        val f = fieldMap(slot)
+        val nick = fields[K.RIVAL_NICK]?.value ?: f[K.RIVAL_NICK]?.value ?: return
+        if (!FieldMerge.known(nick)) return
+        val attrs = listOf(
+            K.RIVAL_FORMATION to "formation", K.RIVAL_PLAN to "plan", K.RIVAL_MARKING to "marking",
+            K.RIVAL_OFFSIDE to "offside", K.RIVAL_TACKLE to "tackle"
+        )
+        val e = org.json.JSONObject()
+        var any = false
+        for ((k, n) in attrs) {
+            val v = fields[k]?.value
+            if (v != null && FieldMerge.known(v)) {
+                e.put(n, v)
+                any = true
+            }
+        }
+        if (!any) return
+        val round = f[K.ROUND]?.value?.toIntOrNull() ?: -1
+        e.put("round", round)
+        e.put("at", now)
+        val kind = profileKind(nick)
+        val old = dao.plan(slot, kind)
+        val j = try { if (old != null) org.json.JSONObject(old.json) else org.json.JSONObject() } catch (ex: Exception) { org.json.JSONObject() }
+        j.put("nick", nick)
+        val arr = j.optJSONArray("entries") ?: org.json.JSONArray()
+        val list = ArrayList<org.json.JSONObject>()
+        for (i in 0 until arr.length()) arr.optJSONObject(i)?.let { list.add(it) }
+        val last = list.lastOrNull()
+        if (last != null && last.optInt("round", -2) == round) {
+            for (k in e.keys()) last.put(k, e.get(k))
+        } else {
+            list.add(e)
+        }
+        val out = org.json.JSONArray()
+        for (x in list.takeLast(10)) out.put(x)
+        j.put("entries", out)
+        dao.putPlan(PlanEntity(slot, kind, j.toString(), now))
+    }
+
+    suspend fun rivalProfile(slot: Int): PlanEntity? {
+        val nick = fieldMap(slot)[K.RIVAL_NICK]?.value ?: return null
+        if (!FieldMerge.known(nick)) return null
+        return dao.plan(slot, profileKind(nick))
+    }
+
+    /** Formação que esse rival humano mais usou (para quando a atual ainda não foi lida). */
+    suspend fun rivalProfileFormation(slot: Int): String? {
+        val p = rivalProfile(slot) ?: return null
+        val counts = HashMap<String, Int>()
+        try {
+            val arr = org.json.JSONObject(p.json).optJSONArray("entries") ?: return null
+            for (i in 0 until arr.length()) {
+                val v = arr.optJSONObject(i)?.optString("formation") ?: continue
+                if (v.isNotBlank()) counts[v] = (counts[v] ?: 0) + 1
+            }
+        } catch (e: Exception) {
+            return null
+        }
+        return counts.maxByOrNull { it.value }?.key
+    }
+
+    // ------------------------------------------------------------------ resultado registrado à mão
+
+    /** Registra o resultado de um jogo que teve tática gerada; entra no mesmo formato da leitura automática. */
+    suspend fun registerManualResult(
+        slot: Int, round: Int, mine: Int, opp: Int, mineHome: Boolean,
+        possession: Int?, myShots: Int?, oppShots: Int?, myFouls: Int?, oppFouls: Int?,
+        oppFormation: String?, mom: String?
+    ) {
+        val now = System.currentTimeMillis()
+        val f = fieldMap(slot)
+        val key = "mr_R$round"
+        val old = dao.plan(slot, key)
+        val j = try { if (old != null) org.json.JSONObject(old.json) else org.json.JSONObject() } catch (e: Exception) { org.json.JSONObject() }
+        val tl = dao.plan(slot, "tlog_R$round")?.json?.let { try { org.json.JSONObject(it) } catch (e: Exception) { null } }
+        val myTeam = f[K.TEAM]?.value ?: "Meu time"
+        val rival = tl?.optString("rival")?.takeIf { it.isNotBlank() && it != NI } ?: f[K.RIVAL_TEAM]?.value ?: "Adversário"
+        j.put("round", round)
+        j.put("mineHome", mineHome)
+        j.put("homeTeam", if (mineHome) myTeam else rival)
+        j.put("awayTeam", if (mineHome) rival else myTeam)
+        j.put("sh", if (mineHome) mine else opp)
+        j.put("sa", if (mineHome) opp else mine)
+        j.put("manual", true)
+        if (!mom.isNullOrBlank()) j.put("mom", mom.trim())
+        val stats = j.optJSONObject("stats") ?: org.json.JSONObject()
+        fun pair(label: String, a: String?, b: String?) {
+            if (a == null || b == null) return
+            val arr = org.json.JSONArray()
+            arr.put(if (mineHome) a else b)
+            arr.put(if (mineHome) b else a)
+            stats.put(label, arr)
+        }
+        pair("golos", mine.toString(), opp.toString())
+        if (possession != null) pair("posse de bola", "$possession%", "${100 - possession}%")
+        pair("remates", myShots?.toString(), oppShots?.toString())
+        pair("faltas", myFouls?.toString(), oppFouls?.toString())
+        if (!oppFormation.isNullOrBlank()) pair("formacao", tl?.optString("formation")?.ifBlank { null } ?: NI, oppFormation.trim())
+        j.put("stats", stats)
+        dao.putPlan(PlanEntity(slot, key, j.toString(), now))
+        // permite corrigir um resultado já registrado: limpa o resultado da tática para o vínculo gravar o novo
+        val tp = dao.plan(slot, "tlog_R$round")
+        if (tp != null && tl != null) {
+            tl.put("result", org.json.JSONObject.NULL)
+            dao.putPlan(PlanEntity(slot, "tlog_R$round", tl.toString(), tp.at))
+        }
+        linkResult(slot, round, j, now)
     }
 
     // ------------------------------------------------------------------ treinos informados à mão

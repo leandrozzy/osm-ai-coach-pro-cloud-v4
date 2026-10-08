@@ -76,7 +76,8 @@ object TacticEngine {
         val myAtk: Int? = null,
         val myMid: Int? = null,
         val rivalMid: Int? = null,
-        val rivalDef: Int? = null
+        val rivalDef: Int? = null,
+        val fitness: Map<String, Pair<Int, Int>> = emptyMap()
     )
 
     private data class Sliders(val mentality: Int, val pressure: Int, val tempo: Int, val bucket: String)
@@ -88,8 +89,18 @@ object TacticEngine {
         val ranking: List<Pair<String, Double>>
     )
 
-    private fun pool(players: List<PlayerEntity>, cat: String): List<PlayerEntity> =
-        players.filter { it.cat == cat && it.strength != null }.sortedByDescending { it.strength }
+    /** Desconto na força por cansaço (condição < 70) e moral baixa (< 50); sem leitura, sem desconto. */
+    private fun penalty(p: PlayerEntity, fit: Map<String, Pair<Int, Int>>): Int {
+        val f = fit[p.nameKey] ?: return 0
+        val c = if (f.first < 70) (70 - f.first) / 5 else 0
+        val m = if (f.second < 50) (50 - f.second) / 10 else 0
+        return c + m
+    }
+
+    private fun eff(p: PlayerEntity, fit: Map<String, Pair<Int, Int>>): Int = (p.strength ?: 0) - penalty(p, fit)
+
+    private fun pool(players: List<PlayerEntity>, cat: String, fit: Map<String, Pair<Int, Int>> = emptyMap()): List<PlayerEntity> =
+        players.filter { it.cat == cat && it.strength != null }.sortedByDescending { eff(it, fit) }
 
     private fun side(p: PlayerEntity?): Int {
         val c = p?.posCode?.uppercase() ?: return 1
@@ -101,19 +112,19 @@ object TacticEngine {
     }
 
     /** Melhor XI para a formação: linhas de trás para a frente (linha 0 = goleiro), esquerda → direita. */
-    fun lineup(formation: String, players: List<PlayerEntity>): Pair<List<List<PlayerEntity?>>, Int>? {
+    fun lineup(formation: String, players: List<PlayerEntity>, fit: Map<String, Pair<Int, Int>> = emptyMap()): Pair<List<List<PlayerEntity?>>, Int>? {
         val lines = Formations.lines(formation)
         if (lines.isEmpty()) return null
-        val gk = pool(players, "GOL")
-        val def = pool(players, "DEF")
-        val mei = pool(players, "MEI")
-        val ata = pool(players, "ATA")
+        val gk = pool(players, "GOL", fit)
+        val def = pool(players, "DEF", fit)
+        val mei = pool(players, "MEI", fit)
+        val ata = pool(players, "ATA", fit)
         var di = 0
         var mi = 0
         var ai = 0
         val rows = ArrayList<List<PlayerEntity?>>()
         rows.add(listOf(gk.firstOrNull()))
-        var sum = gk.firstOrNull()?.strength ?: 0
+        var sum = gk.firstOrNull()?.let { eff(it, fit) } ?: 0
         for ((i, n) in lines.withIndex()) {
             val pick: List<PlayerEntity?>
             if (i == 0) {
@@ -126,7 +137,7 @@ object TacticEngine {
                 pick = (0 until n).map { mei.getOrNull(mi + it) }
                 mi += n
             }
-            sum += pick.map { it?.strength ?: 0 }.sum()
+            sum += pick.map { if (it == null) 0 else eff(it, fit) }.sum()
             rows.add(pick.sortedBy { side(it) })
         }
         return Pair(rows, sum)
@@ -196,7 +207,7 @@ object TacticEngine {
         val rivalFw = inp.rivalFormation?.let { Formations.lines(it).lastOrNull() }
         val scored = ArrayList<Triple<String, List<List<PlayerEntity?>>, Double>>()
         for (f in Formations.ALL) {
-            val l = lineup(f, inp.players) ?: continue
+            val l = lineup(f, inp.players, inp.fitness) ?: continue
             scored.add(Triple(f, l.first, l.second + bias(f, diff, rivalFw, inp)))
         }
         if (scored.isEmpty()) return null
@@ -287,6 +298,14 @@ object TacticEngine {
         if (inp.referee == "Rigoroso") notes.add("Árbitro rigoroso: desarme em Normal para evitar cartões.")
         if (inp.referee == "Brando" && tackle == "Agressivo") notes.add("Árbitro brando e rival fraco: desarme Agressivo é seguro.")
         if (marking == "Homem a homem") notes.add("Ataque do rival (${inp.rivalAtk}) supera sua defesa (${inp.myDef}): marcação homem a homem.")
+        if (inp.fitness.isNotEmpty()) {
+            val rawKeys = lineup(formation, inp.players)?.first?.flatten()?.filterNotNull()?.map { it.nameKey }?.toSet() ?: emptySet()
+            val effKeys = best.second.flatten().filterNotNull().map { it.nameKey }.toSet()
+            for (p in inp.players.filter { it.nameKey in rawKeys && it.nameKey !in effKeys }.take(2)) {
+                val ft = inp.fitness[p.nameKey]
+                notes.add("Rotação: ${p.name} fora do XI (condição ${ft?.first ?: "?"}%, moral ${ft?.second ?: "?"}%).")
+            }
+        }
         if (styleNote != null) notes.add(styleNote)
         if (disciplineNote != null) notes.add(disciplineNote)
         val stat = Learning.stats(inp.history).firstOrNull { it.formation == formation }

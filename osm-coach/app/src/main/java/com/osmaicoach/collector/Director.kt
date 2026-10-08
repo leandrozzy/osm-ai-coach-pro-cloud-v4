@@ -241,7 +241,7 @@ object Director {
             myStrength = f[K.MY_STRENGTH]?.value?.toIntOrNull(),
             rivalStrength = f[K.RIVAL_STRENGTH]?.value?.toIntOrNull(),
             rivalHuman = boolOf(f[K.RIVAL_HUMAN]?.value, "Sim", "Não"),
-            rivalFormation = f[K.RIVAL_FORMATION]?.value,
+            rivalFormation = f[K.RIVAL_FORMATION]?.value?.takeIf { FieldMerge.known(it) } ?: repo.rivalProfileFormation(slot),
             myDef = f[K.MY_DEF]?.value?.toIntOrNull(),
             rivalAtk = f[K.RIVAL_ATK]?.value?.toIntOrNull(),
             referee = f[K.REFEREE]?.value,
@@ -250,7 +250,8 @@ object Director {
             myAtk = f[K.MY_ATK]?.value?.toIntOrNull(),
             myMid = f[K.MY_MID]?.value?.toIntOrNull(),
             rivalMid = f[K.RIVAL_MID]?.value?.toIntOrNull(),
-            rivalDef = f[K.RIVAL_DEF]?.value?.toIntOrNull()
+            rivalDef = f[K.RIVAL_DEF]?.value?.toIntOrNull(),
+            fitness = repo.fitness(slot)
         )
     }
 
@@ -274,6 +275,73 @@ object Director {
                 "Tática ${j.optString("formation")} (${j.optString("playStyle")}) na J$r contra ${j.optString("rival")} → ${m.result} ${m.scoreMine}-${m.scoreOpp}"
             )
         }
+    }
+
+    private fun fmtM(v: Double): String = if (v >= 1.0) "%.1fM".format(v).replace('.', ',') else "%.0fK".format(v * 1000)
+
+    /** Vigia de mercado: avisa (por 24 h) quando um jogador da lista baixa 10% ou mais de preço. */
+    suspend fun priceDrops(repo: Repo, slot: Int): List<String> {
+        val listings = repo.dao.listingsOf(slot)
+        if (listings.isEmpty()) return emptyList()
+        val p = repo.dao.plan(slot, "watch")
+        val j = try { if (p != null) JSONObject(p.json) else JSONObject() } catch (e: Exception) { JSONObject() }
+        val now = System.currentTimeMillis()
+        val drops = ArrayList<JSONObject>()
+        val oldDrops = j.optJSONArray("drops")
+        if (oldDrops != null) {
+            for (i in 0 until oldDrops.length()) {
+                val d = oldDrops.optJSONObject(i) ?: continue
+                if (now - d.optLong("at") < 86400000L) drops.add(d)
+            }
+        }
+        val prices = j.optJSONObject("prices") ?: JSONObject()
+        var changed = false
+        for (l in listings.sortedByDescending { it.strength ?: 0 }.take(30)) {
+            val price = Money.parse(l.priceText) ?: continue
+            val prev = if (prices.has(l.nameKey)) prices.optDouble(l.nameKey) else null
+            if (prev == null) {
+                prices.put(l.nameKey, price)
+                changed = true
+            } else if (price <= prev * 0.9) {
+                drops.add(JSONObject().put("at", now).put("msg", "📉 S$slot: ${l.name} (${l.cat ?: "?"} ${l.strength ?: "?"}) baixou de ${fmtM(prev)} para ${fmtM(price)}."))
+                prices.put(l.nameKey, price)
+                changed = true
+            } else if (price > prev) {
+                prices.put(l.nameKey, price)
+                changed = true
+            }
+        }
+        if (changed) {
+            val arr = JSONArray()
+            for (d in drops) arr.put(d)
+            j.put("prices", prices)
+            j.put("drops", arr)
+            repo.dao.putPlan(PlanEntity(slot, "watch", j.toString(), now))
+        }
+        return drops.map { it.optString("msg") }
+    }
+
+    /** Plano de caixa do estádio: custo do próximo melhoramento contra o caixa atual. */
+    fun stadiumPlan(f: Map<String, StoredField>): String? {
+        val st = f[K.MY_STAD_STATUS]?.value ?: return null
+        val cash = Money.parse(f[K.CASH]?.value)
+        val lines = ArrayList<String>()
+        for (part in st.split(" • ")) {
+            val name = part.substringBefore(":").trim()
+            val body = part.substringAfter(":", "").trim()
+            if (body.isBlank() || body.contains("máximo")) continue
+            if (body.contains("concluir")) {
+                lines.add("$name: melhoria pronta, toque em Concluir no jogo.")
+                continue
+            }
+            val cost = Regex("(\\d{1,3}(?:[.,]\\d)?\\s*[KkMm])").find(body)?.groupValues?.get(1)?.replace(" ", "")?.uppercase()?.let { Money.parse(it) }
+            if (cost != null && cash != null) {
+                lines.add(if (cash >= cost) "$name: $body — cabe no caixa agora." else "$name: $body — faltam ${fmtM(cost - cash)}.")
+            } else {
+                lines.add("$name: $body")
+            }
+        }
+        return if (lines.isEmpty()) null else lines.joinToString(" ")
     }
 
     /** Resumo curto dos últimos jogos analisados (estatísticas reais) — alimenta o prompt da IA. */
@@ -406,7 +474,7 @@ object Director {
         if (Math.abs(tactic.pressure - base.pressure) > 15 || Math.abs(tactic.mentality - base.mentality) > 15 || Math.abs(tactic.tempo - base.tempo) > 15) {
             return Outcome(false, null, "IA fugiu dos limites de pressão/mentalidade/ritmo. Mantive a tática local.")
         }
-        val lineup = TacticEngine.lineup(tactic.formation, inp.players) ?: return Outcome(false, null, "Sem XI para ${tactic.formation}.")
+        val lineup = TacticEngine.lineup(tactic.formation, inp.players, inp.fitness) ?: return Outcome(false, null, "Sem XI para ${tactic.formation}.")
         val notes = ArrayList<String>(tactic.notes)
         notes.addAll(base.notes)
         val merged = res.copy(tactic = tactic.copy(notes = notes), rows = lineup.first)

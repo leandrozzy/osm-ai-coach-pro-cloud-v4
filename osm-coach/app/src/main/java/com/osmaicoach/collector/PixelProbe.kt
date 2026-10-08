@@ -76,6 +76,22 @@ object PixelProbe {
         return n
     }
 
+    /** Preenchimento (0 a 100) de uma barra colorida horizontal (condição/moral) na linha y. */
+    fun barFill(img: Img, x0: Float, x1: Float, y: Float): Int {
+        val xa = (x0 * img.w).toInt().coerceIn(0, img.w - 1)
+        val xb = (x1 * img.w).toInt().coerceIn(xa + 1, img.w)
+        val ya = (y * img.h).toInt().coerceIn(0, img.h - 1)
+        var n = 0
+        var hit = 0
+        val t = FloatArray(3)
+        for (x in xa until xb) {
+            n++
+            hsv(img.px[ya * img.w + x], t)
+            if (t[1] > 0.45f && t[2] > 0.5f) hit++
+        }
+        return if (n == 0) 0 else hit * 100 / n
+    }
+
     /** Camisa laranja na linha do jogador (treino). */
     fun orangeShirt(img: Img, rowY: Float): Boolean =
         frac(img, 0.005f, 0.055f, rowY - 0.04f, rowY + 0.04f, ORANGE) >= 0.04f

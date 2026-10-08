@@ -43,7 +43,9 @@ data class PlayerRead(
     val strength: Int?,
     val valueText: String?,
     val training: Boolean?,
-    val forSale: Boolean?
+    val forSale: Boolean?,
+    val cond: Int? = null,
+    val morale: Int? = null
 )
 
 data class MatchRead(
@@ -132,6 +134,7 @@ object K {
     const val MY_STAD_PITCH = "my.stadium.pitch"
     const val MY_STAD_TRAIN = "my.stadium.train"
     const val MY_BONUS = "my.bonus"
+    const val MY_STAD_STATUS = "my.stadium.status"
     const val SELLING = "market.selling"
     const val MY_STRENGTH = "my.strength"
     const val MY_VALUE = "my.value"

@@ -217,8 +217,30 @@ class ParsersTest {
         assertEquals("3", ex.fields[K.MY_STAD_CAP]?.value)
         assertEquals("2", ex.fields[K.MY_STAD_PITCH]?.value)
         assertEquals("1", ex.fields[K.MY_STAD_TRAIN]?.value)
-        assertEquals("Capacidade 3 • Relvado 2 • Treino 1", ex.fields[K.MY_STADIUM]?.value)
+        assertEquals("Relvado 2 • Capacidade 3 • Treino 1", ex.fields[K.MY_STADIUM]?.value)
         assertTrue(Parsers.stadium(o, null).fields.isEmpty())
+    }
+
+    @Test fun stadiumUpgradeStatusIsReadForEachCard() {
+        val o = Fx.ocr(
+            Fx.line("Capacidade", 0.196f, 0.31f, 0.12f), Fx.line("Relvado", 0.5f, 0.31f, 0.1f), Fx.line("Treino", 0.805f, 0.31f, 0.08f),
+            Fx.line("A capacidade do teu estádio está no máximo!", 0.196f, 0.80f, 0.3f),
+            Fx.line("Concluir", 0.5f, 0.82f, 0.1f),
+            Fx.line("Começar melhoramento", 0.805f, 0.80f, 0.2f), Fx.line("501K + 18h", 0.805f, 0.84f, 0.1f)
+        )
+        val ex = Parsers.stadium(o, starImg(mapOf(0.196f to 3, 0.5f to 2, 0.805f to 1)))
+        assertEquals("Relvado: concluir melhoria • Capacidade: máximo • Treino: 501K + 18h", ex.fields[K.MY_STAD_STATUS]?.value)
+    }
+
+    @Test fun conditionBarFillIsMeasuredByColoredWidth() {
+        val w = 1000
+        val h = 100
+        val px = IntArray(w * h) { 0xFFF5F5F5.toInt() }
+        for (x in 757 until 779) px[50 * w + x] = 0xFF2BC24A.toInt()
+        val half = PixelProbe.barFill(PixelProbe.Img(w, h, px), 0.757f, 0.800f, 0.5f)
+        assertTrue(half in 40..60)
+        for (x in 757 until 800) px[50 * w + x] = 0xFF2BC24A.toInt()
+        assertTrue(PixelProbe.barFill(PixelProbe.Img(w, h, px), 0.757f, 0.800f, 0.5f) >= 95)
     }
 
     @Test fun humanRivalShowsBonusInTheCircleAndCpuShowsStrength() {
