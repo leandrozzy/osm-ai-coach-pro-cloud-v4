@@ -26,7 +26,9 @@ class EngineTest {
 
     @Test fun weakRivalMeansAttackingFourThreeThree() {
         val r = TacticEngine.recommend(input(91, 61))!!
-        assertEquals("4-3-3", r.tactic.formation)
+        assertEquals("4-3-3", Formations.base(r.tactic.formation))
+        // nome exato do OSM, com a variante
+        assertTrue(r.tactic.formation in Formations.ALL)
         assertTrue(r.tactic.mentality >= 75)
         assertEquals("Atacar apenas", r.tactic.advAttack)
         assertEquals(30, r.diff)
@@ -38,7 +40,7 @@ class EngineTest {
         assertTrue(lines.first() >= 4)
         assertTrue(lines.last() <= 2)
         assertTrue(r.tactic.mentality <= 42)
-        assertEquals("Ajudar a defender", r.tactic.advAttack)
+        assertEquals("Ajudar a defesa", r.tactic.advAttack)
     }
 
     @Test fun unknownRivalStrengthGivesBalancedTacticAndSaysSo() {
@@ -56,7 +58,7 @@ class EngineTest {
     @Test fun repeatedLossesWithAFormationMakeTheEngineAvoidIt() {
         val hist = listOf(HistRow("4-3-3", "x", "D"), HistRow("4-3-3", "x", "D"), HistRow("4-3-3", "x", "D"))
         val r = TacticEngine.recommend(input(91, 61, history = hist))!!
-        assertFalse(r.tactic.formation == "4-3-3")
+        assertFalse(Formations.base(r.tactic.formation) == "4-3-3")
         assertTrue(r.tactic.notes.isNotEmpty())
     }
 
@@ -78,7 +80,7 @@ class EngineTest {
         val lines = Formations.lines(r.tactic.formation)
         assertEquals(4, lines.first())
         assertTrue(lines.last() <= 3)
-        assertEquals("Jogo de passe", r.tactic.playStyle)
+        assertEquals("Jogo de passes", r.tactic.playStyle)
     }
 
     @Test fun sectorAdvantageInMidfieldFavorsMoreMidfielders() {
@@ -110,6 +112,17 @@ class EngineTest {
         assertEquals(1, ctx.first { it.formation == "Contra CPU" }.games)
         assertEquals(2, ctx.first { it.formation == "Em casa" }.v)
         assertEquals(1, Learning.byStyle(h).size)
+    }
+
+    @Test fun formationNamesFollowTheGame() {
+        assertEquals("4-3-3 B", Formations.canonical("4-3-3b"))
+        assertEquals("4-4-2 A", Formations.canonical("4-4-2"))
+        assertEquals("4-5-1", Formations.canonical("451"))
+        assertEquals("4-3-3 A", Formations.variant("4-3-3", "Jogar pelas alas"))
+        assertEquals("4-3-3 B", Formations.variant("4-3-3", "Jogo de passes"))
+        assertNull(Formations.canonical("9-9-9"))
+        Formations.learn("3-3-2-2")
+        assertTrue("3-3-2-2" in Formations.ALL)
     }
 
     @Test fun underdogPlaysCounterAttack() {

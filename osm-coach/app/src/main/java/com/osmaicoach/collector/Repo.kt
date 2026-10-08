@@ -14,6 +14,19 @@ object ResultCtx {
 class Repo(private val ctx: Context) {
     val dao: CoachDao = CoachDb.get(ctx).dao()
 
+    init {
+        // formações já vistas nas telas do OSM (ex. 3-3-2-2, 3-4-3 B) entram no catálogo do motor
+        val saved = ctx.getSharedPreferences("formations", Context.MODE_PRIVATE).getStringSet("seen", emptySet()) ?: emptySet()
+        for (f in saved) Formations.learn(f)
+    }
+
+    private fun rememberFormation(v: String) {
+        if (Formations.learn(v)) {
+            ctx.getSharedPreferences("formations", Context.MODE_PRIVATE).edit()
+                .putStringSet("seen", Formations.seenList().toSet()).apply()
+        }
+    }
+
     private suspend fun putFields(slot: Int, readings: Map<String, Reading>, source: String, now: Long): Int {
         if (readings.isEmpty()) return 0
         val old = dao.fieldsOf(slot).associateBy { it.fkey }
@@ -22,6 +35,7 @@ class Repo(private val ctx: Context) {
             val o = old[k]?.let { StoredField(it.fvalue, it.conf, it.updatedAt) }
             val n = FieldMerge.merge(k, o, r, now) ?: continue
             dao.putField(FieldEntity(slot, k, n.value, n.conf, n.updatedAt, source))
+            if (k == K.RIVAL_FORMATION || k == K.MY_FORMATION) rememberFormation(n.value)
             changed++
         }
         return changed
@@ -852,6 +866,22 @@ class Repo(private val ctx: Context) {
         }
     }
 
+    /** Valores gravados por versões antigas ("Homem a homem", "Jogo de passe"...) viram o texto exato do OSM. */
+    private suspend fun canonicalizeOptions() {
+        for (slot in 1..4) {
+            for (row in dao.fieldsOf(slot)) {
+                val fixed = when (row.fkey) {
+                    K.RIVAL_PLAN -> Osm.style(row.fvalue)
+                    K.RIVAL_MARKING -> Osm.marking(row.fvalue)
+                    K.RIVAL_TACKLE -> Osm.tackle(row.fvalue)
+                    K.RIVAL_FORMATION, K.MY_FORMATION -> Formations.parse(row.fvalue)?.also { rememberFormation(it) }
+                    else -> null
+                } ?: continue
+                if (fixed != row.fvalue) dao.putField(row.copy(fvalue = fixed))
+            }
+        }
+    }
+
     /** Táticas guardadas por versões antigas (sem rodada) não valem mais e não podem aparecer como "prontas". */
     private suspend fun dropStaleTactics() {
         for (slot in 1..4) {
@@ -869,6 +899,7 @@ class Repo(private val ctx: Context) {
         try {
             dedupeSquads()
             dropStaleTactics()
+            canonicalizeOptions()
             for (slot in 1..4) {
                 dao.deleteCupCards(slot)
                 val st = dao.fieldsOf(slot).firstOrNull { it.fkey == K.MY_STADIUM }

@@ -443,7 +443,7 @@ object Parsers {
         )
     }
 
-    private val STYLE_NAMES = listOf("Jogo de passe", "Jogar pelas alas", "Remate à vista", "Contra-ataque", "Bolas longas")
+    private val STYLE_NAMES = listOf("Jogo de passes", "Jogar pelas alas", "Remate à vista", "Contra-ataque", "Bola longa")
 
     /** A nota do analista ("Pelo que pude ver, ...") aparece à esquerda nas duas telas da análise. */
     fun isAnalysis(o: OcrResult): Boolean {
@@ -515,6 +515,7 @@ object Parsers {
         for (ln in right.filter { it.yc < 0.14f }) {
             val n = Txt.norm(ln.text)
             val hit = STYLE_NAMES.firstOrNull { Txt.norm(it) == n || n.contains(Txt.norm(it)) }
+                ?: Osm.style(n)?.takeIf { n.length <= 24 }
             if (hit != null) {
                 f[K.RIVAL_PLAN] = Reading(hit, 0.9)
                 break
@@ -524,7 +525,7 @@ object Parsers {
         if (mk != null) {
             val v = belowOf(o, mk)?.let { Txt.norm(it.text) } ?: ""
             if (v.contains("zona")) f[K.RIVAL_MARKING] = Reading("À zona", 0.9)
-            else if (v.contains("homem")) f[K.RIVAL_MARKING] = Reading("Homem a homem", 0.9)
+            else if (v.contains("homem") || v.contains("individ")) f[K.RIVAL_MARKING] = Reading("Individual", 0.9)
         }
         val off = right.firstOrNull { val n = Txt.norm(it.text); n.contains("fora-de-jogo") || n.contains("fora de jogo") }
         if (off != null) {

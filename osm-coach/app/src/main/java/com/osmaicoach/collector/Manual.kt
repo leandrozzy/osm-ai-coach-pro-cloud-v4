@@ -5,7 +5,7 @@ object ManualFields {
     data class Spec(val key: String, val label: String, val options: List<String>?, val hint: String, val example: String)
 
     private val YES_NO = listOf("Sim", "Não")
-    private val STYLES = listOf("Jogo de passe", "Jogar pelas alas", "Remate à vista", "Contra-ataque", "Bolas longas")
+    private val STYLES = Osm.STYLES
     private const val STADIUM_HINT = "Menu → Estádio: o nível é o número de ESTRELAS douradas do card (Relvado = nível do estádio)"
     private const val ANALYSIS = "Analista de dados → Relatório do analista → tela com a nota à esquerda (alterne Tática e Equipa inicial)"
 
@@ -46,9 +46,9 @@ object ManualFields {
         Spec(K.RIVAL_ATK, "ATA do rival", null, "Plantel do rival (bolhas)", "61"),
         Spec(K.RIVAL_FORMATION, "Formação do rival", Formations.ALL, "Plantel do rival (topo) ou análise", "4-3-3 A"),
         Spec(K.RIVAL_PLAN, "Plano de jogo do rival", STYLES, ANALYSIS, "Jogar pelas alas"),
-        Spec(K.RIVAL_MARKING, "Marcação do rival", listOf("À zona", "Homem a homem"), ANALYSIS, "À zona"),
+        Spec(K.RIVAL_MARKING, "Marcação do rival", Osm.MARKING, ANALYSIS, "À zona"),
         Spec(K.RIVAL_OFFSIDE, "Impedimento do rival", YES_NO, ANALYSIS, "Não"),
-        Spec(K.RIVAL_TACKLE, "Desarme do rival", listOf("Normal", "Agressivo"), ANALYSIS, "Normal"),
+        Spec(K.RIVAL_TACKLE, "Desarme do rival", Osm.TACKLES, ANALYSIS, "Normal"),
         Spec(K.RIVAL_SECRET, "Treino secreto do rival", YES_NO, ANALYSIS, "Não"),
         Spec(K.RIVAL_CAMP, "Campo de treinamento do rival", YES_NO, ANALYSIS, "Não"),
         Spec(K.RIVAL_LOGIN_BONUS, "Bônus do rival (login)", null, "Pré-jogo (círculo do rival, +N%, só humano)", "+3%"),
