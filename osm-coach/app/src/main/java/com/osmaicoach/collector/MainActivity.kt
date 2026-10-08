@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -69,6 +70,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.res.painterResource
@@ -129,6 +131,16 @@ class MainActivity : ComponentActivity() {
             Route.slot = slot
             Route.nonce++
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        AppVisible.resumed = true
+    }
+
+    override fun onPause() {
+        AppVisible.resumed = false
+        super.onPause()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -482,11 +494,11 @@ data class SlotSummary(
     val updated: Long,
     val nextAt: Long? = null,
     val tacticReady: Boolean = false,
-    val missing: Int = 0
-) {
-    /** O jogo guardado já começou: o que falta agora é o resultado, não a tática. */
-    val needsResult: Boolean get() = nextAt != null && nextAt <= System.currentTimeMillis()
-}
+    val missing: Int = 0,
+    /** O card do calendário (data e hora) já passou e o jogo ainda não tem placar: pede o resultado. */
+    val needsResult: Boolean = false,
+    val win: WinModel.Prob? = null
+)
 
 data class TodayData(val active: Boolean = false, val slots: List<SlotSummary> = emptyList())
 
@@ -505,7 +517,9 @@ data class SlotData(
     val logs: List<PlanEntity> = emptyList(),
     val reports: List<PlanEntity> = emptyList(),
     val fitness: Map<String, Pair<Int, Int>> = emptyMap(),
-    val rivalProfile: PlanEntity? = null
+    val rivalProfile: PlanEntity? = null,
+    val win: WinModel.Prob? = null,
+    val evidence: JSONObject? = null
 )
 
 data class SessionRow(val s: SessionEntity, val counts: String, val unassigned: Int)
@@ -523,10 +537,12 @@ private suspend fun loadSlot(ctx: Context, slot: Int): SlotData {
     )
     try {
         repo.relinkResults(slot)
+        repo.validateHuman(slot)
     } catch (e: Exception) {
         Diag.lastError = "Resultados: " + (e.message ?: e.javaClass.simpleName)
     }
     Director.resolveTacticLogs(repo, slot)
+    val tplan = dao.plan(slot, "tactic")?.json?.let { try { JSONObject(it) } catch (e: Exception) { null } }
     return SlotData(
         fields = f, players = players, matches = dao.matchesOf(slot),
         tactic = dao.plan(slot, "tactic"), market = dao.plan(slot, "market"),
@@ -540,9 +556,18 @@ private suspend fun loadSlot(ctx: Context, slot: Int): SlotData {
         logs = dao.tacticLogs(slot),
         reports = dao.matchReports(slot),
         fitness = repo.fitness(slot),
-        rivalProfile = repo.rivalProfile(slot)
+        rivalProfile = repo.rivalProfile(slot),
+        win = Director.winProb(repo, slot, tplan?.optString("formation")?.ifBlank { null }, tplan?.optString("playStyle")?.ifBlank { null }),
+        evidence = repo.evidence(slot)
     )
 }
+
+/** Rodadas que já têm placar lido da análise do jogo. */
+private fun scoredRounds(reports: List<PlanEntity>): Set<Int> = reports.mapNotNull { p ->
+    val r = p.kind.removePrefix("mr_R").toIntOrNull() ?: return@mapNotNull null
+    val j = try { JSONObject(p.json) } catch (e: Exception) { return@mapNotNull null }
+    if (j.has("sh") && j.has("sa")) r else null
+}.toSet()
 
 private fun known(f: Map<String, StoredField>, key: String): String? =
     f[key]?.value?.takeIf { FieldMerge.known(it) }
@@ -569,10 +594,15 @@ private fun countdown(ms: Long): String {
 private suspend fun loadToday(ctx: Context): TodayData {
     val repo = Repo(ctx)
     val list = ArrayList<SlotSummary>()
+    val now = System.currentTimeMillis()
     for (slot in 1..4) {
+        try { repo.validateHuman(slot) } catch (e: Exception) { }
         val f = repo.fieldMap(slot)
         val players = repo.dao.playersOf(slot).count { it.owner == "MY" }
-        val matches = repo.dao.matchesOf(slot).count { it.round != null }
+        val all = repo.dao.matchesOf(slot)
+        val matches = all.count { it.round != null }
+        val awaiting = Fixtures.awaitingResult(all, scoredRounds(repo.dao.matchReports(slot)), now)
+        val tplan = repo.dao.plan(slot, "tactic")?.json?.let { try { JSONObject(it) } catch (e: Exception) { null } }
         val market = repo.dao.snapshots("TRANSFER", slot).isNotEmpty()
         val c = Completeness.compute(f, players, matches, market, f[K.ROUND_TOTAL]?.value?.toIntOrNull())
         val name = known(f, K.TEAM) ?: known(f, K.HUB_TITLE)
@@ -585,7 +615,9 @@ private suspend fun loadToday(ctx: Context): TodayData {
                 pct = c.percent, updated = f.values.maxOfOrNull { it.updatedAt } ?: 0L,
                 missing = c.missing.size,
                 nextAt = known(f, K.MATCH_AT)?.toLongOrNull(),
-                tacticReady = tacticFor(repo, slot, known(f, K.ROUND)?.toIntOrNull())
+                tacticReady = tacticFor(repo, slot, known(f, K.ROUND)?.toIntOrNull()),
+                needsResult = awaiting != null,
+                win = Director.winProb(repo, slot, tplan?.optString("formation")?.ifBlank { null }, tplan?.optString("playStyle")?.ifBlank { null })
             )
         )
     }
@@ -594,16 +626,48 @@ private suspend fun loadToday(ctx: Context): TodayData {
 
 // ------------------------------------------------------------------ app
 
-/** Botão pequeno para voltar ao jogo de qualquer aba, sem passar pela tela inicial. */
+@Composable
+private fun ChipButton(text: String, colors: List<Color>, onClick: () -> Unit) {
+    Box(
+        Modifier.clip(RoundedCornerShape(50))
+            .background(Brush.horizontalGradient(colors))
+            .clickable { onClick() }
+            .padding(horizontal = 12.dp, vertical = 7.dp)
+    ) { Text(text, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White, maxLines = 1) }
+}
+
+/**
+ * Botões de captura em qualquer aba (mesma função da tela Hoje): sem captura, abre o OSM e já inicia a captura;
+ * capturando, volta ao OSM ou encerra e processa.
+ */
 @Composable
 private fun OsmButton(modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
-    Box(
-        modifier.clip(RoundedCornerShape(50))
-            .background(Brush.horizontalGradient(listOf(Color(0xFF1F6BFF), Color(0xFF00B4D8))))
-            .clickable { openOsm(ctx) }
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-    ) { Text("⚽ OSM ↗", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White) }
+    val scope = rememberCoroutineScope()
+    val tick = rememberTick(1000L)
+    val active = tick >= 0 && Control.activeSession(ctx) != null
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        if (active) {
+            ChipButton("■ Encerrar", listOf(Color(0xFFD32F2F), Color(0xFFFF5C5C))) {
+                AppScope.scope.launch { Control.end(ctx.applicationContext) }
+                Toast.makeText(ctx, "Captura encerrada. Processando em segundo plano…", Toast.LENGTH_SHORT).show()
+            }
+            Spacer(Modifier.width(6.dp))
+            ChipButton("⚽ OSM ↗", listOf(Color(0xFF1F6BFF), Color(0xFF00B4D8))) { openOsm(ctx) }
+        } else {
+            ChipButton("▶ OSM + captura", listOf(Color(0xFF1F6BFF), Color(0xFF00B4D8))) {
+                if (serviceEnabled(ctx) && Diag.serviceConnected) {
+                    scope.launch {
+                        Control.start(ctx)
+                        if (!openOsm(ctx)) Toast.makeText(ctx, "OSM não encontrado neste aparelho.", Toast.LENGTH_SHORT).show()
+                    }
+                } else {
+                    openOsm(ctx)
+                    Toast.makeText(ctx, "Leitura automática desligada: ative em Ajustes para capturar.", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -1058,10 +1122,10 @@ private suspend fun loadDirector(ctx: Context): List<DirSlot> {
         val inp = Director.tacticInput(repo, s.slot)
         val ready = inp.players.count { it.strength != null } >= 8
         val res = if (ready) TacticEngine.recommend(inp) else null
+        val w = s.win
         val forecast = if (res == null) "faltam dados do elenco (leia o Plantel do seu time)" else {
-            val d = res.diff
             res.tactic.formation + " • " + res.tactic.playStyle +
-                (if (d != null) " • força " + (if (d >= 0) "+" else "") + d + " • chance de vitória ≈ " + Forecast.winPercent(d, inp.home) + "%" else "")
+                (if (w != null) " • V ${w.win}% / E ${w.draw}% / D ${w.loss}%" else "")
         }
         val plan = Director.marketPlan(repo, s.slot)
         val alerts = ArrayList<String>()
@@ -1073,6 +1137,8 @@ private suspend fun loadDirector(ctx: Context): List<DirSlot> {
             if (plan.sell.isNotEmpty()) alerts.add("🔴 S${s.slot}: ${plan.sell.size} venda(s) sugerida(s) para liberar caixa.")
         }
         if (s.missing > 0) alerts.add("📋 S${s.slot}: faltam ${s.missing} campos de leitura (toque no slot para preencher).")
+        if (s.needsResult) alerts.add("📊 S${s.slot}: o jogo do calendário já aconteceu — registre o resultado (ou abra a análise do jogo no OSM).")
+        if (w != null && w.win < 35 && !s.needsResult) alerts.add("⚠ S${s.slot}: jogo difícil (vitória ${w.win}%) — confira a tática e os treinos antes.")
         alerts.addAll(Director.priceDrops(repo, s.slot))
         val stadiumLine = Director.stadiumPlan(f)
         if (stadiumLine != null && stadiumLine.contains("cabe no caixa")) alerts.add("🏟 S${s.slot}: um melhoramento do estádio cabe no caixa agora.")
@@ -1156,8 +1222,9 @@ private fun DirectorTab(onOpen: (Int, Int) -> Unit) {
                         }
                     }
                 }
-                Spacer(Modifier.height(6.dp))
-                Text("⚽ Previsão de tática: ${d.forecast}", fontSize = 13.sp)
+                Spacer(Modifier.height(8.dp))
+                WinCard(d.s.win, compact = true)
+                Text("⚽ Tática sugerida: ${d.forecast}", fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
                 Text("💰 Caixa ${d.cash} • vagas para vender: ${d.sellSlots}", fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 2.dp))
                 Text("🔴 Vender: " + (if (d.sells.isEmpty()) "nada por enquanto" else d.sells.joinToString(", ")), fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
                 Text("🟢 Comprar: " + (if (d.buys.isEmpty()) "nada que caiba no caixa" else d.buys.joinToString(", ")), fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
@@ -1245,7 +1312,10 @@ private fun SlotSummaryTab(slot: Int, d: SlotData) {
             ForceBox("Minha força", fv(d, K.MY_STRENGTH), C.PRIMARY)
             ForceBox("Rival", fv(d, K.RIVAL_STRENGTH), C.LOSS)
         }
+        Spacer(Modifier.height(10.dp))
+        WinCard(d.win)
     }
+    EvidencePanel(d.evidence)
     EditSection(
         slot, d, "Competição",
         listOf(
@@ -1534,7 +1604,8 @@ private fun ResultBadge(result: String?) {
 }
 
 @Composable
-private fun MatchCard(m: MatchEntity, modifier: Modifier, highlight: Boolean, onClick: () -> Unit) {
+private fun MatchCard(m: MatchEntity, modifier: Modifier, highlight: Boolean, void: Boolean = false, onClick: () -> Unit) {
+    val cup = Fixtures.isCup(m)
     val tint = when (m.result) {
         "V" -> Color(0xFF12351F)
         "E" -> Color(0xFF3A3210)
@@ -1548,22 +1619,24 @@ private fun MatchCard(m: MatchEntity, modifier: Modifier, highlight: Boolean, on
         null -> ""
     }
     val shape = RoundedCornerShape(12.dp)
-    val frame = if (highlight) modifier.border(2.dp, C.GOLD, shape) else modifier
+    val frame = if (highlight) modifier.border(2.dp, C.GOLD, shape) else if (cup && !void) modifier.border(1.dp, Color(0x669B6BFF), shape) else modifier
     Column(
-        frame.clickable { onClick() }.height(128.dp).clip(shape).background(tint).padding(8.dp),
+        frame.clickable { onClick() }.height(128.dp).clip(shape).background(tint).graphicsLayer { alpha = if (void) 0.4f else 1f }.padding(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text(place + " " + (if (m.round != null) "J${m.round}" else m.label.take(8)), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = C.MUTED)
+            Text((if (cup) "🏆" else place) + " " + (if (m.round != null) "J${m.round}" else m.label.take(8)), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = C.MUTED)
             ResultBadge(m.result)
         }
         Text(score, fontSize = 26.sp, fontWeight = FontWeight.ExtraBold)
         Text(
-            (m.opponent ?: NI) + (if (m.opponentNick != null) " 👤" else ""),
+            (Fixtures.opponent(m) ?: Fixtures.stage(m) ?: NI) + (if (m.opponentNick != null) " 👤" else ""),
             fontSize = 11.sp, textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold
         )
         Text(m.date ?: m.time ?: "", fontSize = 10.sp, color = C.MUTED, modifier = Modifier.padding(top = 2.dp))
-        if (highlight) Text("PRÓXIMO", fontSize = 9.sp, color = C.GOLD, fontWeight = FontWeight.Bold)
+        if (void) Text("ELIMINADO", fontSize = 9.sp, color = C.BAD, fontWeight = FontWeight.Bold)
+        else if (highlight) Text("PRÓXIMO", fontSize = 9.sp, color = C.GOLD, fontWeight = FontWeight.Bold)
+        else if (cup && m.result == null) Text("COPA", fontSize = 9.sp, color = Color(0xFFB79CFF), fontWeight = FontWeight.Bold)
     }
 }
 
@@ -1624,14 +1697,19 @@ private fun SlotCalendar(slot: Int, d: SlotData) {
         CountPill("V ${sorted.count { it.result == "V" }}", C.WIN)
         CountPill("E ${sorted.count { it.result == "E" }}", C.DRAW)
         CountPill("D ${sorted.count { it.result == "D" }}", C.LOSS)
-        CountPill("${sorted.count { it.result == null }} a jogar", C.SURFACE2)
+        CountPill("${sorted.count { it.result == null && !Fixtures.void(it, sorted) }} a jogar", C.SURFACE2)
+    }
+    val outRound = Fixtures.cupOutRound(sorted)
+    if (outRound != null) {
+        Text("🏆 Eliminado da copa na J$outRound — os jogos de copa seguintes não contam.", fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(bottom = 6.dp))
     }
     Row(Modifier.padding(bottom = 8.dp)) {
         FilterPill("Todos", mode == 0) { mode = 0 }
         FilterPill("Resultados", mode == 1) { mode = 1 }
         FilterPill("Próximos", mode == 2) { mode = 2 }
     }
-    val nextRound = sorted.firstOrNull { it.result == null && it.round != null }?.round
+    // Próximo de verdade: ignora copa após eliminação e cards cujo horário já passou.
+    val nextRound = Fixtures.next(sorted, System.currentTimeMillis())?.round
     // Lista final: rodadas da liga em ordem (com "não lido" nos buracos), depois jogos de copa/outros.
     val cells = ArrayList<Pair<Int?, MatchEntity?>>()
     if (total != null && total > 0) {
@@ -1643,7 +1721,7 @@ private fun SlotCalendar(slot: Int, d: SlotData) {
     val shown = cells.filter { (_, m) ->
         when (mode) {
             1 -> m != null && m.result != null
-            2 -> m == null || m.result == null
+            2 -> m == null || (m.result == null && !Fixtures.void(m, sorted))
             else -> true
         }
     }
@@ -1651,7 +1729,7 @@ private fun SlotCalendar(slot: Int, d: SlotData) {
         Row(Modifier.fillMaxWidth()) {
             for ((r, m) in row) {
                 val mod = Modifier.weight(1f).padding(3.dp)
-                if (m != null) MatchCard(m, mod, m.round != null && m.round == nextRound) { if (m.round != null) editRound = m.round }
+                if (m != null) MatchCard(m, mod, m.round != null && m.round == nextRound, Fixtures.void(m, sorted)) { if (m.round != null) editRound = m.round }
                 else UnreadCard(r ?: 0, mod) { if (r != null) editRound = r }
             }
             repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
@@ -2081,6 +2159,97 @@ private fun GenPanel(kind: String, slot: Int, label: String, onStart: () -> Unit
     }
 }
 
+/** Previsão V/E/D: anel com a chance de vitória, barra empilhada e os fatores que pesaram (+/−). */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun WinCard(p: WinModel.Prob?, compact: Boolean = false) {
+    if (p == null) {
+        Text("📈 Previsão: leia o Pré-jogo (força dos dois times) para calcular a chance de vitória.", fontSize = 12.sp, color = C.MUTED)
+        return
+    }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(if (compact) 64.dp else 84.dp), contentAlignment = Alignment.Center) {
+            Canvas(Modifier.fillMaxSize()) {
+                val sw = (if (compact) 7.dp else 9.dp).toPx()
+                val tl = Offset(sw / 2f, sw / 2f)
+                val sz = Size(size.width - sw, size.height - sw)
+                var start = -90f
+                for ((v, col) in listOf(p.win to C.WIN, p.draw to C.DRAW, p.loss to C.LOSS)) {
+                    val sweep = 360f * v / 100f
+                    drawArc(col, start + 1.5f, (sweep - 3f).coerceAtLeast(0.5f), false, topLeft = tl, size = sz, style = Stroke(sw, cap = StrokeCap.Round))
+                    start += sweep
+                }
+            }
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("${p.win}%", fontSize = if (compact) 17.sp else 22.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
+                Text("vitória", fontSize = 9.sp, color = Color(0xB3FFFFFF))
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text("📈 Previsão do jogo", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            Row(Modifier.fillMaxWidth().padding(top = 6.dp).height(10.dp).clip(RoundedCornerShape(50))) {
+                Box(Modifier.weight(p.win.toFloat()).fillMaxSize().background(C.WIN))
+                Box(Modifier.weight(p.draw.toFloat()).fillMaxSize().background(C.DRAW))
+                Box(Modifier.weight(p.loss.toFloat()).fillMaxSize().background(C.LOSS))
+            }
+            Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("V ${p.win}%", fontSize = 11.sp, color = C.WIN, fontWeight = FontWeight.Bold)
+                Text("E ${p.draw}%", fontSize = 11.sp, color = C.DRAW, fontWeight = FontWeight.Bold)
+                Text("D ${p.loss}%", fontSize = 11.sp, color = C.LOSS, fontWeight = FontWeight.Bold)
+            }
+            val edge = (if (p.edge >= 0) "+" else "") + String.format(Locale.US, "%.1f", p.edge).replace('.', ',')
+            Text("Vantagem $edge • confiança ${p.confidence}", fontSize = 11.sp, color = Color(0xB3FFFFFF), modifier = Modifier.padding(top = 2.dp))
+        }
+    }
+    if (!compact && p.factors.isNotEmpty()) {
+        FlowRow(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+            for (f in p.factors.sortedByDescending { kotlin.math.abs(it.pts) }) {
+                val pos = f.pts >= 0
+                val v = (if (pos) "+" else "−") + String.format(Locale.US, "%.1f", kotlin.math.abs(f.pts)).replace('.', ',')
+                Box(
+                    Modifier.padding(end = 6.dp, top = 4.dp).clip(RoundedCornerShape(50))
+                        .background(if (pos) Color(0x3314532D) else Color(0x336B1D1D))
+                        .border(1.dp, if (pos) Color(0x663DDC84) else Color(0x66FF5C5C), RoundedCornerShape(50))
+                        .padding(horizontal = 8.dp, vertical = 3.dp)
+                ) { Text("$v ${f.label}", fontSize = 10.sp, color = if (pos) C.OK else C.BAD, fontWeight = FontWeight.SemiBold) }
+            }
+        }
+    }
+}
+
+/** Conferência entre telas: o mesmo dado lido no pré-jogo, calendário, análise e plantel do rival. */
+@Composable
+private fun EvidencePanel(ev: JSONObject?) {
+    if (ev == null || ev.length() == 0) return
+    val items = listOf(
+        K.RIVAL_TEAM to "Próximo rival", K.RIVAL_NICK to "Apelido (rival humano)", K.HOME to "Casa/fora",
+        K.RIVAL_STRENGTH to "Força do rival", K.RIVAL_FORMATION to "Formação do rival"
+    )
+    Panel {
+        Text("🔎 Conferência entre telas", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+        Text("Um dado só é dado como certo quando aparece igual em telas diferentes.", fontSize = 11.sp, color = C.MUTED)
+        for ((k, label) in items) {
+            val vals = Evidence.values(ev, k)
+            if (vals.isEmpty()) continue
+            val top = vals.first()
+            val srcs = top.sources.joinToString(" + ") { Evidence.sourceLabel(it) }
+            val (icon, color, text) = when {
+                vals.size > 1 -> Triple("⚠", C.WARN, vals.joinToString("  ×  ") { b -> b.value + " (" + b.sources.joinToString("+") { Evidence.sourceLabel(it) } + ")" })
+                top.weight >= 2 -> Triple("✔", C.OK, "${top.value} — confirmado: $srcs")
+                else -> Triple("•", C.MUTED, "${top.value} — só em $srcs (aguardando outra tela)")
+            }
+            Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.Top) {
+                Text(icon, color = color, fontWeight = FontWeight.Bold, modifier = Modifier.width(18.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(label, fontSize = 11.sp, color = C.MUTED)
+                    Text(text, fontSize = 12.sp, color = if (icon == "•") Color.White else color)
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun LegendDot(color: Color, label: String) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(end = 10.dp)) {
@@ -2138,6 +2307,9 @@ private fun SlotTactic(slot: Int, d: SlotData) {
                 fontSize = 12.sp, color = Color(0xCCFFFFFF), modifier = Modifier.padding(top = 10.dp)
             )
             if (j.optBoolean("refined")) Box(Modifier.padding(top = 6.dp)) { Pill("🤖 refinada pela IA", true) }
+            Box(Modifier.fillMaxWidth().padding(top = 12.dp).height(1.dp).background(Color(0x22FFFFFF)))
+            Spacer(Modifier.height(10.dp))
+            WinCard(d.win)
         }
     }
 
@@ -2349,14 +2521,16 @@ private fun playedRows(d: SlotData): List<PlayedRow> {
         try { reports[r] = JSONObject(p.json) } catch (e: Exception) { }
     }
     val league = d.matches.filter { it.mkey.startsWith("L") && it.round != null }.associateBy { it.round!! }
+    val pendingOk: (MatchEntity) -> Boolean = { it.result != null || it.scoreMine != null }
     val rounds = java.util.TreeSet<Int>()
     rounds.addAll(logs.keys)
     rounds.addAll(reports.keys)
-    rounds.addAll(league.values.filter { it.result != null || it.scoreMine != null }.mapNotNull { it.round })
-    // O próximo jogo já começou: também entra, para registrar o resultado sem esperar reler o calendário.
-    val cur = known(d.fields, K.ROUND)?.toIntOrNull()
-    val at = known(d.fields, K.MATCH_AT)?.toLongOrNull()
-    if (cur != null && at != null && at <= System.currentTimeMillis()) rounds.add(cur)
+    rounds.addAll(league.values.filter(pendingOk).mapNotNull { it.round })
+    // Jogo cujo card (data e hora) já passou e ainda não tem placar: entra para registrar o resultado.
+    Fixtures.awaitingResult(d.matches, reports.filter { it.value.has("sh") && it.value.has("sa") }.keys, System.currentTimeMillis())
+        ?.round?.let { rounds.add(it) }
+    // Copa da qual já fui eliminado: esses cards não são jogos meus.
+    rounds.removeAll { r -> league[r]?.let { Fixtures.void(it, d.matches) } == true }
     return rounds.descendingSet().map { r ->
         val t = logs[r]
         val rep = reports[r]
@@ -2364,7 +2538,8 @@ private fun playedRows(d: SlotData): List<PlayedRow> {
         val repHome = if (rep != null && rep.has("mineHome")) rep.optBoolean("mineHome") else null
         val home = m?.home ?: repHome ?: t?.let { if (it.isNull("home")) null else it.optBoolean("home") }
         val repRival = if (rep != null && repHome != null) (if (repHome) rep.optString("awayTeam") else rep.optString("homeTeam")).ifBlank { null } else null
-        val rival = t?.optString("rival")?.takeIf { it.isNotBlank() && it != NI } ?: m?.opponent ?: repRival ?: "adversário"
+        val rival = t?.optString("rival")?.takeIf { it.isNotBlank() && it != NI } ?: m?.let { Fixtures.opponent(it) } ?: repRival
+            ?: m?.let { Fixtures.stage(it)?.let { st -> "Copa • $st" } } ?: "adversário"
         val tr = if (t == null || t.isNull("result")) null else t.optString("result")
         PlayedRow(
             r, t?.optString("formation")?.ifBlank { null }, t?.optString("playStyle")?.ifBlank { null },
