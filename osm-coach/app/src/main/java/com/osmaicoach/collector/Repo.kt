@@ -144,6 +144,8 @@ class Repo(private val ctx: Context) {
         if (owner != "MY") return changed
 
         val existing = dao.playersOf(slot).filter { it.owner == owner }
+        val blocked = blockedPlayers(slot)
+        val seen = ArrayList<String>()
         val cm = LinkedHashMap<String, Pair<Int, Int>>()
         for (p in ex.players) {
             var key = Txt.key(p.name)
@@ -157,7 +159,12 @@ class Repo(private val ctx: Context) {
                 }
                 if (near != null) key = near.nameKey else if (twin != null) key = twin.nameKey
             }
+            // Removido à mão pelo usuário (jogador que não existe): nunca volta.
+            if (key in blocked) continue
             val old = dao.player(slot, owner, key)
+            // A IA lendo imagem pode inventar nomes: ela só completa jogadores que o OCR já encontrou.
+            if (old == null && source == "ai") continue
+            seen.add(key)
             if (p.cond != null && p.morale != null) cm[key] = Pair(p.cond, p.morale)
             val n = PlayerEntity(
                 slotId = slot, owner = owner, nameKey = key,
@@ -176,6 +183,7 @@ class Repo(private val ctx: Context) {
                 changed++
             }
         }
+        if (seen.isNotEmpty()) markSeen(slot, seen, now)
         if (cm.isNotEmpty()) {
             val cur = dao.plan(slot, "cm")?.json?.let { try { JSONObject(it) } catch (e: Exception) { null } } ?: JSONObject()
             var cmChanged = false
@@ -574,7 +582,12 @@ class Repo(private val ctx: Context) {
 
     /** Liga o relatório ao calendário e à tática usada naquela rodada (é daqui que a IA aprende). */
     private suspend fun linkResult(slot: Int, round: Int, j: org.json.JSONObject, now: Long) {
-        if (!j.has("mineHome")) return
+        if (!j.has("mineHome")) {
+            // Sem apelidos legíveis no relatório: descobre o lado pelo nome do meu time ou pelo card do calendário.
+            val side = mineSide(slot, round, j.optString("homeTeam"), j.optString("awayTeam")) ?: return
+            j.put("mineHome", side)
+            dao.putPlan(PlanEntity(slot, "mr_R$round", j.toString(), now))
+        }
         val mineHome = j.optBoolean("mineHome")
         val hasScore = j.has("sh") && j.has("sa")
         val mine = if (hasScore) (if (mineHome) j.optInt("sh") else j.optInt("sa")) else null
@@ -601,6 +614,87 @@ class Repo(private val ctx: Context) {
         side("formacao", false)?.let { t.put("oppFormation", it) }
         j.optString("mom").takeIf { it.isNotBlank() }?.let { t.put("mom", it) }
         dao.putPlan(PlanEntity(slot, "tlog_R$round", t.toString(), p.at))
+    }
+
+    /**
+     * Análises do jogo já lidas que nunca chegaram ao calendário/tática (sem lado definido ou com placar
+     * diferente do card): liga de novo. Idempotente; roda ao abrir o slot.
+     */
+    suspend fun relinkResults(slot: Int) {
+        val now = System.currentTimeMillis()
+        for (p in dao.matchReports(slot)) {
+            val round = p.kind.removePrefix("mr_R").toIntOrNull() ?: continue
+            val j = try { org.json.JSONObject(p.json) } catch (e: Exception) { continue }
+            if (!j.has("sh") || !j.has("sa")) continue
+            val m = dao.match(slot, "L$round")
+            val tl = dao.plan(slot, "tlog_R$round")?.json?.let { try { org.json.JSONObject(it) } catch (e: Exception) { null } }
+            val linked = j.has("mineHome") && m?.scoreMine != null && (tl == null || !tl.isNull("result"))
+            if (!linked) linkResult(slot, round, j, now)
+        }
+    }
+
+    // ------------------------------------------------------------------ elenco: fantasmas e saídas
+
+    private suspend fun planJson(slot: Int, kind: String): org.json.JSONObject =
+        dao.plan(slot, kind)?.json?.let { try { org.json.JSONObject(it) } catch (e: Exception) { null } } ?: org.json.JSONObject()
+
+    private suspend fun blockedPlayers(slot: Int): Set<String> {
+        val j = planJson(slot, "squadblock")
+        val out = HashSet<String>()
+        for (k in j.keys()) out.add(k)
+        return out
+    }
+
+    /** Última vez que cada jogador do meu elenco apareceu numa leitura (para achar quem saiu ou nunca existiu). */
+    private suspend fun markSeen(slot: Int, keys: List<String>, now: Long) {
+        val j = planJson(slot, "squadseen")
+        for (k in keys) j.put(k, now)
+        dao.putPlan(PlanEntity(slot, "squadseen", j.toString(), now))
+    }
+
+    /** Remove um jogador que não existe (ou já saiu) e impede que a leitura o recrie. */
+    suspend fun removePlayer(slot: Int, nameKey: String) {
+        val now = System.currentTimeMillis()
+        dao.deletePlayer(slot, "MY", nameKey)
+        val j = planJson(slot, "squadblock")
+        j.put(nameKey, now)
+        dao.putPlan(PlanEntity(slot, "squadblock", j.toString(), now))
+        learn(slot, "elenco", "Jogador removido à mão (não existe no elenco): $nameKey.", now)
+    }
+
+    /**
+     * Depois de uma passada pelo elenco inteiro na sessão (>= 80% dos jogadores guardados e pelo menos 14 vistos),
+     * quem não apareceu é fantasma de OCR ou já foi vendido: sai do elenco. Vale para todos os slots.
+     */
+    suspend fun reconcileSquads(since: Long): Int {
+        var removed = 0
+        val now = System.currentTimeMillis()
+        for (slot in 1..4) {
+            val mine = dao.playersOf(slot).filter { it.owner == "MY" }
+            if (mine.isEmpty()) continue
+            val seenAt = planJson(slot, "squadseen")
+            val seenNow = mine.filter { seenAt.optLong(it.nameKey, 0L) >= since }
+            if (seenNow.size < 14 || seenNow.size < mine.size * 0.8) continue
+            val gone = mine.filter { seenAt.optLong(it.nameKey, 0L) < since }
+            if (gone.isEmpty() || gone.size > 8) continue
+            for (p in gone) {
+                dao.deletePlayer(slot, "MY", p.nameKey)
+                removed++
+            }
+            learn(slot, "elenco", "Elenco conferido: ${gone.joinToString { it.name }} não apareceu na leitura completa e saiu da lista.", now)
+        }
+        return removed
+    }
+
+    /** true = joguei em casa; false = fora; null = não dá para saber. */
+    private suspend fun mineSide(slot: Int, round: Int, homeTeam: String, awayTeam: String): Boolean? {
+        val my = fieldMap(slot)[K.TEAM]?.value?.let { Txt.key(it) }
+        if (my != null && my.length >= 3) {
+            val h = homeTeam.isNotBlank() && Txt.sim(Txt.key(homeTeam), my) >= 0.8
+            val a = awayTeam.isNotBlank() && Txt.sim(Txt.key(awayTeam), my) >= 0.8
+            if (h != a) return h
+        }
+        return dao.match(slot, "L$round")?.home
     }
 
     private fun looksGarbled(name: String): Boolean =

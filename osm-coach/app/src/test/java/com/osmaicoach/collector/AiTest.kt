@@ -81,6 +81,15 @@ class AiTest {
         assertEquals(listOf("gemini-3.8-flash", "gemini-3-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite"), r)
     }
 
+    @Test fun modelThatAnsweredGoesFirstNextTime() {
+        val base = listOf("gemini", "claude", "compat")
+        assertEquals(listOf("compat", "gemini", "claude"), ModelPicker.learnedOrder(base, listOf("compat")))
+        assertEquals(listOf("claude", "compat", "gemini"), ModelPicker.learnedOrder(base, listOf("claude", "compat")))
+        // vencedor sem chave configurada (fora da base) é ignorado
+        assertEquals(base, ModelPicker.learnedOrder(base, listOf("openai")))
+        assertEquals(base, ModelPicker.learnedOrder(base, emptyList()))
+    }
+
     @Test fun compatModelSkipsAudioAndPrefersBigLlama() {
         assertEquals("llama-3.3-70b-versatile", ModelPicker.pickCompat(listOf("whisper-large-v3", "llama-3.1-8b-instant", "llama-3.3-70b-versatile")))
         assertEquals("openai/gpt-oss-120b", ModelPicker.pickCompat(listOf("whisper-large-v3", "openai/gpt-oss-120b", "llama-guard-4")))

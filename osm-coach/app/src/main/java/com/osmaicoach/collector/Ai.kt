@@ -64,6 +64,15 @@ object AiStatus {
 object ModelPicker {
     private data class Cand(val id: String, val stable: Boolean, val version: Double, val lite: Boolean)
 
+    /**
+     * Ordem aprendida: quem respondeu por último vai para a frente (lista "winners", mais recente primeiro);
+     * o resto mantém a ordem base. Só reordena itens que existem na base.
+     */
+    fun learnedOrder(base: List<String>, winners: List<String>): List<String> {
+        val first = winners.filter { it in base }.distinct()
+        return first + base.filter { it !in first }
+    }
+
     /** Escolhe o Flash estável mais novo (sem lite/preview/imagem/áudio) entre os modelos que a chave enxerga. */
     fun pickGemini(names: List<String>): String? = rankGemini(names).firstOrNull()
 
@@ -115,12 +124,14 @@ object AiClient {
 
     private val gate = Mutex()
     private var lastGeminiAt = 0L
+    // Intervalo curto por padrão; só desacelera (7 s) por 10 min depois que o Gemini responder 429.
+    @Volatile private var slowUntil = 0L
     private val cooldownUntil = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     private fun cool(provider: String, ms: Long) {
         cooldownUntil[provider] = System.currentTimeMillis() + ms
     }
-    private const val CONNECT_MS = 15000
+    private const val CONNECT_MS = 10000
     private const val READ_MS = 45000
 
     private fun request(method: String, urlStr: String, headers: Map<String, String>, body: String?): HttpResult {
@@ -159,7 +170,8 @@ object AiClient {
         val used = if (p.getString("day", "") == today()) p.getInt("count", 0) else 0
         val cap = Settings.get(ctx, Settings.DAILY_CAP, "80").toIntOrNull() ?: 80
         if (used >= cap) return@withLock "teto diário de $cap chamadas atingido"
-        val wait = 7000L - (System.currentTimeMillis() - lastGeminiAt)
+        val gap = if (System.currentTimeMillis() < slowUntil) 7000L else 1200L
+        val wait = gap - (System.currentTimeMillis() - lastGeminiAt)
         if (wait > 0) delay(wait)
         lastGeminiAt = System.currentTimeMillis()
         p.edit().putString("day", today()).putInt("count", used + 1).apply()
@@ -244,9 +256,13 @@ object AiClient {
                 if (r.code in 200..299) {
                     val t = JSONObject(r.body).optJSONArray("candidates")?.optJSONObject(0)
                         ?.optJSONObject("content")?.optJSONArray("parts")?.optJSONObject(0)?.optString("text")
-                    return@withContext if (t.isNullOrBlank()) Reply(false, null, "resposta vazia") else Reply(true, t, null)
+                    if (t.isNullOrBlank()) return@withContext Reply(false, null, "resposta vazia")
+                    // Este modelo respondeu: na próxima chamada ele é o primeiro a ser tentado.
+                    if (idx > 0) Settings.put(ctx, Settings.GEMINI_RESOLVED, ModelPicker.learnedOrder(models, listOf(model)).joinToString(","))
+                    return@withContext Reply(true, t, null)
                 }
                 lastErr = "$model: HTTP ${r.code} " + short(r.body)
+                if (r.code == 429) slowUntil = System.currentTimeMillis() + 600000L
                 if (r.code == 400 && withThinking && r.body.contains("thinking", true)) {
                     withThinking = false
                     continue
@@ -362,14 +378,30 @@ object AiClient {
         Reply(false, null, lastErr)
     }
 
-    /** Ordem: o provedor preferido primeiro; só entram os que têm chave. Imagem só vai para Gemini/Claude. */
+    private fun learnPrefs(ctx: Context) = ctx.getSharedPreferences("ai_learn", Context.MODE_PRIVATE)
+
+    private fun winners(ctx: Context, hasImage: Boolean): List<String> =
+        (learnPrefs(ctx).getString(if (hasImage) "win_img" else "win_txt", "") ?: "").split(",").filter { it.isNotBlank() }
+
+    /** Quem respondeu sobe para o topo; quem falhou sai da lista de vencedores (imagem e texto aprendem separado). */
+    private fun learn(ctx: Context, hasImage: Boolean, provider: String, ok: Boolean) {
+        val cur = winners(ctx, hasImage).filter { it != provider }
+        val next = if (ok) listOf(provider) + cur else cur
+        learnPrefs(ctx).edit().putString(if (hasImage) "win_img" else "win_txt", next.joinToString(",")).apply()
+    }
+
+    /**
+     * Ordem: o último provedor que respondeu vem primeiro (aprendido), depois o preferido nos Ajustes e o resto.
+     * Só entram os que têm chave.
+     */
     fun providerOrder(ctx: Context, hasImage: Boolean): List<String> {
         val have = ArrayList<String>()
         if (Settings.get(ctx, Settings.GEMINI_KEY, "").isNotBlank()) have.add("gemini")
         if (Settings.get(ctx, Settings.CLAUDE_KEY, "").isNotBlank()) have.add("claude")
         if (Settings.get(ctx, Settings.COMPAT_KEY, "").isNotBlank()) have.add("compat")
         val pref = Settings.get(ctx, Settings.PREFERRED, "gemini")
-        val ordered = if (pref in have) listOf(pref) + have.filter { it != pref } else have
+        val base = if (pref in have) listOf(pref) + have.filter { it != pref } else have
+        val ordered = ModelPicker.learnedOrder(base, winners(ctx, hasImage))
         // quem acabou de falhar vai para o fim da fila (evita esperar de novo um provedor sobrecarregado)
         val now = System.currentTimeMillis()
         return ordered.filter { (cooldownUntil[it] ?: 0L) <= now } + ordered.filter { (cooldownUntil[it] ?: 0L) > now }
@@ -402,9 +434,11 @@ object AiClient {
             val r = askProvider(ctx, p, prompt, jpeg)
             if (r.ok) {
                 cooldownUntil.remove(p)
+                learn(ctx, jpeg != null, p, true)
                 AiStatus.set("")
                 return r
             }
+            learn(ctx, jpeg != null, p, false)
             cool(p, 180000L)
             errors.add(label(p) + " (" + ((System.currentTimeMillis() - started) / 1000) + "s): " + (r.error ?: "erro"))
         }
@@ -592,7 +626,14 @@ object Processor {
             }
             ProcessState.tick()
         }
-        ProcessState.finish("Telas reprocessadas: $fixed • IA: $applied campos aplicados, $noData sem dados do rival, $failed falhas, $skipped ignoradas")
+        val since = dao.session(sessionId)?.startedAt
+        val gone = if (since != null) {
+            try { repo.reconcileSquads(since) } catch (e: Exception) { 0 }
+        } else 0
+        ProcessState.finish(
+            "Telas reprocessadas: $fixed • IA: $applied campos aplicados, $noData sem dados do rival, $failed falhas, $skipped ignoradas" +
+                (if (gone > 0) " • $gone jogador(es) que não existem mais saíram do elenco" else "")
+        )
     }
 
     /** Lê as últimas telas guardadas do slot até achar o relatório do rival. */
