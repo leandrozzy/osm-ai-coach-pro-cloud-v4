@@ -2964,9 +2964,38 @@ private fun NotificationsPanel() {
         SwitchRow("20 min antes de cada jogo: reler o pré-jogo e a análise do rival", pre) { pre = it; toggle("pre", it) }
         SwitchRow("1 h antes, se a tática da rodada ainda não foi gerada", tac) { tac = it; toggle("tactic", it) }
         SwitchRow("30 min depois do jogo: registrar ou ler o resultado", res) { res = it; toggle("result", it) }
-        SwitchRow("Alertas do diretor ao encerrar a leitura (treino livre, preço, estádio, meta)", dir) { dir = it; toggle("director", it) }
+        SwitchRow("Alertas do diretor (ao encerrar a leitura e a cada hora, com o app fechado)", dir) { dir = it; toggle("director", it) }
+        // Com o app fechado: alarme exato liberado e bateria sem restrição (senão o Android atrasa ou corta os avisos).
+        val exact = Notifier.canExact(ctx)
+        val battery = batteryUnrestricted(ctx)
+        Text(
+            (if (exact) "✔ Alarmes no horário exato" else "⚠ Alarmes exatos bloqueados: os avisos podem atrasar") + "\n" +
+                (if (battery) "✔ Bateria sem restrição (avisos com o app fechado)" else "⚠ Bateria com restrição: o Android pode bloquear avisos com o app fechado"),
+            fontSize = 12.sp, color = if (exact && battery) C.OK else C.WARN, modifier = Modifier.padding(top = 6.dp)
+        )
+        if (!exact && Build.VERSION.SDK_INT >= 31) {
+            PendingRow("Permitir \"Alarmes e lembretes\"", "Liberar") {
+                openSettings(ctx, android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, true)
+            }
+        }
+        if (!battery) {
+            PendingRow("Bateria sem restrição para este app", "Bateria") {
+                openSettings(ctx, android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+            }
+        }
+        Text(
+            "Em celulares Xiaomi/Samsung/Motorola, ative também \"Inicialização automática\" e não deixe o app em \"suspensão\".",
+            fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp)
+        )
         Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = { Notifier.test(ctx.applicationContext) }, modifier = Modifier.weight(1f)) { Text("Testar", fontSize = 12.sp) }
+            OutlinedButton(
+                onClick = {
+                    Notifier.testLater(ctx.applicationContext)
+                    Toast.makeText(ctx, "Feche o app: o aviso chega em 1 minuto.", Toast.LENGTH_LONG).show()
+                },
+                modifier = Modifier.weight(1f)
+            ) { Text("Testar fechado", fontSize = 12.sp) }
             if (!Notifier.canPost(ctx)) {
                 OutlinedButton(
                     onClick = {

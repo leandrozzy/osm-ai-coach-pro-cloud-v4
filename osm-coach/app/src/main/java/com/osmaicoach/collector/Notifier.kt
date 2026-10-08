@@ -89,7 +89,14 @@ object Notifier {
         nm.createNotificationChannel(dir)
     }
 
-    private fun code(slot: Int, kind: String): Int = slot * 10 + (if (kind == "pre") 1 else if (kind == "tactic") 2 else 3)
+    private fun code(slot: Int, kind: String): Int =
+        slot * 10 + (if (kind == "pre") 1 else if (kind == "tactic") 2 else if (kind == "test") 4 else 3)
+
+    /** Teste real: agenda um aviso para daqui a 1 minuto (feche o app e espere). */
+    fun testLater(ctx: Context) {
+        ensureChannels(ctx)
+        setAlarm(ctx, ctx.getSystemService(AlarmManager::class.java), 0, "test", System.currentTimeMillis() + 60000L)
+    }
 
     private fun pending(ctx: Context, slot: Int, kind: String): PendingIntent =
         PendingIntent.getBroadcast(
@@ -97,13 +104,41 @@ object Notifier {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+    /** O Android deixa este app agendar alarmes no minuto exato? (Android 12: permissão "Alarmes e lembretes".) */
+    fun canExact(ctx: Context): Boolean =
+        Build.VERSION.SDK_INT < 31 || ctx.getSystemService(AlarmManager::class.java).canScheduleExactAlarms()
+
+    /**
+     * Alarme tipo despertador: dispara no minuto certo mesmo com o app fechado e o celular em economia de
+     * bateria (o Android não adia esse tipo). Sem permissão de alarme exato, cai para o modo comum.
+     */
     private fun setAlarm(ctx: Context, am: AlarmManager, slot: Int, kind: String, at: Long) {
         val pi = pending(ctx, slot, kind)
         try {
-            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+            if (canExact(ctx)) {
+                val show = PendingIntent.getActivity(
+                    ctx, 7000 + code(slot, kind), Intent(ctx, MainActivity::class.java).putExtra("slot", slot).putExtra("tab", 4),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                am.setAlarmClock(AlarmManager.AlarmClockInfo(at, show), pi)
+            } else {
+                am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+            }
         } catch (e: SecurityException) {
             am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
         }
+    }
+
+    /**
+     * Verificação periódica (≈ a cada hora), com o app fechado: rearma os lembretes, dispara o aviso de
+     * 20 min se a janela já chegou e manda o resumo do diretor quando há novidade.
+     */
+    private fun armTick(ctx: Context, am: AlarmManager) {
+        val pi = PendingIntent.getBroadcast(
+            ctx, 9001, Intent(ctx, NotifyReceiver::class.java).putExtra("kind", "tick").putExtra("slot", 0),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        am.setInexactRepeating(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + AlarmManager.INTERVAL_HOUR, AlarmManager.INTERVAL_HOUR, pi)
     }
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("notifier", Context.MODE_PRIVATE)
@@ -122,6 +157,10 @@ object Notifier {
         val am = ctx.getSystemService(AlarmManager::class.java)
         val now = System.currentTimeMillis()
         val p = prefs(ctx)
+        if (force || !p.getBoolean("tick_armed", false)) {
+            armTick(ctx, am)
+            p.edit().putBoolean("tick_armed", true).apply()
+        }
         // Limpa as chaves "fired_<slot>_<minuto>_pre" da versão anterior (uma por jogo, nunca apagadas).
         val legacy = p.all.keys.filter { it.startsWith("fired_") && !it.startsWith("fired_pre_") }
         if (legacy.isNotEmpty()) {
@@ -167,6 +206,11 @@ object Notifier {
 
     suspend fun fire(ctx: Context, kind: String, slot: Int) {
         if (!canPost(ctx)) return
+        if (kind == "test") {
+            ensureChannels(ctx)
+            post(ctx, CH_GAME, 991, "✅ Aviso com o app fechado funcionando", "Os lembretes de jogo vão chegar mesmo com o OSM AI Coach fechado.", 0, 0, false)
+            return
+        }
         ensureChannels(ctx)
         val repo = Repo(ctx)
         val f = repo.fieldMap(slot)
@@ -269,8 +313,13 @@ class NotifyReceiver : BroadcastReceiver() {
         val slot = intent.getIntExtra("slot", 0)
         AppScope.scope.launch(Dispatchers.IO) {
             try {
-                Notifier.fire(app, kind, slot)
-                Notifier.reschedule(app)
+                if (kind == "tick") {
+                    Notifier.reschedule(app)
+                    Notifier.directorSummary(app)
+                } else {
+                    Notifier.fire(app, kind, slot)
+                    Notifier.reschedule(app)
+                }
             } catch (e: Exception) {
                 Diag.lastError = "Notificação: " + (e.message ?: e.javaClass.simpleName)
             } finally {
