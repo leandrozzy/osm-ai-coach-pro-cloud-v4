@@ -40,7 +40,7 @@ class EngineTest {
         assertTrue(lines.first() >= 4)
         assertTrue(lines.last() <= 2)
         assertTrue(r.tactic.mentality <= 42)
-        assertEquals("Ajudar a defesa", r.tactic.advAttack)
+        assertEquals("Ajudar a defender", r.tactic.advAttack)
     }
 
     @Test fun unknownRivalStrengthGivesBalancedTacticAndSaysSo() {
@@ -80,7 +80,7 @@ class EngineTest {
         val lines = Formations.lines(r.tactic.formation)
         assertEquals(4, lines.first())
         assertTrue(lines.last() <= 3)
-        assertEquals("Jogo de passes", r.tactic.playStyle)
+        assertEquals("Jogo de passe", r.tactic.playStyle)
     }
 
     @Test fun sectorAdvantageInMidfieldFavorsMoreMidfielders() {
@@ -119,10 +119,31 @@ class EngineTest {
         assertEquals("4-4-2 A", Formations.canonical("4-4-2"))
         assertEquals("4-5-1", Formations.canonical("451"))
         assertEquals("4-3-3 A", Formations.variant("4-3-3", "Jogar pelas alas"))
-        assertEquals("4-3-3 B", Formations.variant("4-3-3", "Jogo de passes"))
+        assertEquals("4-3-3 B", Formations.variant("4-3-3", "Jogo de passe"))
         assertNull(Formations.canonical("9-9-9"))
         Formations.learn("3-3-2-2")
         assertTrue("3-3-2-2" in Formations.ALL)
+    }
+
+    @Test fun sliderLabelsMatchTheGame() {
+        // valores vistos no vídeo da tela "Define a tua tática"
+        assertEquals("Não pressionar", Osm.pressureLabel(9))
+        assertEquals("Ficar atrás", Osm.pressureLabel(27))
+        assertEquals("Equilibrado", Osm.pressureLabel(51))
+        assertEquals("Chegar perto do adversário", Osm.pressureLabel(70))
+        assertEquals("Pressionar alto", Osm.pressureLabel(97))
+        assertEquals("Super defensivo", Osm.mentalityLabel(6))
+        assertEquals("Neutro", Osm.mentalityLabel(45))
+        assertEquals("Ofensivo", Osm.mentalityLabel(77))
+        assertEquals("Tudo ao ataque", Osm.mentalityLabel(81))
+        assertEquals("Jogar atrás", Osm.tempoLabel(3))
+        assertEquals("Construir de trás para a frente", Osm.tempoLabel(28))
+        assertEquals("Fazer posse", Osm.tempoLabel(51))
+        assertEquals("Passes rápidos", Osm.tempoLabel(75))
+        assertEquals("Futebol ao primeiro toque", Osm.tempoLabel(100))
+        assertEquals("Homem-a-homem", Osm.marking("Individual"))
+        assertEquals("Extremo", Osm.tackle("Imprudente"))
+        assertEquals(24, Formations.OSM.size)
     }
 
     @Test fun underdogPlaysCounterAttack() {

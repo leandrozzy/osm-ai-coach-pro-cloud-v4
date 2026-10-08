@@ -200,9 +200,9 @@ object Director {
             "Valores exatos do jogo: playStyle ${Osm.STYLES}; marking ${Osm.MARKING}; tackle ${Osm.TACKLES}; advAttack ${Osm.ATTACK}; " +
             "advMid ${Osm.MIDFIELD}; advDef ${Osm.DEFENSE}. " +
             "árbitro \"Rigoroso\" => desarme NÃO agressivo; sliders são números inteiros de 0 a 100. " +
-            "Responda APENAS JSON com as chaves: formation (ex.: \"4-5-1\"), playStyle (ex.: \"Jogo de passes\", \"Jogar pelas alas\", \"Remate à vista\"), " +
+            "Responda APENAS JSON com as chaves: formation (ex.: \"4-5-1\"), playStyle (ex.: \"Jogo de passe\", \"Jogar pelas alas\", \"Remate à vista\"), " +
             "pressure (0-100), mentality (0-100, estilo ofensivo/defensivo), tempo (0-100, temporização), " +
-            "marking (\"À zona\" ou \"Individual\"), offside (\"Sim\"/\"Não\"), tackle (\"Normal\", \"Agressivo\" ou o mais cuidadoso disponível), " +
+            "marking (\"À zona\" ou \"Homem-a-homem\"), offside (\"Sim\"/\"Não\"), tackle (\"Normal\", \"Agressivo\" ou o mais cuidadoso disponível), " +
             "advAttack (ex.: \"Atacar apenas\" ou \"Ajudar a defesa\"), advMid (ex.: \"Manter posição\", \"Pressionar na frente\", \"Ajudar a defesa\"), " +
             "advDef (ex.: \"Defender atrás\"), rationale (lista de até 5 frases curtas citando os dados usados).\n\nDADOS:\n" +
             context.toString()
@@ -532,7 +532,7 @@ object Director {
         for (f in res.ranking.take(3).map { it.first }.ifEmpty { listOf(t0.formation) }) {
             val rows = TacticEngine.lineup(f, inp.players, inp.fitness)?.first ?: continue
             for (st in SIM_STYLES) for (dm in listOf(-12, 0, 12)) for (tk in listOf("Normal", "Agressivo"))
-                for (off in listOf("Não", "Sim")) for (mk in listOf("À zona", "Individual")) {
+                for (off in listOf("Não", "Sim")) for (mk in listOf("À zona", "Homem-a-homem")) {
                     if (tk == "Agressivo" && inp.referee == "Rigoroso") continue
                     val t = t0.copy(
                         formation = Formations.variant(f, st), playStyle = st, mentality = (t0.mentality + dm).coerceIn(0, 100),
@@ -553,7 +553,7 @@ object Director {
             "NÃO repita o rascunho por comodidade: só mantenha o rascunho se ele for de fato o melhor; se a simulação mostrar algo " +
             "melhor, troque. Você pode divergir da simulação só com um motivo concreto dos dados (ex.: perfil do rival humano, " +
             "resultado real de jogos anteriores). REGRAS: formation deve ser uma de $allowed; pressure, mentality e tempo de 0 a 100 " +
-            "(até 15 pontos de distância do rascunho); árbitro Rigoroso => tackle Normal ou Cauteloso. " +
+            "(até 15 pontos de distância do rascunho); árbitro Rigoroso => tackle Normal ou Cuidadoso. " +
             "Use os nomes EXATOS do OSM: playStyle ${Osm.STYLES}; marking ${Osm.MARKING}; tackle ${Osm.TACKLES}; " +
             "advAttack ${Osm.ATTACK}; advMid ${Osm.MIDFIELD}; advDef ${Osm.DEFENSE}. " +
             "Responda APENAS JSON com: formation, playStyle, pressure, mentality, tempo, marking, offside, tackle, advAttack, " +

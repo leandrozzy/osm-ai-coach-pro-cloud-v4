@@ -126,7 +126,7 @@ class IntelTest {
         assertNull(WinModel.predict(WinModel.Input(null, null)))
     }
 
-    private val plan = WinModel.Plan("4-4-2", "Jogo de passes", 50, 50, 50, "À zona", "Não", "Normal", "Atacar apenas", "Manter posição", 80.0, 80.0, 80.0, 80.0)
+    private val plan = WinModel.Plan("4-4-2", "Jogo de passe", 50, 50, 50, "À zona", "Não", "Normal", "Atacar apenas", "Manter posições", 80.0, 80.0, 80.0, 80.0)
 
     @Test fun theGeneratedTacticChangesThePrediction() {
         val base = WinModel.Input(80, 80, rivalAtk = 80, rivalMid = 80, rivalDef = 80, rivalGol = 80, referee = "Rigoroso", rivalFormation = "4-3-3", rivalStyle = "Contra-ataque")
@@ -140,8 +140,8 @@ class IntelTest {
     }
 
     @Test fun counterAttackPaysOffAgainstAnAttackingStrongerRival() {
-        val base = WinModel.Input(75, 82, myMid = 72, rivalAtk = 84, rivalMid = 82, rivalDef = 80, rivalFormation = "4-3-3", rivalStyle = "Jogo de passes")
-        val passe = WinModel.expectedPoints(base.copy(plan = plan.copy(formation = "4-5-1", style = "Jogo de passes")))!!
+        val base = WinModel.Input(75, 82, myMid = 72, rivalAtk = 84, rivalMid = 82, rivalDef = 80, rivalFormation = "4-3-3", rivalStyle = "Jogo de passe")
+        val passe = WinModel.expectedPoints(base.copy(plan = plan.copy(formation = "4-5-1", style = "Jogo de passe")))!!
         val contra = WinModel.expectedPoints(base.copy(plan = plan.copy(formation = "4-5-1", style = "Contra-ataque")))!!
         assertTrue(contra > passe)
     }

@@ -295,7 +295,7 @@ object WinModel {
                 style.contains("alas") -> {
                     var v = 0.0
                     if ((theirs?.first() ?: 4) <= 3) v += 0.06
-                    if (Osm.marking(i.rivalMarking) == "Individual") v += 0.04
+                    if (Osm.marking(i.rivalMarking) == "Homem-a-homem") v += 0.04
                     if ((theirs?.first() ?: 4) >= 5) v -= 0.05
                     if (v != 0.0) t.add(Term("Jogar pelas alas × defesa rival", v, 0.0))
                 }
@@ -327,7 +327,7 @@ object WinModel {
             }
             val tp = (p.tempo - 50) / 50.0
             if (tp != 0.0) t.add(Term("Ritmo ${p.tempo}", if (atkGap >= 0) 0.04 * tp else -0.02 * tp, 0.0))
-            if (Osm.marking(p.marking) == "Individual") {
+            if (Osm.marking(p.marking) == "Homem-a-homem") {
                 t.add(Term("Marcação individual", 0.0, if (def >= rAtk) -0.05 else 0.07))
             }
             if (n(p.offside) == "sim") {

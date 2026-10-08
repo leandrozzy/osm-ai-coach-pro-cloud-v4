@@ -202,8 +202,12 @@ object Parsers {
         val bubbles = ArrayList<Pair<Float, Int>>()
         for (t in o.tokens) {
             if (t.yc !in 0.22f..0.33f || t.xc !in 0.59f..0.81f) continue
-            val raw = t.text.trim().replace(" ", "")
-            val n = intTok(t) ?: RX_BUBBLE
+            // dígitos confundidos pelo OCR dentro da bolha: S->5, O->0, l/I->1, B->8
+            val raw = t.text.trim().replace(" ", "").let { r ->
+                if (r.count { it.isDigit() } >= 1 && r.length <= 3) r.replace('S', '5').replace('O', '0').replace('o', '0')
+                    .replace('l', '1').replace('I', '1').replace('B', '8') else r
+            }
+            val n = raw.toIntOrNull()?.takeIf { raw.length in 2..3 } ?: intTok(t) ?: RX_BUBBLE
                 .find(raw)?.groupValues?.get(1)?.toIntOrNull() ?: continue
             if (n in 30..130) bubbles.add(Pair(t.xc, n))
         }
@@ -443,7 +447,7 @@ object Parsers {
         )
     }
 
-    private val STYLE_NAMES = listOf("Jogo de passes", "Jogar pelas alas", "Remate à vista", "Contra-ataque", "Bola longa")
+    private val STYLE_NAMES = listOf("Jogo de passe", "Jogar pelas alas", "Remate à vista", "Contra-ataque", "Bola longa")
 
     /** A nota do analista ("Pelo que pude ver, ...") aparece à esquerda nas duas telas da análise. */
     fun isAnalysis(o: OcrResult): Boolean {
@@ -525,7 +529,7 @@ object Parsers {
         if (mk != null) {
             val v = belowOf(o, mk)?.let { Txt.norm(it.text) } ?: ""
             if (v.contains("zona")) f[K.RIVAL_MARKING] = Reading("À zona", 0.9)
-            else if (v.contains("homem") || v.contains("individ")) f[K.RIVAL_MARKING] = Reading("Individual", 0.9)
+            else if (v.contains("homem") || v.contains("individ")) f[K.RIVAL_MARKING] = Reading("Homem-a-homem", 0.9)
         }
         val off = right.firstOrNull { val n = Txt.norm(it.text); n.contains("fora-de-jogo") || n.contains("fora de jogo") }
         if (off != null) {

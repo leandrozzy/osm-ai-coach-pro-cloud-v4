@@ -30,7 +30,7 @@ class ManualTest {
 
     @Test fun manualValueIsNeverOverwrittenByAutomaticReading() {
         assertNull(FieldMerge.merge(K.RIVAL_STRENGTH, StoredField("61", 2.0, 1L), Reading("70", 0.95), 2L))
-        assertNull(FieldMerge.merge(K.RIVAL_PLAN, StoredField("Jogo de passes", 2.0, 1L), Reading("Jogar pelas alas", 0.95), 2L))
+        assertNull(FieldMerge.merge(K.RIVAL_PLAN, StoredField("Jogo de passe", 2.0, 1L), Reading("Jogar pelas alas", 0.95), 2L))
     }
 
     @Test fun missingFieldsComeWithKeysSoTheUserCanFillThem() {
