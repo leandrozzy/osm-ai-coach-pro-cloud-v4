@@ -25,7 +25,8 @@ object Parsers {
 
     private fun isNick(s: String): Boolean {
         val t = s.trim()
-        return t.length in 3..24 && Txt.letters(t) >= 2 && !t.all { it.isDigit() || it == ' ' || it == '.' || it == ',' }
+        return t.length in 3..24 && Txt.letters(t) >= 2 && !t.all { it.isDigit() || it == ' ' || it == '.' || it == ',' } &&
+            Evidence.plausibleNick(t)
     }
 
     // ---------------------------------------------------------------- HUB
@@ -344,6 +345,7 @@ object Parsers {
             var date: String? = null
             var time: String? = null
             var score: Pair<Int, Int>? = null
+            var stage: String? = null
             val alpha = ArrayList<OcrLine>()
             for (ln in card.sortedBy { it.yc }) {
                 val t = ln.text.trim()
@@ -356,12 +358,14 @@ object Parsers {
                     tm != null -> time = t
                     sm != null -> score = Pair(sm.groupValues[1].toInt(), sm.groupValues[2].toInt())
                     junk -> {}
+                    // jogo de copa: o card mostra a fase ("Meias finais") onde ficaria o rival
+                    stage == null && Fixtures.isStage(t) -> stage = t
                     Txt.letters(t) >= 2 -> alpha.add(ln)
                 }
             }
             val opponent = alpha.getOrNull(0)?.text?.trim()
-            val nick = alpha.getOrNull(1)?.text?.trim()
-            if (score == null && opponent == null) continue
+            val nick = alpha.getOrNull(1)?.text?.trim()?.takeIf { isNick(it) }
+            if (score == null && opponent == null && stage == null) continue
 
             val badge = img?.let { PixelProbe.resultBadge(it, a.line.xc, a.line.yc) }
             val home = img?.let { PixelProbe.homeIcon(it, a.line.xc, a.line.yc) }
@@ -382,7 +386,7 @@ object Parsers {
             val key = if (a.round != null) "L" + a.round else "C:" + Txt.key(a.label)
             matches.add(
                 MatchRead(
-                    key = key, label = a.label, round = a.round, date = date, time = time,
+                    key = key, label = if (stage != null) "Copa • $stage" else a.label, round = a.round, date = date, time = time,
                     home = finalHome, scoreMine = mine, scoreOpp = opp, result = result,
                     opponent = opponent, opponentNick = nick
                 )

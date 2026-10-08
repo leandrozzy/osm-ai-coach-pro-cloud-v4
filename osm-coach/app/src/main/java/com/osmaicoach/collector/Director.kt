@@ -255,6 +255,41 @@ object Director {
         )
     }
 
+    /**
+     * Previsão do próximo jogo: forças e setores, mando, rival humano/CPU, bônus, forma recente (calendário),
+     * confronto anterior com o mesmo rival e o histórico da formação/estilo escolhidos (aprendizado).
+     */
+    suspend fun winProb(repo: Repo, slot: Int, formation: String? = null, style: String? = null): WinModel.Prob? {
+        val f = repo.fieldMap(slot)
+        fun int(k: String) = f[k]?.value?.toIntOrNull()
+        fun bonus(k: String) = f[k]?.value?.let { Regex("(\\d{1,3})").find(it)?.groupValues?.get(1)?.toIntOrNull() }
+        val matches = repo.dao.matchesOf(slot)
+        val played = matches.filter { it.result != null && it.round != null }.sortedByDescending { it.round }
+        val rival = f[K.RIVAL_TEAM]?.value?.takeIf { FieldMerge.known(it) }?.let { Txt.key(it) }
+        val h2h = if (rival != null && rival.length >= 3) {
+            played.filter { m -> Fixtures.opponent(m)?.let { Txt.sim(Txt.key(it), rival) >= 0.85 } == true }.mapNotNull { it.result }
+        } else emptyList()
+        val hist = history(repo, slot).filter { it.result != null }
+        val record = hist.filter { h ->
+            (formation != null && h.formation.split(" ")[0] == formation.split(" ")[0]) && (style == null || h.playStyle == style)
+        }.mapNotNull { it.result }.ifEmpty {
+            if (formation != null) hist.filter { it.formation.split(" ")[0] == formation.split(" ")[0] }.mapNotNull { it.result } else emptyList()
+        }
+        return WinModel.predict(
+            WinModel.Input(
+                myStrength = int(K.MY_STRENGTH), rivalStrength = int(K.RIVAL_STRENGTH),
+                myAtk = int(K.MY_ATK), myMid = int(K.MY_MID), myDef = int(K.MY_DEF),
+                rivalAtk = int(K.RIVAL_ATK), rivalMid = int(K.RIVAL_MID), rivalDef = int(K.RIVAL_DEF),
+                home = boolOf(f[K.HOME]?.value, "Casa", "Fora"),
+                rivalHuman = boolOf(f[K.RIVAL_HUMAN]?.value, "Sim", "Não"),
+                myBonus = bonus(K.MY_BONUS), rivalBonus = bonus(K.RIVAL_LOGIN_BONUS),
+                recent = played.filter { !Fixtures.isCup(it) }.mapNotNull { it.result }.take(5),
+                headToHead = h2h,
+                tacticRecord = record
+            )
+        )
+    }
+
     /** Preenche o resultado das táticas já usadas quando o jogo daquela rodada aparece no calendário. */
     suspend fun resolveTacticLogs(repo: Repo, slot: Int) {
         val logs = repo.dao.tacticLogs(slot)

@@ -37,6 +37,13 @@ class ParsersTest {
         assertEquals(4, ex.roundRead)
     }
 
+    @Test fun anniversaryBannerBehindTheRivalIsNotANick() {
+        val lines = Fx.pregameLines().map { if (it.text == "ChicoR78") Fx.line("25 Anniversary", 0.23f, 0.41f, 0.12f) else it }
+        val ex = Parsers.pregame(Fx.ocr(*lines.toTypedArray()), null, 0L)
+        assertNull(ex.fields[K.RIVAL_NICK])
+        assertEquals("Não", ex.fields[K.RIVAL_HUMAN]?.value)
+    }
+
     @Test fun pregameWithoutMyNickDoesNotGuessSides() {
         val lines = Fx.pregameLines().filter { it.text != "leandrozzy" }
         val ex = Parsers.pregame(Fx.ocr(*lines.toTypedArray()), null, 0L)
@@ -395,7 +402,8 @@ class ParsersTest {
         val ex = Parsers.calendar(o, null)
         assertEquals(setOf(31, 32, 33), ex.matches.mapNotNull { it.round }.toSet())
         assertEquals("Neftchi Fergana", ex.matches.first { it.round == 31 }.opponent)
-        assertEquals("Final", ex.matches.first { it.round == 33 }.opponent)
+        // "Final" é a fase da copa, não o nome do rival
+        assertEquals("Copa • Final", ex.matches.first { it.round == 33 }.label)
     }
 
     @Test fun reportWithoutLabelsReadsNothingAndAsksForAi() {

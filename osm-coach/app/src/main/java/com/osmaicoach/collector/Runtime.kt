@@ -19,6 +19,11 @@ object AppScope {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + onError)
 }
 
+/** O app está na tela (o botão flutuante "Encerrar" some quando o próprio app está aberto). */
+object AppVisible {
+    @Volatile var resumed = false
+}
+
 /** Contadores e estado para a tela de diagnóstico. */
 object Diag {
     @Volatile var serviceConnected = false

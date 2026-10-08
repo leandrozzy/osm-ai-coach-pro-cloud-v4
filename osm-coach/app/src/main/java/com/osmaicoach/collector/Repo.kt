@@ -59,7 +59,7 @@ class Repo(private val ctx: Context) {
             ScreenType.CALENDAR -> applyCalendar(slot, ex, source, now)
             ScreenType.MARKET -> applyMarket(slot, ex, source, now)
             ScreenType.REPORT -> {
-                val n = putFields(slot, ex.fields, source, now)
+                val n = putTracked(slot, ex.fields, source, "REPORT", now)
                 recordRivalProfile(slot, ex.fields, now)
                 n
             }
@@ -97,10 +97,11 @@ class Repo(private val ctx: Context) {
             if (old != null && Txt.sim(Txt.key(old.fvalue), Txt.key(newRival.value)) < 0.8) {
                 dao.deleteRivalFields(slot)
                 dao.deleteRivalPlayers(slot)
+                dao.deletePlan(slot, "evidence")
                 learn(slot, "rival", "Rival mudou de ${old.fvalue} para ${newRival.value}: dados do rival anterior foram descartados.", now)
             }
         }
-        return putFields(slot, ex.fields, source, now)
+        return putTracked(slot, ex.fields, source, "PREGAME", now)
     }
 
     private suspend fun applySquad(slot: Int, ex: Extraction, source: String, now: Long): Int {
@@ -138,7 +139,10 @@ class Repo(private val ctx: Context) {
                 Money.fixLostComma(v.value, st)?.let { mapped[K.RIVAL_VALUE] = Reading(it, 0.8) }
             }
         }
-        changed += putFields(slot, mapped, source, now)
+        changed += putTracked(slot, mapped, source, "SQUAD", now)
+        if (owner == "RIVAL" && nick != null && Evidence.plausibleNick(nick)) {
+            changed += recordEvidence(slot, mapOf(K.RIVAL_NICK to nick.trim()), "SQUAD", now)
+        }
 
         // Elenco do rival não é guardado: só o cabeçalho (forças, valor, formação) interessa.
         if (owner != "MY") return changed
@@ -218,14 +222,12 @@ class Repo(private val ctx: Context) {
             val rk = Txt.key(rival)
             for ((k, nick) in ex.humans) {
                 if (Txt.sim(k, rk) >= 0.85) {
-                    val r = LinkedHashMap<String, Reading>()
-                    if (nick != null && nick.trim().length >= 3) {
-                        r[K.RIVAL_HUMAN] = Reading("Sim", 0.9)
-                        r[K.RIVAL_NICK] = Reading(nick.trim(), 0.85)
+                    if (nick != null && Evidence.plausibleNick(nick)) {
+                        // apelido sob o time: é uma evidência; vira "humano" só se outra tela confirmar
+                        changed += recordEvidence(slot, mapOf(K.RIVAL_NICK to nick.trim()), "CALENDAR", now)
                     } else {
-                        r[K.RIVAL_HUMAN] = Reading("Não", 0.7)
+                        changed += putFields(slot, mapOf(K.RIVAL_HUMAN to Reading("Não", 0.7)), source, now)
                     }
-                    changed += putFields(slot, r, source, now)
                 }
             }
         }
@@ -246,12 +248,6 @@ class Repo(private val ctx: Context) {
             if (ex.matches.isNotEmpty()) learn(slot, "calendário", "Calendário de outro time ignorado (${ot ?: "sem título"}).", now)
             return changed
         }
-        // Horário real do jogo: o card do próximo jogo mostra "HH:mm" no lugar da data.
-        val nextCard = ex.matches.filter { it.result == null && it.round != null && it.time != null }.minByOrNull { it.round ?: 999 }
-        if (nextCard != null) {
-            val at = MatchClock.toMillis(nextCard.date, nextCard.time ?: "", now)
-            if (at != null) changed += putFields(slot, mapOf(K.MATCH_AT to Reading(at.toString(), 0.95)), source, now)
-        }
         for (m in ex.matches) {
             val old = dao.match(slot, m.key)
             val n = MatchEntity(
@@ -271,6 +267,18 @@ class Repo(private val ctx: Context) {
                 dao.putMatch(n)
                 changed++
             }
+        }
+        // Horário real do próximo jogo (o card mostra "HH:mm"): ignora copa da qual já fui eliminado e jogos
+        // cujo horário já passou. O mesmo card confirma rival e mando de campo (evidência cruzada).
+        val all = dao.matchesOf(slot)
+        val next = Fixtures.next(all, now)
+        if (next != null) {
+            val at = Fixtures.kickoff(next)
+            if (at != null && next.time != null) changed += putFields(slot, mapOf(K.MATCH_AT to Reading(at.toString(), 0.95)), source, now)
+            val ev = LinkedHashMap<String, String>()
+            Fixtures.opponent(next)?.let { ev[K.RIVAL_TEAM] = it }
+            next.home?.let { ev[K.HOME] = if (it) "Casa" else "Fora" }
+            if (ev.isNotEmpty()) changed += recordEvidence(slot, ev, "CALENDAR", now)
         }
         return changed
     }
@@ -630,6 +638,68 @@ class Repo(private val ctx: Context) {
             val tl = dao.plan(slot, "tlog_R$round")?.json?.let { try { org.json.JSONObject(it) } catch (e: Exception) { null } }
             val linked = j.has("mineHome") && m?.scoreMine != null && (tl == null || !tl.isNull("result"))
             if (!linked) linkResult(slot, round, j, now)
+        }
+    }
+
+    // ------------------------------------------------------------------ evidências cruzadas
+
+    /** Campos conferidos entre telas diferentes. */
+    private val TRACKED = setOf(K.RIVAL_NICK, K.RIVAL_TEAM, K.RIVAL_STRENGTH, K.RIVAL_FORMATION, K.HOME)
+
+    suspend fun evidence(slot: Int): org.json.JSONObject = planJson(slot, "evidence")
+
+    /**
+     * Grava as leituras normais e registra as conferidas como evidência. Apelido e "humano = Sim" nunca entram
+     * direto: só quando o apelido bate em fontes independentes (ex.: pré-jogo + calendário, ou a análise).
+     */
+    private suspend fun putTracked(slot: Int, readings: Map<String, Reading>, source: String, evSource: String, now: Long): Int {
+        val plain = LinkedHashMap<String, Reading>()
+        val ev = LinkedHashMap<String, String>()
+        for ((k, r) in readings) {
+            if (k in TRACKED) ev[k] = r.value
+            if (k == K.RIVAL_NICK) continue
+            if (k == K.RIVAL_HUMAN && r.value == "Sim") continue
+            plain[k] = r
+        }
+        if (ev[K.RIVAL_NICK]?.let { Evidence.plausibleNick(it) } == false) ev.remove(K.RIVAL_NICK)
+        var changed = putFields(slot, plain, source, now)
+        if (ev.isNotEmpty()) changed += recordEvidence(slot, ev, evSource, now)
+        return changed
+    }
+
+    private suspend fun recordEvidence(slot: Int, values: Map<String, String>, evSource: String, now: Long): Int {
+        val j = planJson(slot, "evidence")
+        for ((k, v) in values) Evidence.add(j, k, v, evSource, now)
+        dao.putPlan(PlanEntity(slot, "evidence", j.toString(), now))
+        return confirmHuman(slot, j, now)
+    }
+
+    /** Apelido confirmado (peso >= 2) => rival humano; sem confirmação, um "Sim" automático antigo é desfeito. */
+    private suspend fun confirmHuman(slot: Int, j: org.json.JSONObject, now: Long): Int {
+        val ok = Evidence.confirmed(j, K.RIVAL_NICK)
+        if (ok != null) {
+            return putFields(slot, mapOf(K.RIVAL_NICK to Reading(ok.value, 0.9), K.RIVAL_HUMAN to Reading("Sim", 0.9)), "evidencia", now)
+        }
+        return 0
+    }
+
+    /**
+     * Corrige leituras antigas: "humano" marcado por um texto qualquer (ex. "25 Anniversary" no fundo) sem
+     * confirmação em outra tela é apagado. Não mexe no que o usuário digitou nem em Batalha (sempre humano).
+     */
+    suspend fun validateHuman(slot: Int) {
+        val rows = dao.fieldsOf(slot).associateBy { it.fkey }
+        val human = rows[K.RIVAL_HUMAN] ?: return
+        if (human.fvalue != "Sim" || human.source == "manual" || human.source == "hub") return
+        val nick = rows[K.RIVAL_NICK]
+        val ev = planJson(slot, "evidence")
+        val conf = Evidence.confirmed(ev, K.RIVAL_NICK)
+        val nickOk = nick != null && Evidence.plausibleNick(nick.fvalue) && conf != null &&
+            Txt.sim(Txt.key(conf.value), Txt.key(nick.fvalue)) >= 0.85
+        if (!nickOk) {
+            dao.deleteField(slot, K.RIVAL_HUMAN)
+            if (nick != null && nick.source != "manual") dao.deleteField(slot, K.RIVAL_NICK)
+            learn(slot, "rival", "Apelido \"${nick?.fvalue ?: "?"}\" não foi confirmado em outra tela (calendário, análise ou plantel do rival): rival humano desmarcado até confirmar.")
         }
     }
 
