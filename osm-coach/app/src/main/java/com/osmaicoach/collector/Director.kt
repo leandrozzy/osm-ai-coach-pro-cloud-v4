@@ -255,39 +255,79 @@ object Director {
         )
     }
 
-    /**
-     * Previsão do próximo jogo: forças e setores, mando, rival humano/CPU, bônus, forma recente (calendário),
-     * confronto anterior com o mesmo rival e o histórico da formação/estilo escolhidos (aprendizado).
-     */
-    suspend fun winProb(repo: Repo, slot: Int, formation: String? = null, style: String? = null): WinModel.Prob? {
+    /** Força média de cada setor do XI (linha 0 = goleiro, 1 = defesa, última = ataque, o resto = meio). */
+    private fun xi(rows: List<List<Int>>): List<Double?> {
+        fun avg(l: List<Int>): Double? = l.filter { it > 0 }.takeIf { it.isNotEmpty() }?.average()
+        if (rows.size < 3) return listOf(null, null, null, null)
+        return listOf(avg(rows[0]), avg(rows[1]), avg(rows.subList(2, rows.size - 1).flatten()), avg(rows.last()))
+    }
+
+    /** Tática guardada (JSON do plano) no formato do simulador. */
+    fun simPlan(j: JSONObject): WinModel.Plan? {
+        val f = j.optString("formation").ifBlank { return null }
+        val rows = ArrayList<List<Int>>()
+        val arr = j.optJSONArray("lineup")
+        if (arr != null) for (i in 0 until arr.length()) {
+            val r = arr.optJSONArray(i) ?: continue
+            rows.add((0 until r.length()).map { r.optJSONObject(it)?.optInt("s") ?: 0 })
+        }
+        val x = xi(rows)
+        return WinModel.Plan(
+            f, j.optString("playStyle"), j.optInt("pressure", 50), j.optInt("mentality", 50), j.optInt("tempo", 50),
+            j.optString("marking"), j.optString("offside"), j.optString("tackle"), j.optString("advAttack"), j.optString("advMid"),
+            x[0], x[1], x[2], x[3]
+        )
+    }
+
+    fun simPlan(t: Tactic, rows: List<List<PlayerEntity?>>): WinModel.Plan {
+        val x = xi(rows.map { r -> r.map { it?.strength ?: 0 } })
+        return WinModel.Plan(
+            t.formation, t.playStyle, t.pressure, t.mentality, t.tempo, t.marking, t.offside, t.tackle, t.advAttack, t.advMid,
+            x[0], x[1], x[2], x[3]
+        )
+    }
+
+    /** Tudo o que se sabe do jogo, sem a tática (ela entra no Plan). */
+    suspend fun simInput(repo: Repo, slot: Int): WinModel.Input {
         val f = repo.fieldMap(slot)
-        fun int(k: String) = f[k]?.value?.toIntOrNull()
-        fun bonus(k: String) = f[k]?.value?.let { Regex("(\\d{1,3})").find(it)?.groupValues?.get(1)?.toIntOrNull() }
+        fun str(k: String) = f[k]?.value?.takeIf { FieldMerge.known(it) }
+        fun int(k: String) = str(k)?.toIntOrNull()
+        fun bonus(k: String) = str(k)?.let { Regex("(\\d{1,3})").find(it)?.groupValues?.get(1)?.toIntOrNull() }
         val matches = repo.dao.matchesOf(slot)
         val played = matches.filter { it.result != null && it.round != null }.sortedByDescending { it.round }
-        val rival = f[K.RIVAL_TEAM]?.value?.takeIf { FieldMerge.known(it) }?.let { Txt.key(it) }
+        val rival = str(K.RIVAL_TEAM)?.let { Txt.key(it) }
         val h2h = if (rival != null && rival.length >= 3) {
             played.filter { m -> Fixtures.opponent(m)?.let { Txt.sim(Txt.key(it), rival) >= 0.85 } == true }.mapNotNull { it.result }
         } else emptyList()
-        val hist = history(repo, slot).filter { it.result != null }
-        val record = hist.filter { h ->
-            (formation != null && h.formation.split(" ")[0] == formation.split(" ")[0]) && (style == null || h.playStyle == style)
-        }.mapNotNull { it.result }.ifEmpty {
-            if (formation != null) hist.filter { it.formation.split(" ")[0] == formation.split(" ")[0] }.mapNotNull { it.result } else emptyList()
-        }
-        return WinModel.predict(
-            WinModel.Input(
-                myStrength = int(K.MY_STRENGTH), rivalStrength = int(K.RIVAL_STRENGTH),
-                myAtk = int(K.MY_ATK), myMid = int(K.MY_MID), myDef = int(K.MY_DEF),
-                rivalAtk = int(K.RIVAL_ATK), rivalMid = int(K.RIVAL_MID), rivalDef = int(K.RIVAL_DEF),
-                home = boolOf(f[K.HOME]?.value, "Casa", "Fora"),
-                rivalHuman = boolOf(f[K.RIVAL_HUMAN]?.value, "Sim", "Não"),
-                myBonus = bonus(K.MY_BONUS), rivalBonus = bonus(K.RIVAL_LOGIN_BONUS),
-                recent = played.filter { !Fixtures.isCup(it) }.mapNotNull { it.result }.take(5),
-                headToHead = h2h,
-                tacticRecord = record
-            )
+        return WinModel.Input(
+            myStrength = int(K.MY_STRENGTH), rivalStrength = int(K.RIVAL_STRENGTH),
+            myAtk = int(K.MY_ATK), myMid = int(K.MY_MID), myDef = int(K.MY_DEF), myGol = int(K.MY_GOL),
+            rivalAtk = int(K.RIVAL_ATK), rivalMid = int(K.RIVAL_MID), rivalDef = int(K.RIVAL_DEF), rivalGol = int(K.RIVAL_GOL),
+            rivalFormation = str(K.RIVAL_FORMATION) ?: repo.rivalProfileFormation(slot),
+            rivalStyle = str(K.RIVAL_PLAN), rivalMarking = str(K.RIVAL_MARKING), rivalOffside = str(K.RIVAL_OFFSIDE),
+            rivalTackle = str(K.RIVAL_TACKLE),
+            rivalSecret = boolOf(str(K.RIVAL_SECRET), "Sim", "Não"), rivalCamp = boolOf(str(K.RIVAL_CAMP), "Sim", "Não"),
+            home = boolOf(str(K.HOME), "Casa", "Fora"),
+            rivalHuman = boolOf(str(K.RIVAL_HUMAN), "Sim", "Não"),
+            referee = str(K.REFEREE),
+            myBonus = bonus(K.MY_BONUS), rivalBonus = bonus(K.RIVAL_LOGIN_BONUS),
+            recent = played.filter { !Fixtures.isCup(it) }.mapNotNull { it.result }.take(5),
+            headToHead = h2h
         )
+    }
+
+    private fun record(hist: List<HistRow>, plan: WinModel.Plan?): List<String> {
+        if (plan == null) return emptyList()
+        val f0 = plan.formation.split(" ")[0]
+        val done = hist.filter { it.result != null && it.formation.split(" ")[0] == f0 }
+        return done.filter { it.playStyle == plan.style }.mapNotNull { it.result }.ifEmpty { done.mapNotNull { it.result } }
+    }
+
+    /** Previsão do próximo jogo com a tática gerada (ou só com as forças, se ainda não há tática). */
+    suspend fun winProb(repo: Repo, slot: Int, plan: JSONObject? = null): WinModel.Prob? {
+        val sp = plan?.let { simPlan(it) }
+        val base = simInput(repo, slot)
+        return WinModel.predict(base.copy(plan = sp, tacticRecord = record(history(repo, slot), sp)))
     }
 
     /** Preenche o resultado das táticas já usadas quando o jogo daquela rodada aparece no calendário. */
@@ -469,16 +509,57 @@ object Director {
         return Outcome(true, json.toString(), null)
     }
 
-    private fun tacticRefinePrompt(context: JSONObject, draft: JSONObject, statsText: String, allowed: List<String>): String =
-        "Você é o analista tático do OSM 26. O rascunho abaixo foi calculado por regras e números (força do XI, confronto de forças, " +
-            "árbitro, histórico). Revise com critério e devolva a tática final em JSON. " +
-            "REGRAS OBRIGATÓRIAS: formation deve ser uma de $allowed; pressure, mentality e tempo (0 a 100) devem ficar a no máximo 15 pontos " +
-            "do rascunho; contra rival bem mais fraco use formação ofensiva; árbitro Rigoroso => tackle Normal. " +
-            "Responda APENAS JSON com as chaves: formation, playStyle, pressure, mentality, tempo, marking, offside, tackle, " +
-            "advAttack, advMid, advDef, rationale (até 4 frases curtas citando números dos dados).\n\n" +
-            "HISTÓRICO DAS SUAS TÁTICAS (resultado real):\n$statsText\n\nRASCUNHO:\n$draft\n\nDADOS:\n$context"
+    private val SIM_STYLES = listOf("Jogo de passe", "Jogar pelas alas", "Remate à vista", "Contra-ataque", "Bolas longas")
 
-    /** Refinamento opcional por IA, dentro de limites: se sair deles, a tática local é mantida. */
+    data class Cand(val tactic: Tactic, val rows: List<List<PlayerEntity?>>, val points: Double)
+
+    private fun pct(p: WinModel.Prob?): String = if (p == null) "?" else "V ${p.win}% / E ${p.draw}% / D ${p.loss}%"
+
+    private fun same(a: Tactic, b: Tactic): Boolean =
+        a.formation == b.formation && a.playStyle == b.playStyle && a.marking == b.marking && a.offside == b.offside &&
+            a.tackle == b.tackle && Math.abs(a.mentality - b.mentality) < 5 && Math.abs(a.pressure - b.pressure) < 5
+
+    /**
+     * Simula alternativas: 3 melhores formações do cálculo x 5 estilos x variações de mentalidade, desarme,
+     * impedimento e marcação. Devolve da melhor para a pior (pontos esperados).
+     */
+    private fun candidates(res: TacticEngine.Result, inp: TacticEngine.Input, base: WinModel.Input, hist: List<HistRow>): List<Cand> {
+        val out = ArrayList<Cand>()
+        val t0 = res.tactic
+        for (f in res.ranking.take(3).map { it.first }.ifEmpty { listOf(t0.formation) }) {
+            val rows = TacticEngine.lineup(f, inp.players, inp.fitness)?.first ?: continue
+            for (st in SIM_STYLES) for (dm in listOf(-12, 0, 12)) for (tk in listOf("Normal", "Agressivo"))
+                for (off in listOf("Não", "Sim")) for (mk in listOf("À zona", "Homem a homem")) {
+                    if (tk == "Agressivo" && inp.referee == "Rigoroso") continue
+                    val t = t0.copy(
+                        formation = f, playStyle = st, mentality = (t0.mentality + dm).coerceIn(0, 100),
+                        tackle = tk, offside = off, marking = mk, notes = emptyList()
+                    )
+                    val sp = simPlan(t, rows)
+                    val ep = WinModel.expectedPoints(base.copy(plan = sp, tacticRecord = record(hist, sp))) ?: continue
+                    out.add(Cand(t, rows, ep))
+                }
+        }
+        return out.sortedByDescending { it.points }
+    }
+
+    private fun tacticRefinePrompt(context: JSONObject, draft: JSONObject, draftSim: String, table: String, statsText: String, allowed: List<String>): String =
+        "Você é o analista tático do OSM 26. Abaixo: o RASCUNHO calculado por regras, uma SIMULAÇÃO de táticas alternativas " +
+            "(chance V/E/D e pontos esperados contra este rival, considerando setores, formação, estilo, marcação, impedimento, " +
+            "desarme, árbitro e histórico) e os DADOS do jogo. Sua tarefa: escolher a tática que dá MAIS pontos neste jogo. " +
+            "NÃO repita o rascunho por comodidade: só mantenha o rascunho se ele for de fato o melhor; se a simulação mostrar algo " +
+            "melhor, troque. Você pode divergir da simulação só com um motivo concreto dos dados (ex.: perfil do rival humano, " +
+            "resultado real de jogos anteriores). REGRAS: formation deve ser uma de $allowed; pressure, mentality e tempo de 0 a 100 " +
+            "(até 15 pontos de distância do rascunho); árbitro Rigoroso => tackle Normal. " +
+            "Responda APENAS JSON com: formation, playStyle, pressure, mentality, tempo, marking, offside, tackle, advAttack, " +
+            "advMid, advDef, keptDraft (true/false), rationale (até 4 frases curtas citando números).\n\n" +
+            "RASCUNHO ($draftSim):\n$draft\n\nSIMULAÇÃO (melhores primeiro):\n$table\n\n" +
+            "HISTÓRICO DAS SUAS TÁTICAS (resultado real):\n$statsText\n\nDADOS:\n$context"
+
+    /**
+     * Refino: a IA escolhe olhando a simulação das alternativas. Se a IA repetir o rascunho quando há opção
+     * claramente melhor, ou falhar, aplica a melhor tática simulada (com a explicação).
+     */
     suspend fun refineTactic(ctx: Context, repo: Repo, slot: Int): Outcome {
         val curPlan = repo.dao.plan(slot, "tactic")
         val curRound = repo.fieldMap(slot)[K.ROUND]?.value?.toIntOrNull()
@@ -491,6 +572,22 @@ object Director {
         val round = f[K.ROUND]?.value?.toIntOrNull()
         val rival = f[K.RIVAL_TEAM]?.value
         val draft = tacticPlanJson(res, round, rival, false)
+        val hist = history(repo, slot)
+        val base = simInput(repo, slot)
+        fun prob(t: Tactic, rows: List<List<PlayerEntity?>>): WinModel.Prob? {
+            val sp = simPlan(t, rows)
+            return WinModel.predict(base.copy(plan = sp, tacticRecord = record(hist, sp)))
+        }
+        AiStatus.set("Simulando táticas alternativas…")
+        val cands = candidates(res, inp, base, hist)
+        val draftProb = prob(res.tactic, res.rows)
+        val draftPts = draftProb?.points ?: 0.0
+        val best = cands.firstOrNull()
+        val table = cands.distinctBy { it.tactic.formation + it.tactic.playStyle }.take(8).joinToString("\n") { c ->
+            val p = prob(c.tactic, c.rows)
+            "${c.tactic.formation} • ${c.tactic.playStyle} • mentalidade ${c.tactic.mentality} • ${c.tactic.marking} • impedimento ${c.tactic.offside} " +
+                "• desarme ${c.tactic.tackle} => ${pct(p)} (pontos esperados ${"%.2f".format(c.points)})"
+        }
         val statLines = ArrayList<String>()
         for (x in Learning.stats(inp.history)) statLines.add("formação ${x.formation}: ${x.v}V ${x.e}E ${x.d}D")
         for (x in Learning.byStyle(inp.history)) statLines.add("estilo ${x.formation}: ${x.v}V ${x.e}E ${x.d}D")
@@ -498,25 +595,50 @@ object Director {
         for (r in recentReports(repo, slot)) statLines.add("jogo analisado: $r")
         val stats = statLines.joinToString("\n").ifBlank { "sem jogos registrados ainda" }
         val allowed = res.ranking.take(3).map { it.first }
-        val reply = AiClient.ask(ctx, tacticRefinePrompt(context(repo, slot), draft, stats, allowed), null)
+
+        val notes = ArrayList<String>()
+        var chosen: Cand? = null
+        val reply = AiClient.ask(ctx, tacticRefinePrompt(context(repo, slot), draft, pct(draftProb), table, stats, allowed), null)
         val json = AiClient.parseJson(reply.text)
-        if (!reply.ok || json == null) return Outcome(false, null, reply.error ?: "IA devolveu JSON inválido. Mantive a tática local.")
-        val (validated, err) = TacticValidator.validate(json, inp.referee)
-        if (validated == null) return Outcome(false, null, "$err. Mantive a tática local.")
-        val base = res.tactic
-        val tactic = TacticValidator.canonical(validated, base)
-        if (tactic.formation !in allowed) return Outcome(false, null, "IA sugeriu ${tactic.formation}, fora das 3 melhores opções do cálculo. Mantive a tática local.")
-        if (Math.abs(tactic.pressure - base.pressure) > 15 || Math.abs(tactic.mentality - base.mentality) > 15 || Math.abs(tactic.tempo - base.tempo) > 15) {
-            return Outcome(false, null, "IA fugiu dos limites de pressão/mentalidade/ritmo. Mantive a tática local.")
+        if (reply.ok && json != null) {
+            val (validated, err) = TacticValidator.validate(json, inp.referee)
+            if (validated != null) {
+                val t = TacticValidator.canonical(validated, res.tactic)
+                val okLimits = t.formation in allowed && Math.abs(t.pressure - res.tactic.pressure) <= 15 &&
+                    Math.abs(t.mentality - res.tactic.mentality) <= 15 && Math.abs(t.tempo - res.tactic.tempo) <= 15
+                val rows = TacticEngine.lineup(t.formation, inp.players, inp.fitness)?.first
+                if (okLimits && rows != null) {
+                    val pts = prob(t, rows)?.points ?: 0.0
+                    val bestPts = best?.points ?: pts
+                    val repeated = same(t, res.tactic)
+                    if (repeated && best != null && bestPts > draftPts + 0.05) {
+                        notes.add("A IA manteve o rascunho, mas a simulação achou opção melhor (${"%.2f".format(bestPts)} x ${"%.2f".format(draftPts)} pontos esperados): apliquei a melhor.")
+                    } else if (pts >= bestPts - 0.08) {
+                        chosen = Cand(t.copy(notes = t.notes), rows, pts)
+                        notes.addAll(t.notes)
+                        if (repeated) notes.add("Rascunho mantido: a simulação confirma que é a melhor opção (${"%.2f".format(pts)} pontos esperados).")
+                    } else {
+                        notes.add("A sugestão da IA (${t.formation} • ${t.playStyle}) rende menos na simulação (${"%.2f".format(pts)} x ${"%.2f".format(bestPts)}): apliquei a melhor simulada.")
+                    }
+                } else {
+                    notes.add("A IA saiu dos limites (formação fora das 3 melhores ou controles a mais de 15 pontos): apliquei a melhor simulada.")
+                }
+            } else {
+                notes.add("Resposta da IA inválida ($err): apliquei a melhor tática simulada.")
+            }
+        } else {
+            notes.add("IA indisponível agora (${(reply.error ?: "sem resposta").take(80)}): apliquei a melhor tática simulada.")
         }
-        val lineup = TacticEngine.lineup(tactic.formation, inp.players, inp.fitness) ?: return Outcome(false, null, "Sem XI para ${tactic.formation}.")
-        val notes = ArrayList<String>(tactic.notes)
-        notes.addAll(base.notes)
-        val merged = res.copy(tactic = tactic.copy(notes = notes), rows = lineup.first)
+        val pick = chosen ?: best ?: return Outcome(false, null, "Não consegui simular alternativas com o elenco lido.")
+        val pickProb = prob(pick.tactic, pick.rows)
+        notes.add("Chance com esta tática: ${pct(pickProb)} (rascunho: ${pct(draftProb)}).")
+        notes.addAll(res.tactic.notes)
+        val merged = res.copy(tactic = pick.tactic.copy(notes = notes), rows = pick.rows)
         val out = tacticPlanJson(merged, round, rival, true)
         val now = System.currentTimeMillis()
         repo.dao.putPlan(PlanEntity(slot, "tactic", out.toString(), now))
-        repo.dao.putPlan(PlanEntity(slot, "tlog_R${round ?: 0}", logJson(tactic, round, rival, inp).toString(), now))
+        repo.dao.putPlan(PlanEntity(slot, "tlog_R${round ?: 0}", logJson(pick.tactic, round, rival, inp).toString(), now))
+        AiStatus.set("")
         return Outcome(true, out.toString(), null)
     }
 

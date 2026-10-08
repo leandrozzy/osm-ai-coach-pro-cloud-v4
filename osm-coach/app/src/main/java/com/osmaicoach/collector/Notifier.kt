@@ -52,8 +52,9 @@ object MatchClock {
         cal.set(Calendar.SECOND, 0)
         cal.set(Calendar.MILLISECOND, 0)
         var t = cal.timeInMillis
-        // Sem data no card, o horário é de hoje; se já passou há muito tempo, é o de amanhã.
-        if (!dated && t < now - 12L * 3600000L) t += 24L * 3600000L
+        // Sem data, o card mostra a hora do PRÓXIMO jogo (ainda sem placar): se essa hora já passou no momento da
+        // leitura, o jogo é amanhã. (Antes: "hoje" até 12 h depois — fazia pedir resultado de jogo que não aconteceu.)
+        if (!dated && t < now - 5L * 60000L) t += 24L * 3600000L
         return t
     }
 }

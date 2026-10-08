@@ -147,20 +147,45 @@ object Evidence {
 }
 
 /**
- * Previsão de vitória/empate/derrota. Soma "pontos de força" de cada fator (força, setores, mando, rival humano,
- * bônus, forma recente, confronto anterior e o histórico da tática escolhida) e converte em probabilidades.
+ * Simulação do jogo: gols esperados de cada lado (Poisson) a partir do MEU XI e da TÁTICA gerada contra tudo o
+ * que se sabe do rival (setores, formação, estilo, marcação, impedimento, desarme, estágio, treino secreto, bônus),
+ * mais árbitro, mando e aprendizado. Cada fator mostra quanto muda a chance de vitória (em pontos percentuais).
  */
 object WinModel {
     data class Factor(val label: String, val pts: Double)
-    data class Prob(val win: Int, val draw: Int, val loss: Int, val factors: List<Factor>, val confidence: String, val edge: Double)
+    data class Prob(
+        val win: Int, val draw: Int, val loss: Int, val factors: List<Factor>, val confidence: String,
+        val xgMine: Double, val xgOpp: Double
+    ) {
+        /** Pontos esperados (3 por vitória, 1 por empate): critério para comparar táticas. */
+        val points: Double get() = (3.0 * win + draw) / 100.0
+    }
+
+    /** Tática avaliada (a gerada pelo app ou uma alternativa). */
+    data class Plan(
+        val formation: String, val style: String? = null, val pressure: Int = 50, val mentality: Int = 50, val tempo: Int = 50,
+        val marking: String? = null, val offside: String? = null, val tackle: String? = null,
+        val advAttack: String? = null, val advMid: String? = null,
+        /** Força média do XI por setor (GOL, DEF, MEI, ATA), se a escalação for conhecida. */
+        val xiGol: Double? = null, val xiDef: Double? = null, val xiMid: Double? = null, val xiAtk: Double? = null
+    )
 
     data class Input(
         val myStrength: Int?,
         val rivalStrength: Int?,
-        val myAtk: Int? = null, val myMid: Int? = null, val myDef: Int? = null,
-        val rivalAtk: Int? = null, val rivalMid: Int? = null, val rivalDef: Int? = null,
+        val myAtk: Int? = null, val myMid: Int? = null, val myDef: Int? = null, val myGol: Int? = null,
+        val rivalAtk: Int? = null, val rivalMid: Int? = null, val rivalDef: Int? = null, val rivalGol: Int? = null,
+        val plan: Plan? = null,
+        val rivalFormation: String? = null,
+        val rivalStyle: String? = null,
+        val rivalMarking: String? = null,
+        val rivalOffside: String? = null,
+        val rivalTackle: String? = null,
+        val rivalSecret: Boolean? = null,
+        val rivalCamp: Boolean? = null,
         val home: Boolean? = null,
         val rivalHuman: Boolean? = null,
+        val referee: String? = null,
         val myBonus: Int? = null,
         val rivalBonus: Int? = null,
         /** Últimos resultados (mais recente primeiro): "V", "E", "D". */
@@ -171,58 +196,199 @@ object WinModel {
         val tacticRecord: List<String> = emptyList()
     )
 
+    /** Efeito de um fator: no log dos meus gols esperados, no log dos gols do rival e na imprevisibilidade. */
+    private data class Term(val label: String, val my: Double, val opp: Double, val upset: Double = 0.0)
+
     private fun score(r: String): Double = when (r) {
         "V" -> 1.0
         "D" -> -1.0
         else -> 0.0
     }
 
-    fun predict(i: Input): Prob? {
-        val my = i.myStrength ?: return null
-        val rv = i.rivalStrength ?: return null
-        val fs = ArrayList<Factor>()
-        fs.add(Factor("Força geral", (my - rv).toDouble()))
-        if (listOf(i.myAtk, i.myMid, i.myDef, i.rivalAtk, i.rivalMid, i.rivalDef).all { it != null }) {
-            val s = ((i.myAtk!! - i.rivalDef!!) + (i.myMid!! - i.rivalMid!!) + (i.myDef!! - i.rivalAtk!!)) / 3.0
-            fs.add(Factor("Duelo dos setores", s * 0.4))
+    private fun n(s: String?): String = Txt.norm(s ?: "")
+
+    private fun terms(i: Input): List<Term>? {
+        val my = i.myStrength ?: listOfNotNull(i.myAtk, i.myMid, i.myDef).takeIf { it.isNotEmpty() }?.average()?.toInt() ?: return null
+        val rv = i.rivalStrength ?: listOfNotNull(i.rivalAtk, i.rivalMid, i.rivalDef).takeIf { it.isNotEmpty() }?.average()?.toInt() ?: return null
+        val p = i.plan
+        val atk = p?.xiAtk ?: i.myAtk?.toDouble() ?: my.toDouble()
+        val mid = p?.xiMid ?: i.myMid?.toDouble() ?: my.toDouble()
+        val def = p?.xiDef ?: i.myDef?.toDouble() ?: my.toDouble()
+        val gk = p?.xiGol ?: i.myGol?.toDouble() ?: def
+        val rAtk = (i.rivalAtk ?: rv).toDouble()
+        val rMid = (i.rivalMid ?: rv).toDouble()
+        val rDef = (i.rivalDef ?: rv).toDouble()
+        val rGk = (i.rivalGol ?: i.rivalDef ?: rv).toDouble()
+        val t = ArrayList<Term>()
+
+        // forças (com o XI escolhido, quando há tática)
+        val atkGap = atk - (0.8 * rDef + 0.2 * rGk)
+        val defGap = rAtk - (0.8 * def + 0.2 * gk)
+        t.add(Term("Meu ataque × defesa rival", atkGap / 28.0, 0.0))
+        t.add(Term("Ataque rival × minha defesa", 0.0, defGap / 28.0))
+        val midGap = mid - rMid
+        t.add(Term("Meio-campo", midGap / 70.0, -midGap / 70.0))
+        if (i.myBonus != null || i.rivalBonus != null) {
+            val b = (my * (i.myBonus ?: 0) - rv * (i.rivalBonus ?: 0)) / 100.0 / 28.0
+            t.add(Term("Bônus de login", b, -b))
         }
         when (i.home) {
-            true -> fs.add(Factor("Jogo em casa", 3.0))
-            false -> fs.add(Factor("Jogo fora", -3.0))
+            true -> t.add(Term("Jogo em casa", 0.10, -0.08))
+            false -> t.add(Term("Jogo fora", -0.08, 0.10))
             null -> {}
         }
+
+        // formação contra formação
+        val mine = p?.let { Formations.lines(it.formation) }?.takeIf { it.isNotEmpty() }
+        val theirs = i.rivalFormation?.let { Formations.lines(it) }?.takeIf { it.isNotEmpty() }
+        if (mine != null && theirs != null) {
+            val myM = 10 - mine.first() - mine.last()
+            val rM = 10 - theirs.first() - theirs.last()
+            if (myM != rM) t.add(Term("Meio: $myM × $rM jogadores", (myM - rM) * 0.04, -(myM - rM) * 0.03))
+            val press = (mine.last() - theirs.first() + 2) * 0.03
+            if (press != 0.0) t.add(Term("Atacantes × defensores rivais", press, 0.0))
+            val risk = (theirs.last() - mine.first() + 2) * 0.03
+            if (risk != 0.0) t.add(Term("Atacantes rivais × meus defensores", 0.0, risk))
+        }
+
+        if (p != null) {
+            val style = n(p.style)
+            val rStyle = n(i.rivalStyle)
+            val rAttacking = (theirs?.last() ?: 2) >= 3 || rStyle.contains("passe") || rStyle.contains("remate")
+            when {
+                style.contains("alas") -> {
+                    var v = 0.0
+                    if ((theirs?.first() ?: 4) <= 3) v += 0.06
+                    if (n(i.rivalMarking).contains("homem")) v += 0.04
+                    if ((theirs?.first() ?: 4) >= 5) v -= 0.05
+                    if (v != 0.0) t.add(Term("Jogar pelas alas × defesa rival", v, 0.0))
+                }
+                style.contains("contra") -> {
+                    var v = if (rAttacking) 0.08 else -0.02
+                    if (atkGap > 10) v -= 0.08
+                    t.add(Term("Contra-ataque × rival " + (if (rAttacking) "ofensivo" else "fechado"), v, -0.03))
+                }
+                style.contains("remate") -> {
+                    val v = if (atkGap >= 5) 0.06 else if (rGk > atk) -0.05 else 0.0
+                    if (v != 0.0) t.add(Term("Remate à vista × goleiro rival", v, 0.0))
+                }
+                style.contains("passe") -> {
+                    val v = if (midGap >= 3) 0.07 else if (midGap <= -3) -0.06 else 0.0
+                    if (v != 0.0) t.add(Term("Jogo de passe × meio rival", v, 0.0))
+                }
+                style.contains("long") || style.contains("bola") -> {
+                    val v = if (n(i.rivalOffside) == "sim") -0.07 else if (atkGap > 0) 0.05 else 0.0
+                    if (v != 0.0) t.add(Term("Bolas longas × linha rival", v, 0.0))
+                }
+            }
+            val m = (p.mentality - 50) / 50.0
+            if (m != 0.0) t.add(Term("Mentalidade ${p.mentality}", 0.12 * m, 0.10 * m))
+            val pr = (p.pressure - 50) / 50.0
+            if (pr != 0.0) {
+                var opp = if (midGap >= 0) -0.03 * pr else 0.04 * pr
+                if (rStyle.contains("passe")) opp -= 0.04 * pr
+                t.add(Term("Pressão ${p.pressure}", 0.05 * pr, opp))
+            }
+            val tp = (p.tempo - 50) / 50.0
+            if (tp != 0.0) t.add(Term("Ritmo ${p.tempo}", if (atkGap >= 0) 0.04 * tp else -0.02 * tp, 0.0))
+            if (n(p.marking).contains("homem")) {
+                t.add(Term("Marcação homem a homem", 0.0, if (def >= rAtk) -0.05 else 0.07))
+            }
+            if (n(p.offside) == "sim") {
+                val opp = if (rStyle.contains("contra") || rStyle.contains("long")) 0.10 else if (def >= rAtk) -0.04 else 0.05
+                t.add(Term("Linha de impedimento", 0.0, opp))
+            }
+            if (n(p.tackle).contains("agress")) {
+                when (i.referee) {
+                    "Rigoroso" -> t.add(Term("Desarme agressivo × árbitro rigoroso", -0.03, 0.10))
+                    "Brando" -> t.add(Term("Desarme agressivo × árbitro brando", 0.05, -0.04))
+                    else -> t.add(Term("Desarme agressivo", 0.03, 0.03))
+                }
+            }
+            when {
+                n(p.advAttack).contains("atacar") -> t.add(Term("Atacantes: atacar apenas", 0.03, 0.02))
+                n(p.advAttack).contains("ajudar") -> t.add(Term("Atacantes: ajudar a defender", -0.03, -0.05))
+            }
+            when {
+                n(p.advMid).contains("pression") -> t.add(Term("Meias: pressionar à frente", 0.04, 0.03))
+                n(p.advMid).contains("ajudar") -> t.add(Term("Meias: ajudar a defesa", -0.03, -0.05))
+            }
+        }
+        if (n(i.rivalTackle).contains("agress") && i.referee == "Rigoroso") t.add(Term("Rival agressivo × árbitro rigoroso", 0.06, -0.02))
+        if (i.rivalCamp == true) t.add(Term("Rival fez estágio", -0.03, 0.04))
+        if (i.rivalSecret == true) t.add(Term("Treino secreto do rival", 0.0, 0.02, 0.06))
         when (i.rivalHuman) {
-            true -> fs.add(Factor("Rival humano", -1.5))
-            false -> fs.add(Factor("Rival CPU", 1.0))
+            true -> t.add(Term("Rival humano", 0.0, 0.02, 0.03))
+            false -> t.add(Term("Rival CPU", 0.02, 0.0))
             null -> {}
-        }
-        if (i.myBonus != null || i.rivalBonus != null) {
-            val b = ((i.myBonus ?: 0) - (i.rivalBonus ?: 0)) * 0.25
-            if (b != 0.0) fs.add(Factor("Bônus de login", b))
         }
         if (i.recent.isNotEmpty()) {
-            val f = i.recent.take(5).map { score(it) }.average() * 2.5
-            fs.add(Factor("Forma recente " + i.recent.take(5).joinToString(""), f))
+            val f = i.recent.take(5).map { score(it) }.average()
+            t.add(Term("Forma recente " + i.recent.take(5).joinToString(""), 0.06 * f, -0.03 * f))
         }
-        if (i.headToHead.isNotEmpty()) {
-            fs.add(Factor("Confronto anterior", i.headToHead.map { score(it) }.average() * 2.0))
-        }
+        if (i.headToHead.isNotEmpty()) t.add(Term("Confronto anterior", 0.05 * i.headToHead.map { score(it) }.average(), 0.0))
         if (i.tacticRecord.size >= 2) {
             val wr = i.tacticRecord.count { it == "V" }.toDouble() / i.tacticRecord.size
-            fs.add(Factor("Histórico desta tática (${i.tacticRecord.size} jogos)", ((wr - 0.45) * 8.0).coerceIn(-4.0, 4.0)))
+            t.add(Term("Histórico desta tática (${i.tacticRecord.size} jogos)", ((wr - 0.45) * 0.3).coerceIn(-0.15, 0.15), 0.0))
         }
-        val d = fs.sumOf { it.pts }
-        val pDraw = 0.27 * exp(-(d / 16.0) * (d / 16.0)) + 0.03
-        val pWin = (1.0 - pDraw) / (1.0 + exp(-d / 9.0))
-        val win = (pWin * 100).roundToInt().coerceIn(2, 96)
-        val draw = (pDraw * 100).roundToInt().coerceIn(2, 40).coerceAtMost(99 - win)
+        return t
+    }
+
+    private fun poisson(l: Double): DoubleArray {
+        val out = DoubleArray(11)
+        var v = exp(-l)
+        for (k in 0..10) {
+            out[k] = v
+            v = v * l / (k + 1)
+        }
+        return out
+    }
+
+    /** (vitória, empate, derrota, gols meus, gols rival) para um conjunto de fatores. */
+    private fun outcome(ts: List<Term>): DoubleArray {
+        val lm = (1.35 * exp(ts.sumOf { it.my })).coerceIn(0.1, 6.0)
+        val lo = (1.35 * exp(ts.sumOf { it.opp })).coerceIn(0.1, 6.0)
+        val a = poisson(lm)
+        val b = poisson(lo)
+        var w = 0.0
+        var d = 0.0
+        var l = 0.0
+        for (x in 0..10) for (y in 0..10) {
+            val pr = a[x] * b[y]
+            if (x > y) w += pr else if (x == y) d += pr else l += pr
+        }
+        val tot = w + d + l
+        // futebol tem zebra: parte da chance é sempre imprevisível (mais com rival humano ou treino secreto)
+        val u = (0.12 + ts.sumOf { it.upset }).coerceAtMost(0.25)
+        return doubleArrayOf(
+            (1 - u) * w / tot + u * 0.36, (1 - u) * d / tot + u * 0.28, (1 - u) * l / tot + u * 0.36, lm, lo
+        )
+    }
+
+    /** Pontos esperados (3V + 1E) sem detalhar fatores: rápido para comparar centenas de táticas. */
+    fun expectedPoints(i: Input): Double? {
+        val o = outcome(terms(i) ?: return null)
+        return 3.0 * o[0] + o[1]
+    }
+
+    fun predict(i: Input): Prob? {
+        val ts = terms(i) ?: return null
+        val all = outcome(ts)
+        val win = (all[0] * 100).roundToInt().coerceIn(1, 98)
+        val draw = (all[1] * 100).roundToInt().coerceIn(1, 99 - win)
         val loss = 100 - win - draw
-        val known = listOf(i.home != null, i.rivalHuman != null, i.myAtk != null && i.rivalDef != null, i.recent.isNotEmpty(), i.tacticRecord.size >= 2).count { it }
+        // quanto cada fator muda a chance de vitória (tirando só ele)
+        val factors = ts.map { term -> Factor(term.label, (all[0] - outcome(ts.filter { it !== term })[0]) * 100.0) }
+            .filter { kotlin.math.abs(it.pts) >= 0.5 }
+        val known = listOf(
+            i.plan != null, i.rivalAtk != null && i.rivalDef != null, i.rivalFormation != null, i.home != null,
+            i.rivalStyle != null, i.referee != null, i.recent.isNotEmpty()
+        ).count { it }
         val conf = when {
-            known >= 4 -> "alta"
-            known >= 2 -> "média"
+            known >= 6 -> "alta"
+            known >= 3 -> "média"
             else -> "baixa"
         }
-        return Prob(win, draw, loss, fs.filter { kotlin.math.abs(it.pts) >= 0.3 }, conf, d)
+        return Prob(win, draw, loss, factors, conf, all[3], all[4])
     }
 }

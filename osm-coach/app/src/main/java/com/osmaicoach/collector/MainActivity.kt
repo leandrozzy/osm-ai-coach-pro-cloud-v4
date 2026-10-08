@@ -94,6 +94,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.io.File
+import kotlin.math.roundToInt
 import kotlin.math.sqrt
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -557,7 +558,7 @@ private suspend fun loadSlot(ctx: Context, slot: Int): SlotData {
         reports = dao.matchReports(slot),
         fitness = repo.fitness(slot),
         rivalProfile = repo.rivalProfile(slot),
-        win = Director.winProb(repo, slot, tplan?.optString("formation")?.ifBlank { null }, tplan?.optString("playStyle")?.ifBlank { null }),
+        win = Director.winProb(repo, slot, tplan?.takeIf { tacticCurrent(it, f) }),
         evidence = repo.evidence(slot)
     )
 }
@@ -568,6 +569,12 @@ private fun scoredRounds(reports: List<PlanEntity>): Set<Int> = reports.mapNotNu
     val j = try { JSONObject(p.json) } catch (e: Exception) { return@mapNotNull null }
     if (j.has("sh") && j.has("sa")) r else null
 }.toSet()
+
+/** A tática guardada é da próxima rodada (senão a previsão usa só as forças). */
+private fun tacticCurrent(j: JSONObject, f: Map<String, StoredField>): Boolean {
+    val r = f[K.ROUND]?.value?.toIntOrNull() ?: return true
+    return j.optInt("forRound", -1) == r
+}
 
 private fun known(f: Map<String, StoredField>, key: String): String? =
     f[key]?.value?.takeIf { FieldMerge.known(it) }
@@ -617,7 +624,7 @@ private suspend fun loadToday(ctx: Context): TodayData {
                 nextAt = known(f, K.MATCH_AT)?.toLongOrNull(),
                 tacticReady = tacticFor(repo, slot, known(f, K.ROUND)?.toIntOrNull()),
                 needsResult = awaiting != null,
-                win = Director.winProb(repo, slot, tplan?.optString("formation")?.ifBlank { null }, tplan?.optString("playStyle")?.ifBlank { null })
+                win = Director.winProb(repo, slot, tplan?.takeIf { tacticCurrent(it, f) })
             )
         )
     }
@@ -1621,7 +1628,7 @@ private fun MatchCard(m: MatchEntity, modifier: Modifier, highlight: Boolean, vo
     val shape = RoundedCornerShape(12.dp)
     val frame = if (highlight) modifier.border(2.dp, C.GOLD, shape) else if (cup && !void) modifier.border(1.dp, Color(0x669B6BFF), shape) else modifier
     Column(
-        frame.clickable { onClick() }.height(128.dp).clip(shape).background(tint).graphicsLayer { alpha = if (void) 0.4f else 1f }.padding(8.dp),
+        frame.clickable { onClick() }.height(140.dp).clip(shape).background(tint).graphicsLayer { alpha = if (void) 0.4f else 1f }.padding(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -1629,10 +1636,20 @@ private fun MatchCard(m: MatchEntity, modifier: Modifier, highlight: Boolean, vo
             ResultBadge(m.result)
         }
         Text(score, fontSize = 26.sp, fontWeight = FontWeight.ExtraBold)
+        val opp = Fixtures.opponent(m)
+        val nick = m.opponentNick?.takeIf { Evidence.plausibleNick(it) }
         Text(
-            (Fixtures.opponent(m) ?: Fixtures.stage(m) ?: NI) + (if (m.opponentNick != null) " 👤" else ""),
+            opp ?: Fixtures.stage(m) ?: NI,
             fontSize = 11.sp, textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold
         )
+        // Humano (apelido sob o time no card) ou CPU (card lido sem apelido).
+        if (opp != null) {
+            Text(
+                if (nick != null) "👤 $nick" else "🖥 CPU",
+                fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                color = if (nick != null) Color(0xFF7FD8A0) else C.MUTED
+            )
+        }
         Text(m.date ?: m.time ?: "", fontSize = 10.sp, color = C.MUTED, modifier = Modifier.padding(top = 2.dp))
         if (void) Text("ELIMINADO", fontSize = 9.sp, color = C.BAD, fontWeight = FontWeight.Bold)
         else if (highlight) Text("PRÓXIMO", fontSize = 9.sp, color = C.GOLD, fontWeight = FontWeight.Bold)
@@ -2198,15 +2215,16 @@ private fun WinCard(p: WinModel.Prob?, compact: Boolean = false) {
                 Text("E ${p.draw}%", fontSize = 11.sp, color = C.DRAW, fontWeight = FontWeight.Bold)
                 Text("D ${p.loss}%", fontSize = 11.sp, color = C.LOSS, fontWeight = FontWeight.Bold)
             }
-            val edge = (if (p.edge >= 0) "+" else "") + String.format(Locale.US, "%.1f", p.edge).replace('.', ',')
-            Text("Vantagem $edge • confiança ${p.confidence}", fontSize = 11.sp, color = Color(0xB3FFFFFF), modifier = Modifier.padding(top = 2.dp))
+            fun g(x: Double) = String.format(Locale.US, "%.1f", x).replace('.', ',')
+            Text("Gols esperados ${g(p.xgMine)} × ${g(p.xgOpp)} • confiança ${p.confidence}", fontSize = 11.sp, color = Color(0xB3FFFFFF), modifier = Modifier.padding(top = 2.dp))
         }
     }
     if (!compact && p.factors.isNotEmpty()) {
-        FlowRow(Modifier.fillMaxWidth().padding(top = 8.dp)) {
-            for (f in p.factors.sortedByDescending { kotlin.math.abs(it.pts) }) {
+        Text("O que pesa na chance de vitória (com a tática gerada):", fontSize = 10.sp, color = Color(0xB3FFFFFF), modifier = Modifier.padding(top = 8.dp))
+        FlowRow(Modifier.fillMaxWidth().padding(top = 2.dp)) {
+            for (f in p.factors.sortedByDescending { kotlin.math.abs(it.pts) }.take(10)) {
                 val pos = f.pts >= 0
-                val v = (if (pos) "+" else "−") + String.format(Locale.US, "%.1f", kotlin.math.abs(f.pts)).replace('.', ',')
+                val v = (if (pos) "+" else "−") + kotlin.math.abs(f.pts).roundToInt() + "%"
                 Box(
                     Modifier.padding(end = 6.dp, top = 4.dp).clip(RoundedCornerShape(50))
                         .background(if (pos) Color(0x3314532D) else Color(0x336B1D1D))
@@ -2531,6 +2549,21 @@ private fun playedRows(d: SlotData): List<PlayedRow> {
         ?.round?.let { rounds.add(it) }
     // Copa da qual já fui eliminado: esses cards não são jogos meus.
     rounds.removeAll { r -> league[r]?.let { Fixtures.void(it, d.matches) } == true }
+    // Só libera jogo que já aconteceu: com placar lido, com o horário do card já passado ou de data antiga.
+    // Tática gerada para o próximo jogo NÃO é motivo para pedir resultado.
+    val now = System.currentTimeMillis()
+    val nextRound = known(d.fields, K.ROUND)?.toIntOrNull()
+    rounds.removeAll { r ->
+        val rep = reports[r]
+        val m = league[r]
+        val scored = (rep != null && rep.has("sh") && rep.has("sa")) || (m != null && (m.result != null || m.scoreMine != null))
+        val happened = when {
+            scored -> true
+            m != null -> Fixtures.started(m, now)
+            else -> nextRound != null && r < nextRound
+        }
+        !happened
+    }
     return rounds.descendingSet().map { r ->
         val t = logs[r]
         val rep = reports[r]

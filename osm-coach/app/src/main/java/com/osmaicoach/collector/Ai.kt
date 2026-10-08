@@ -155,7 +155,37 @@ object AiClient {
         }
     }
 
-    private fun short(s: String): String = s.replace("\n", " ").take(180)
+    /** Só a mensagem do erro da API (o corpo inteiro em JSON é ilegível na tela). */
+    private fun short(s: String): String {
+        val msg = try {
+            JSONObject(s).optJSONObject("error")?.optString("message")?.ifBlank { null }
+        } catch (e: Exception) {
+            null
+        }
+        return (msg ?: s).replace("\n", " ").replace(Regex("\\s+"), " ").take(140)
+    }
+
+    // ---------------------------------------------------------------- cotas do Gemini por modelo
+
+    private fun blockPrefs(ctx: Context) = ctx.getSharedPreferences("ai_block", Context.MODE_PRIVATE)
+
+    /** Modelo com a cota DIÁRIA esgotada: não é tentado de novo até amanhã (economiza tempo e chamadas). */
+    private fun blockedToday(ctx: Context, model: String): Boolean = blockPrefs(ctx).getString(model, "") == today()
+
+    private fun blockForToday(ctx: Context, model: String) {
+        blockPrefs(ctx).edit().putString(model, today()).apply()
+    }
+
+    /** 429 por cota diária (ou plano sem cota) x limite por minuto (passa esperando alguns segundos). */
+    private fun dailyQuota(body: String): Boolean {
+        val b = body.lowercase()
+        return b.contains("perday") || b.contains("per day") || b.contains("limit: 0") ||
+            (b.contains("exceeded your current quota") && !b.contains("perminute"))
+    }
+
+    /** "retryDelay": "17s" no corpo do 429 por minuto. */
+    private fun retryDelayMs(body: String): Long? =
+        Regex("\"retryDelay\"\\s*:\\s*\"(\\d+)(?:\\.\\d+)?s\"").find(body)?.groupValues?.get(1)?.toLongOrNull()?.times(1000L)
 
     private fun today(): String = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US).format(java.util.Date())
 
@@ -211,7 +241,11 @@ object AiClient {
         if (cached.isNotEmpty() && !forceDiscover) return cached
         val ranked = withContext(Dispatchers.IO) {
             try { ModelPicker.rankGemini(listGemini(key)) } catch (e: Exception) { emptyList<String>() }
-        }.take(3)
+        }.let { r ->
+            // os 4 melhores + um "lite" (cota separada) como reserva
+            val top = r.filter { !it.contains("lite") }.take(4)
+            top + r.filter { it.contains("lite") }.take(1)
+        }
         if (ranked.isNotEmpty()) Settings.put(ctx, Settings.GEMINI_RESOLVED, ranked.joinToString(","))
         return ranked.ifEmpty { cached.ifEmpty { listOf("gemini-2.5-flash") } }
     }
@@ -233,8 +267,10 @@ object AiClient {
     private suspend fun gemini(ctx: Context, prompt: String, jpeg: ByteArray?): Reply = withContext(Dispatchers.IO) {
         val key = Settings.get(ctx, Settings.GEMINI_KEY, "")
         if (key.isBlank()) return@withContext Reply(false, null, "chave do Gemini não configurada")
-        var models = geminiModels(ctx, key, false)
+        var models = geminiModels(ctx, key, false).filter { !blockedToday(ctx, it) }
+        if (models.isEmpty()) return@withContext Reply(false, null, "cota diária do Gemini esgotada em todos os modelos (volta amanhã)")
         var rediscovered = false
+        var waited = false
         var withThinking = true
         var lastErr = "falha desconhecida"
         var idx = 0
@@ -262,14 +298,28 @@ object AiClient {
                     return@withContext Reply(true, t, null)
                 }
                 lastErr = "$model: HTTP ${r.code} " + short(r.body)
-                if (r.code == 429) slowUntil = System.currentTimeMillis() + 600000L
+                if (r.code == 429) {
+                    if (dailyQuota(r.body)) {
+                        blockForToday(ctx, model)
+                        lastErr = "$model: cota diária esgotada"
+                    } else {
+                        slowUntil = System.currentTimeMillis() + 600000L
+                        val wait = retryDelayMs(r.body)
+                        if (!waited && wait != null && wait <= 20000L) {
+                            waited = true
+                            AiStatus.set("Gemini ($model): limite por minuto, aguardando ${wait / 1000}s…")
+                            delay(wait + 500L)
+                            continue
+                        }
+                    }
+                }
                 if (r.code == 400 && withThinking && r.body.contains("thinking", true)) {
                     withThinking = false
                     continue
                 }
                 if ((r.code == 404 || r.code == 400) && !rediscovered && r.body.contains("model", true)) {
                     rediscovered = true
-                    models = geminiModels(ctx, key, true)
+                    models = geminiModels(ctx, key, true).filter { !blockedToday(ctx, it) }
                     idx = 0
                     continue
                 }
@@ -317,12 +367,15 @@ object AiClient {
 
     private suspend fun compatVisionModel(ctx: Context, base: String, key: String): String? {
         val cached = Settings.get(ctx, Settings.COMPAT_VISION, "")
-        if (cached == "none") return null
-        if (cached.isNotBlank()) return cached
+        // "none@instante": sem modelo com visão na última consulta; tenta de novo depois de 12 h
+        if (cached.startsWith("none")) {
+            val at = cached.substringAfter("@", "0").toLongOrNull() ?: 0L
+            if (System.currentTimeMillis() - at < 12L * 3600000L) return null
+        } else if (cached.isNotBlank()) return cached
         val picked = withContext(Dispatchers.IO) {
             try { ModelPicker.pickCompatVision(listCompat(base, key)) } catch (e: Exception) { null }
         }
-        Settings.put(ctx, Settings.COMPAT_VISION, picked ?: "none")
+        Settings.put(ctx, Settings.COMPAT_VISION, picked ?: ("none@" + System.currentTimeMillis()))
         return picked
     }
 
