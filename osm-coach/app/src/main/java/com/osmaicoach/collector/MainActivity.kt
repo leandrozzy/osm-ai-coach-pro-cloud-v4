@@ -65,6 +65,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -690,9 +691,15 @@ private fun OsmButton(modifier: Modifier = Modifier) {
 
 @Composable
 private fun App() {
-    var tab by remember { mutableIntStateOf(0) }
-    var openSlot by remember { mutableIntStateOf(0) }
-    var openTab by remember { mutableIntStateOf(0) }
+    val ctx = LocalContext.current
+    // Volta exatamente para a tela em que estava (ao alternar com o OSM ou se o Android recriar o app).
+    val ui = remember { ctx.getSharedPreferences("ui", Context.MODE_PRIVATE) }
+    var tab by rememberSaveable { mutableIntStateOf(ui.getInt("tab", 0)) }
+    var openSlot by rememberSaveable { mutableIntStateOf(ui.getInt("slot", 0)) }
+    var openTab by rememberSaveable { mutableIntStateOf(ui.getInt("slotTab", 0)) }
+    LaunchedEffect(tab, openSlot, openTab) {
+        ui.edit().putInt("tab", tab).putInt("slot", openSlot).putInt("slotTab", openTab).apply()
+    }
     val items = listOf("🏠" to "Hoje", "🕘" to "Sessões", "⚽" to "Slots", "🧠" to "Diretor", "⚙️" to "Ajustes")
     // Botão Voltar do Android: fecha o slot aberto, depois volta para Hoje (em vez de fechar o app).
     BackHandler(enabled = openSlot > 0) { openSlot = 0 }
@@ -727,10 +734,10 @@ private fun App() {
                 0 -> TodayTab(onGoSettings = { tab = 4 }, onOpenSlot = { slot, t -> tab = 2; openSlot = slot; openTab = t })
                 1 -> SessionsTab()
                 2 -> if (openSlot > 0) {
-                    key(openSlot, openTab) { SlotScreen(openSlot, openTab) { openSlot = 0 } }
+                    key(openSlot) { SlotScreen(openSlot, openTab, { openTab = it }) { openSlot = 0 } }
                 } else SlotsTab { slot, t -> openSlot = slot; openTab = t }
                 3 -> if (openSlot > 0) {
-                    key(openSlot, openTab) { SlotScreen(openSlot, openTab) { openSlot = 0 } }
+                    key(openSlot) { SlotScreen(openSlot, openTab, { openTab = it }) { openSlot = 0 } }
                 } else DirectorTab { slot, t -> openSlot = slot; openTab = t }
                 else -> SettingsTab()
             }
@@ -1268,11 +1275,10 @@ private fun DirectorTab(onOpen: (Int, Int) -> Unit) {
 }
 
 @Composable
-private fun SlotScreen(slot: Int, startTab: Int, onBack: () -> Unit) {
+private fun SlotScreen(slot: Int, tab: Int, onTab: (Int) -> Unit, onBack: () -> Unit) {
     val ctx = LocalContext.current
     val tick = rememberTick(2000L)
     val data = rememberLoaded(SlotData(), tick, Pair(slot, UiBus.version)) { loadSlot(ctx, slot) }
-    var tab by remember { mutableIntStateOf(startTab) }
     val tabs = listOf("Resumo", "Pré-jogo", "Elenco", "Calendário", "Tática", "Resultado", "Diretor", "Aprendizado")
     val title = known(data.fields, K.TEAM) ?: known(data.fields, K.HUB_TITLE) ?: "Slot $slot ainda não lido"
     Column(Modifier.fillMaxSize()) {
@@ -1288,7 +1294,7 @@ private fun SlotScreen(slot: Int, startTab: Int, onBack: () -> Unit) {
             OsmButton()
         }
         ScrollableTabRow(selectedTabIndex = tab, edgePadding = 4.dp, containerColor = C.BG) {
-            tabs.forEachIndexed { i, t -> Tab(selected = tab == i, onClick = { tab = i }, text = { Text(t, fontSize = 13.sp) }) }
+            tabs.forEachIndexed { i, t -> Tab(selected = tab == i, onClick = { onTab(i) }, text = { Text(t, fontSize = 13.sp) }) }
         }
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
             when (tab) {
@@ -1297,7 +1303,7 @@ private fun SlotScreen(slot: Int, startTab: Int, onBack: () -> Unit) {
                 2 -> SlotSquad(slot, data)
                 3 -> SlotCalendar(slot, data)
                 4 -> SlotTactic(slot, data)
-                5 -> SlotResult(slot, data) { tab = 4 }
+                5 -> SlotResult(slot, data) { onTab(4) }
                 6 -> SlotDirector(slot, data)
                 else -> SlotLearning(slot, data)
             }
@@ -1340,7 +1346,7 @@ private fun SlotSummaryTab(slot: Int, d: SlotData) {
         Spacer(Modifier.height(10.dp))
         WinCard(d.win)
     }
-    EvidencePanel(d.evidence)
+    EvidencePanel(d.evidence, fv(d, K.RIVAL_HUMAN) == "Não")
     EditSection(
         slot, d, "Competição",
         listOf(
@@ -1803,6 +1809,8 @@ private fun arrowSet(option: String): List<Triple<Float, Float, Color>> {
         n.contains("manter") -> listOf(Triple(-1f, 0f, OR), Triple(1f, 0f, OR))
         n.contains("pressionar") -> listOf(Triple(0f, -1f, CY), Triple(-0.7f, -0.7f, OR), Triple(0.7f, -0.7f, OR))
         n.contains("defender atras") -> listOf(Triple(0f, 1f, OR), Triple(-0.7f, 0.7f, OR), Triple(0.7f, 0.7f, OR))
+        n.contains("ajudar meio") || n.contains("apoiar meio") -> listOf(Triple(0f, 1f, OR), Triple(0f, -1f, CY))
+        n.contains("laterais") -> listOf(Triple(-1f, -0.6f, CY), Triple(1f, -0.6f, CY))
         else -> emptyList()
     }
 }
@@ -2271,10 +2279,11 @@ private fun WinCard(p: WinModel.Prob?, compact: Boolean = false) {
 
 /** Conferência entre telas: o mesmo dado lido no pré-jogo, calendário, análise e plantel do rival. */
 @Composable
-private fun EvidencePanel(ev: JSONObject?) {
+private fun EvidencePanel(ev: JSONObject?, cpu: Boolean = false) {
     if (ev == null || ev.length() == 0) return
-    val items = listOf(
-        K.RIVAL_TEAM to "Próximo rival", K.RIVAL_NICK to "Apelido (rival humano)", K.HOME to "Casa/fora",
+    // rival CPU não tem apelido: a linha do apelido não se aplica
+    val items = listOfNotNull(
+        K.RIVAL_TEAM to "Próximo rival", if (cpu) null else K.RIVAL_NICK to "Apelido (rival humano)", K.HOME to "Casa/fora",
         K.RIVAL_STRENGTH to "Força do rival", K.RIVAL_FORMATION to "Formação do rival"
     )
     Panel {

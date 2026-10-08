@@ -541,7 +541,7 @@ object AiPrompts {
         "jogador DEFINE a própria tática (setas, controles deslizantes, \"Define a tua tática\"); senão \"other\". " +
         "Se kind não for rival_report, devolva só {\"kind\": \"...\"}. " +
         "Para rival_report as chaves são: " +
-        "formation (ex.: \"4-4-2\" ou \"4-4-2 B\"), playStyle (estilo de jogo), marking (\"À zona\" ou \"Homem a homem\"), " +
+        "formation (ex.: \"4-4-2\" ou \"4-4-2 B\"), playStyle (estilo de jogo), marking (\"À zona\" ou \"Individual\"), " +
         "offside (\"Sim\" ou \"Não\"), tackle (desarme: ex. \"Normal\" ou \"Agressivo\"), " +
         "secretTraining (\"Sim\" SOMENTE se houver um cadeado visível no relatório; caso contrário \"NI\"), " +
         "trainingCamp (\"Sim\"/\"Não\"/\"NI\"), rivalStrength (número), rivalValue (ex.: \"21,1M\" — mantenha a vírgula), " +
@@ -578,10 +578,10 @@ object AiMapper {
         val c = 0.7
         clean(j.optString("formation"))?.takeIf { rxFormation.matches(it.uppercase()) }
             ?.let { out[K.RIVAL_FORMATION] = Reading(it.uppercase(), c) }
-        clean(j.optString("playStyle"))?.let { out[K.RIVAL_PLAN] = Reading(it, c) }
-        clean(j.optString("marking"))?.let { out[K.RIVAL_MARKING] = Reading(it, c) }
+        Osm.style(clean(j.optString("playStyle")))?.let { out[K.RIVAL_PLAN] = Reading(it, c) }
+        Osm.marking(clean(j.optString("marking")))?.let { out[K.RIVAL_MARKING] = Reading(it, c) }
         yesNo(j.optString("offside"))?.let { out[K.RIVAL_OFFSIDE] = Reading(it, c) }
-        clean(j.optString("tackle"))?.let { out[K.RIVAL_TACKLE] = Reading(it, c) }
+        Osm.tackle(clean(j.optString("tackle")))?.let { out[K.RIVAL_TACKLE] = Reading(it, c) }
         // Treino secreto só é aceito como "Sim" (cadeado visível); ausência de cadeado não prova "Não".
         if (yesNo(j.optString("secretTraining")) == "Sim") out[K.RIVAL_SECRET] = Reading("Sim", c)
         yesNo(j.optString("trainingCamp"))?.let { out[K.RIVAL_CAMP] = Reading(it, c) }

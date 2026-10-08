@@ -267,3 +267,78 @@ object Pos {
         else -> null
     }
 }
+
+/**
+ * Valores reais das opções do OSM (como aparecem no jogo). Tudo que vem da IA, do OCR ou de versões antigas
+ * passa por aqui para virar exatamente o texto do jogo.
+ */
+object Osm {
+    val STYLES = listOf("Jogar pelas alas", "Jogo de passes", "Contra-ataque", "Remate à vista", "Bola longa")
+    val MARKING = listOf("À zona", "Individual")
+    val TACKLES = listOf("Cauteloso", "Normal", "Agressivo", "Imprudente")
+    val ATTACK = listOf("Atacar apenas", "Ajudar meio-campo", "Ajudar a defesa")
+    val MIDFIELD = listOf("Pressionar na frente", "Manter posição", "Ajudar a defesa")
+    val DEFENSE = listOf("Defender atrás", "Laterais ofensivos", "Apoiar meio-campo")
+
+    fun style(s: String?): String? {
+        val n = Txt.norm(s ?: "")
+        return when {
+            n.contains("alas") -> "Jogar pelas alas"
+            n.contains("passe") -> "Jogo de passes"
+            n.contains("contra") -> "Contra-ataque"
+            n.contains("remate") -> "Remate à vista"
+            n.contains("bola") || n.contains("long") -> "Bola longa"
+            else -> null
+        }
+    }
+
+    fun marking(s: String?): String? {
+        val n = Txt.norm(s ?: "")
+        return when {
+            n.contains("zona") -> "À zona"
+            n.contains("individ") || n.contains("homem") -> "Individual"
+            else -> null
+        }
+    }
+
+    fun tackle(s: String?): String? {
+        val n = Txt.norm(s ?: "")
+        return when {
+            n.contains("cautel") -> "Cauteloso"
+            n.contains("imprud") -> "Imprudente"
+            n.contains("agress") -> "Agressivo"
+            n.contains("normal") -> "Normal"
+            else -> null
+        }
+    }
+
+    fun attack(s: String?): String? {
+        val n = Txt.norm(s ?: "")
+        return when {
+            n.contains("atacar") -> "Atacar apenas"
+            n.contains("meio") -> "Ajudar meio-campo"
+            n.contains("defe") -> "Ajudar a defesa"
+            else -> null
+        }
+    }
+
+    fun midfield(s: String?): String? {
+        val n = Txt.norm(s ?: "")
+        return when {
+            n.contains("pression") -> "Pressionar na frente"
+            n.contains("manter") -> "Manter posição"
+            n.contains("ajudar") || n.contains("defesa") -> "Ajudar a defesa"
+            else -> null
+        }
+    }
+
+    fun defense(s: String?): String? {
+        val n = Txt.norm(s ?: "")
+        return when {
+            n.contains("lateral") -> "Laterais ofensivos"
+            n.contains("apoiar") || n.contains("meio") -> "Apoiar meio-campo"
+            n.contains("defender") || n.contains("atras") -> "Defender atrás"
+            else -> null
+        }
+    }
+}

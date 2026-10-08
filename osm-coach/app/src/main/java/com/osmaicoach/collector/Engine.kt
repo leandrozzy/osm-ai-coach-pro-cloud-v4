@@ -3,10 +3,69 @@ package com.osmaicoach.collector
 import kotlin.math.exp
 
 object Formations {
-    val ALL = listOf(
-        "4-3-3", "4-4-2", "4-2-3-1", "4-5-1", "5-3-2", "3-5-2", "3-4-3", "5-4-1",
-        "4-1-4-1", "4-3-2-1", "3-3-2-2", "4-1-3-2"
-    )
+    /** Formações do OSM com a variante (A/B) como aparece no jogo. */
+    val OSM = listOf("4-3-3 A", "4-3-3 B", "4-4-2 A", "4-4-2 B", "4-2-3-1", "4-5-1", "5-3-2", "5-4-1 A")
+
+    /** Formações vistas nas telas do jogo (rivais, análise, meu plantel): entram no catálogo. */
+    private val seen = java.util.concurrent.CopyOnWriteArraySet<String>()
+
+    private val RX = Regex("([3-6]-\\d-\\d(?:-\\d)?)\\s*([A-Da-d])?\\b")
+
+    val ALL: List<String> get() = (OSM + seen).distinct()
+
+    /** Bases (sem a letra) que o motor avalia. */
+    val BASES: List<String> get() = ALL.map { base(it) }.distinct()
+
+    fun base(f: String): String = f.trim().split(" ")[0]
+
+    fun learn(name: String?): Boolean {
+        val c = parse(name) ?: return false
+        if (c in OSM || lines(c).isEmpty()) return false
+        return seen.add(c)
+    }
+
+    fun seenList(): List<String> = seen.toList()
+
+    /** "4-3-3b", "4-3-3 B", "433B" -> "4-3-3 B" (sem checar catálogo). */
+    fun parse(s: String?): String? {
+        val t = (s ?: "").trim()
+        val compact = Regex("^([3-6])([1-6])([0-6])([0-6])?\\s*([A-Da-d])?$").find(t.replace("-", "").replace(" ", ""))
+        val m = RX.find(t)
+        val baseTxt: String
+        val letter: String
+        if (m != null) {
+            baseTxt = m.groupValues[1]
+            letter = m.groupValues[2].uppercase()
+        } else if (compact != null && !t.contains("-")) {
+            baseTxt = listOf(compact.groupValues[1], compact.groupValues[2], compact.groupValues[3], compact.groupValues[4]).filter { it.isNotEmpty() }.joinToString("-")
+            letter = compact.groupValues[5].uppercase()
+        } else return null
+        if (lines(baseTxt).isEmpty()) return null
+        return if (letter.isNotEmpty()) "$baseTxt $letter" else baseTxt
+    }
+
+    /** Nome exato do jogo: com a letra certa; sem letra e com variantes, a 1ª do catálogo. */
+    fun canonical(s: String?): String? {
+        val p = parse(s) ?: return null
+        if (p in ALL) return p
+        val v = variants(base(p))
+        if (!p.contains(" ") && v.isNotEmpty()) return v[0]
+        return if (p.contains(" ")) p else null
+    }
+
+    fun variants(base: String): List<String> = ALL.filter { base(it) == base }
+
+    /**
+     * Variante para o estilo escolhido: "A" para jogo pelas alas/contra-ataque (mais abertas), "B" para posse.
+     */
+    fun variant(base: String, style: String?): String {
+        val v = variants(base)
+        if (v.isEmpty()) return base
+        if (v.size == 1) return v[0]
+        val n = Txt.norm(style ?: "")
+        val wantA = n.contains("alas") || n.contains("contra") || n.contains("long") || n.contains("bola")
+        return v.firstOrNull { it.endsWith(if (wantA) " A" else " B") } ?: v[0]
+    }
 
     /** "4-2-3-1 B" -> [4,2,3,1]; vazio se a soma não for 10. */
     fun lines(f: String): List<Int> {
@@ -191,7 +250,7 @@ object TacticEngine {
             if (rivalFw >= 3 && (diff ?: 0) < 5) b += (m - 3) * 1.5
             if (rivalFw <= 1 && (diff ?: 0) > -5) b += (k - 1) * 1.5
         }
-        val h = inp.history.filter { it.formation == f && it.result != null }
+        val h = inp.history.filter { Formations.base(it.formation) == f && it.result != null }
         if (h.isNotEmpty()) {
             var pts = 0
             for (r in h) {
@@ -206,7 +265,7 @@ object TacticEngine {
         val diff = if (inp.myStrength != null && inp.rivalStrength != null) inp.myStrength - inp.rivalStrength else null
         val rivalFw = inp.rivalFormation?.let { Formations.lines(it).lastOrNull() }
         val scored = ArrayList<Triple<String, List<List<PlayerEntity?>>, Double>>()
-        for (f in Formations.ALL) {
+        for (f in Formations.BASES) {
             val l = lineup(f, inp.players, inp.fitness) ?: continue
             scored.add(Triple(f, l.first, l.second + bias(f, diff, rivalFw, inp)))
         }
@@ -237,10 +296,10 @@ object TacticEngine {
         val defaultStyle = if (diff != null && diff >= 15 && wingers >= 2) "Jogar pelas alas"
         else if (diff != null && diff >= 15) "Remate à vista"
         else if (diff != null && diff <= -5) "Contra-ataque"
-        else "Jogo de passe"
+        else "Jogo de passes"
         // Aprendizado: se outro estilo já deu resultado claramente melhor (2+ jogos), usa o que funcionou.
         val styleStats = Learning.byStyle(inp.history)
-        val allowedStyles = listOf("Jogo de passe", "Jogar pelas alas", "Remate à vista", "Contra-ataque")
+        val allowedStyles = listOf("Jogo de passes", "Jogar pelas alas", "Remate à vista", "Contra-ataque")
         val curPts = styleStats.firstOrNull { it.formation == defaultStyle }?.let { Learning.points(it) } ?: 0
         val bestStyle = styleStats.filter { it.games >= 2 && it.formation in allowedStyles }.maxByOrNull { Learning.points(it) }
         var playStyle = defaultStyle
@@ -268,13 +327,13 @@ object TacticEngine {
                 disciplineNote = "Média de $avg faltas nos últimos ${foulRows.size} jogos: desarme Normal para evitar cartões."
             }
         }
-        val marking = if (inp.rivalAtk != null && inp.myDef != null && inp.rivalAtk - inp.myDef >= 5) "Homem a homem" else "À zona"
+        val marking = if (inp.rivalAtk != null && inp.myDef != null && inp.rivalAtk - inp.myDef >= 5) "Individual" else "À zona"
         val offside = if (inp.rivalAtk != null && inp.myDef != null && inp.myDef - inp.rivalAtk >= 5) "Sim" else "Não"
 
-        val roles: Pair<String, String> = if (diff != null && diff >= 15) Pair("Atacar apenas", "Pressionar à frente")
-        else if (diff != null && diff >= 5) Pair("Atacar apenas", "Manter posições")
-        else if (diff != null && diff <= -5) Pair("Ajudar a defender", "Ajudar a defesa")
-        else Pair("Atacar apenas", "Manter posições")
+        val roles: Pair<String, String> = if (diff != null && diff >= 15) Pair("Atacar apenas", "Pressionar na frente")
+        else if (diff != null && diff >= 5) Pair("Atacar apenas", "Manter posição")
+        else if (diff != null && diff <= -5) Pair("Ajudar a defesa", "Ajudar a defesa")
+        else Pair("Atacar apenas", "Manter posição")
         val advAttack = roles.first
         val advMid = roles.second
         val advDef = "Defender atrás"
@@ -297,7 +356,7 @@ object TacticEngine {
         }
         if (inp.referee == "Rigoroso") notes.add("Árbitro rigoroso: desarme em Normal para evitar cartões.")
         if (inp.referee == "Brando" && tackle == "Agressivo") notes.add("Árbitro brando e rival fraco: desarme Agressivo é seguro.")
-        if (marking == "Homem a homem") notes.add("Ataque do rival (${inp.rivalAtk}) supera sua defesa (${inp.myDef}): marcação homem a homem.")
+        if (marking == "Individual") notes.add("Ataque do rival (${inp.rivalAtk}) supera sua defesa (${inp.myDef}): marcação homem a homem.")
         if (inp.fitness.isNotEmpty()) {
             val rawKeys = lineup(formation, inp.players)?.first?.flatten()?.filterNotNull()?.map { it.nameKey }?.toSet() ?: emptySet()
             val effKeys = best.second.flatten().filterNotNull().map { it.nameKey }.toSet()
@@ -313,7 +372,7 @@ object TacticEngine {
         if (inp.rivalHuman == true) notes.add("Rival humano: ele pode mudar a tática; confira o relatório antes do jogo.")
 
         val tactic = Tactic(
-            formation = formation, playStyle = playStyle, pressure = pressure, mentality = mentality, tempo = tempo,
+            formation = Formations.variant(formation, playStyle), playStyle = playStyle, pressure = pressure, mentality = mentality, tempo = tempo,
             marking = marking, offside = offside, tackle = tackleFinal, advAttack = advAttack, advMid = advMid, advDef = advDef,
             notes = notes
         )

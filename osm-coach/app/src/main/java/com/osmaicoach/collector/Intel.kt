@@ -107,7 +107,9 @@ object Evidence {
     private val JUNK_PREFIX = listOf("anniv", "aniver")
     private val JUNK_WORDS = setOf(
         "season", "temporada", "edition", "edicao", "jornada", "liga", "copa", "batalha", "estadio", "arbitro",
-        "treinador", "ranking", "pontos", "jogos", "vitorias", "classificacao", "anos", "years", "aniversario"
+        "treinador", "ranking", "pontos", "jogos", "vitorias", "classificacao", "anos", "years", "aniversario",
+        // textos dos botões flutuantes do próprio app (aparecem nas capturas da tela)
+        "encerrar", "toque", "captura", "app", "osm", "vers", "versus", "vs"
     )
 
     /** Pode ser um apelido de usuário? (rejeita textos de fundo, números soltos e palavras do jogo) */
@@ -137,6 +139,7 @@ object Evidence {
         val f = j.optJSONObject(field) ?: return null
         var out: Best? = null
         for (v in f.keys()) {
+            if (field == K.RIVAL_NICK && !plausibleNick(v)) continue
             val b = f.optJSONObject(v) ?: continue
             val srcs = b.keys().asSequence().toList()
             val w = srcs.sumOf { weight(it) }
@@ -151,6 +154,7 @@ object Evidence {
     fun values(j: JSONObject, field: String): List<Best> {
         val f = j.optJSONObject(field) ?: return emptyList()
         return f.keys().asSequence().mapNotNull { v ->
+            if (field == K.RIVAL_NICK && !plausibleNick(v)) return@mapNotNull null
             val b = f.optJSONObject(v) ?: return@mapNotNull null
             val srcs = b.keys().asSequence().toList()
             Best(v, srcs.sumOf { weight(it) }, srcs)
@@ -291,7 +295,7 @@ object WinModel {
                 style.contains("alas") -> {
                     var v = 0.0
                     if ((theirs?.first() ?: 4) <= 3) v += 0.06
-                    if (n(i.rivalMarking).contains("homem")) v += 0.04
+                    if (Osm.marking(i.rivalMarking) == "Individual") v += 0.04
                     if ((theirs?.first() ?: 4) >= 5) v -= 0.05
                     if (v != 0.0) t.add(Term("Jogar pelas alas × defesa rival", v, 0.0))
                 }
@@ -310,7 +314,7 @@ object WinModel {
                 }
                 style.contains("long") || style.contains("bola") -> {
                     val v = if (n(i.rivalOffside) == "sim") -0.07 else if (atkGap > 0) 0.05 else 0.0
-                    if (v != 0.0) t.add(Term("Bolas longas × linha rival", v, 0.0))
+                    if (v != 0.0) t.add(Term("Bola longa × linha rival", v, 0.0))
                 }
             }
             val m = (p.mentality - 50) / 50.0
@@ -323,8 +327,8 @@ object WinModel {
             }
             val tp = (p.tempo - 50) / 50.0
             if (tp != 0.0) t.add(Term("Ritmo ${p.tempo}", if (atkGap >= 0) 0.04 * tp else -0.02 * tp, 0.0))
-            if (n(p.marking).contains("homem")) {
-                t.add(Term("Marcação homem a homem", 0.0, if (def >= rAtk) -0.05 else 0.07))
+            if (Osm.marking(p.marking) == "Individual") {
+                t.add(Term("Marcação individual", 0.0, if (def >= rAtk) -0.05 else 0.07))
             }
             if (n(p.offside) == "sim") {
                 val opp = if (rStyle.contains("contra") || rStyle.contains("long")) 0.10 else if (def >= rAtk) -0.04 else 0.05

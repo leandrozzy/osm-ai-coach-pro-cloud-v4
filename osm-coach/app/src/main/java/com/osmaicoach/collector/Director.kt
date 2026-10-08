@@ -20,7 +20,7 @@ data class Tactic(
 )
 
 object TacticValidator {
-    val FORMATIONS: Set<String> = Formations.ALL.toSet()
+    val FORMATIONS: Set<String> get() = Formations.ALL.toSet()
 
     private fun slider(j: JSONObject, key: String): Int? {
         if (!j.has(key) || j.isNull(key)) return null
@@ -37,8 +37,9 @@ object TacticValidator {
 
     /** Devolve (tática, erro). Sliders precisam ser numéricos 0..100; formação precisa existir. */
     fun validate(j: JSONObject, refereeSeverity: String?): Pair<Tactic?, String?> {
-        val formation = j.optString("formation").trim().uppercase().replace(" ", "")
-        if (formation !in FORMATIONS) return Pair(null, "Formação inválida: '$formation'")
+        val raw = j.optString("formation").trim()
+        val formation = Formations.canonical(raw)?.takeIf { Formations.base(it) in Formations.BASES }
+            ?: return Pair(null, "Formação inválida: '$raw'")
         val pressure = slider(j, "pressure") ?: return Pair(null, "Pressão inválida")
         val mentality = slider(j, "mentality") ?: return Pair(null, "Mentalidade/estilo inválido")
         val tempo = slider(j, "tempo") ?: return Pair(null, "Ritmo/temporização inválido")
@@ -66,7 +67,6 @@ object TacticValidator {
         )
     }
 
-    private val STYLES = listOf("Jogo de passe", "Jogar pelas alas", "Remate à vista", "Contra-ataque", "Bolas longas")
 
     private fun pickKnown(value: String, options: List<String>, fallback: String): String {
         val n = Txt.norm(value)
@@ -77,12 +77,13 @@ object TacticValidator {
 
     /** Só aceita nomes de opção que existem no jogo; o resto volta para a escolha calculada. */
     fun canonical(t: Tactic, base: Tactic): Tactic = t.copy(
-        playStyle = pickKnown(t.playStyle, STYLES, base.playStyle),
-        marking = pickKnown(t.marking, listOf("À zona", "Homem a homem"), base.marking),
-        tackle = pickKnown(t.tackle, listOf("Normal", "Agressivo"), "Normal"),
-        advAttack = pickKnown(t.advAttack, listOf("Atacar apenas", "Ajudar a defender"), base.advAttack),
-        advMid = pickKnown(t.advMid, listOf("Manter posições", "Pressionar à frente", "Ajudar a defesa"), base.advMid),
-        advDef = pickKnown(t.advDef, listOf("Defender atrás"), base.advDef),
+        formation = Formations.canonical(t.formation)?.let { c -> if (c.contains(" ")) c else Formations.variant(c, Osm.style(t.playStyle)) } ?: base.formation,
+        playStyle = pickKnown(t.playStyle, Osm.STYLES, base.playStyle),
+        marking = pickKnown(t.marking, Osm.MARKING, base.marking),
+        tackle = pickKnown(t.tackle, Osm.TACKLES, "Normal"),
+        advAttack = pickKnown(t.advAttack, Osm.ATTACK, base.advAttack),
+        advMid = pickKnown(t.advMid, Osm.MIDFIELD, base.advMid),
+        advDef = pickKnown(t.advDef, Osm.DEFENSE, base.advDef),
         offside = if (t.offside == "Sim" || t.offside == "Não") t.offside else base.offside
     )
 
@@ -195,12 +196,14 @@ object Director {
     fun tacticPrompt(context: JSONObject): String =
         "Você é o diretor técnico do OSM 26 (Online Soccer Manager). Monte a tática COMPLETA para o próximo jogo " +
             "usando SOMENTE os dados abaixo. \"NI\" significa desconhecido: não presuma. " +
-            "Regras: não escolha sempre 4-3-3; use a composição do elenco e o adversário (4-5-1, 5-3-2, 4-2-3-1, 4-4-2, 3-5-2 etc.); " +
+            "Regras: não escolha sempre 4-3-3; use a composição do elenco e o adversário. Formações do OSM (nome exato, com a letra): ${Formations.ALL}. " +
+            "Valores exatos do jogo: playStyle ${Osm.STYLES}; marking ${Osm.MARKING}; tackle ${Osm.TACKLES}; advAttack ${Osm.ATTACK}; " +
+            "advMid ${Osm.MIDFIELD}; advDef ${Osm.DEFENSE}. " +
             "árbitro \"Rigoroso\" => desarme NÃO agressivo; sliders são números inteiros de 0 a 100. " +
-            "Responda APENAS JSON com as chaves: formation (ex.: \"4-5-1\"), playStyle (ex.: \"Jogo de passe\", \"Jogar pelas alas\", \"Remate à vista\"), " +
+            "Responda APENAS JSON com as chaves: formation (ex.: \"4-5-1\"), playStyle (ex.: \"Jogo de passes\", \"Jogar pelas alas\", \"Remate à vista\"), " +
             "pressure (0-100), mentality (0-100, estilo ofensivo/defensivo), tempo (0-100, temporização), " +
-            "marking (\"À zona\" ou \"Homem a homem\"), offside (\"Sim\"/\"Não\"), tackle (\"Normal\", \"Agressivo\" ou o mais cuidadoso disponível), " +
-            "advAttack (ex.: \"Atacar apenas\" ou \"Ajudar a defender\"), advMid (ex.: \"Manter posições\", \"Pressionar à frente\", \"Ajudar a defesa\"), " +
+            "marking (\"À zona\" ou \"Individual\"), offside (\"Sim\"/\"Não\"), tackle (\"Normal\", \"Agressivo\" ou o mais cuidadoso disponível), " +
+            "advAttack (ex.: \"Atacar apenas\" ou \"Ajudar a defesa\"), advMid (ex.: \"Manter posição\", \"Pressionar na frente\", \"Ajudar a defesa\"), " +
             "advDef (ex.: \"Defender atrás\"), rationale (lista de até 5 frases curtas citando os dados usados).\n\nDADOS:\n" +
             context.toString()
 
@@ -509,7 +512,7 @@ object Director {
         return Outcome(true, json.toString(), null)
     }
 
-    private val SIM_STYLES = listOf("Jogo de passe", "Jogar pelas alas", "Remate à vista", "Contra-ataque", "Bolas longas")
+    private val SIM_STYLES = Osm.STYLES
 
     data class Cand(val tactic: Tactic, val rows: List<List<PlayerEntity?>>, val points: Double)
 
@@ -529,10 +532,10 @@ object Director {
         for (f in res.ranking.take(3).map { it.first }.ifEmpty { listOf(t0.formation) }) {
             val rows = TacticEngine.lineup(f, inp.players, inp.fitness)?.first ?: continue
             for (st in SIM_STYLES) for (dm in listOf(-12, 0, 12)) for (tk in listOf("Normal", "Agressivo"))
-                for (off in listOf("Não", "Sim")) for (mk in listOf("À zona", "Homem a homem")) {
+                for (off in listOf("Não", "Sim")) for (mk in listOf("À zona", "Individual")) {
                     if (tk == "Agressivo" && inp.referee == "Rigoroso") continue
                     val t = t0.copy(
-                        formation = f, playStyle = st, mentality = (t0.mentality + dm).coerceIn(0, 100),
+                        formation = Formations.variant(f, st), playStyle = st, mentality = (t0.mentality + dm).coerceIn(0, 100),
                         tackle = tk, offside = off, marking = mk, notes = emptyList()
                     )
                     val sp = simPlan(t, rows)
@@ -550,7 +553,9 @@ object Director {
             "NÃO repita o rascunho por comodidade: só mantenha o rascunho se ele for de fato o melhor; se a simulação mostrar algo " +
             "melhor, troque. Você pode divergir da simulação só com um motivo concreto dos dados (ex.: perfil do rival humano, " +
             "resultado real de jogos anteriores). REGRAS: formation deve ser uma de $allowed; pressure, mentality e tempo de 0 a 100 " +
-            "(até 15 pontos de distância do rascunho); árbitro Rigoroso => tackle Normal. " +
+            "(até 15 pontos de distância do rascunho); árbitro Rigoroso => tackle Normal ou Cauteloso. " +
+            "Use os nomes EXATOS do OSM: playStyle ${Osm.STYLES}; marking ${Osm.MARKING}; tackle ${Osm.TACKLES}; " +
+            "advAttack ${Osm.ATTACK}; advMid ${Osm.MIDFIELD}; advDef ${Osm.DEFENSE}. " +
             "Responda APENAS JSON com: formation, playStyle, pressure, mentality, tempo, marking, offside, tackle, advAttack, " +
             "advMid, advDef, keptDraft (true/false), rationale (até 4 frases curtas citando números).\n\n" +
             "RASCUNHO ($draftSim):\n$draft\n\nSIMULAÇÃO (melhores primeiro):\n$table\n\n" +
@@ -595,16 +600,17 @@ object Director {
         for (r in recentReports(repo, slot)) statLines.add("jogo analisado: $r")
         val stats = statLines.joinToString("\n").ifBlank { "sem jogos registrados ainda" }
         val allowed = res.ranking.take(3).map { it.first }
+        val allowedNames = allowed.flatMap { Formations.variants(it).ifEmpty { listOf(it) } }
 
         val notes = ArrayList<String>()
         var chosen: Cand? = null
-        val reply = AiClient.ask(ctx, tacticRefinePrompt(context(repo, slot), draft, pct(draftProb), table, stats, allowed), null)
+        val reply = AiClient.ask(ctx, tacticRefinePrompt(context(repo, slot), draft, pct(draftProb), table, stats, allowedNames), null)
         val json = AiClient.parseJson(reply.text)
         if (reply.ok && json != null) {
             val (validated, err) = TacticValidator.validate(json, inp.referee)
             if (validated != null) {
                 val t = TacticValidator.canonical(validated, res.tactic)
-                val okLimits = t.formation in allowed && Math.abs(t.pressure - res.tactic.pressure) <= 15 &&
+                val okLimits = Formations.base(t.formation) in allowed && Math.abs(t.pressure - res.tactic.pressure) <= 15 &&
                     Math.abs(t.mentality - res.tactic.mentality) <= 15 && Math.abs(t.tempo - res.tactic.tempo) <= 15
                 val rows = TacticEngine.lineup(t.formation, inp.players, inp.fitness)?.first
                 if (okLimits && rows != null) {
