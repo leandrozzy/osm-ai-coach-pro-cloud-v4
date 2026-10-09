@@ -300,6 +300,11 @@ class Repo(private val ctx: Context) {
         val curRound = fNow[K.ROUND]?.value?.toIntOrNull()
         val curAt = fNow[K.MATCH_AT]?.value?.toLongOrNull()
         val next = Fixtures.next(all, now, curRound, curAt)
+        // A rodada guardada fica para trás quando o pré-jogo não é relido depois do jogo: o calendário avança.
+        val nr = next?.round
+        if (nr != null && (curRound == null || nr > curRound)) {
+            changed += putFields(slot, mapOf(K.ROUND to Reading(nr.toString(), 0.85)), source, now)
+        }
         if (next != null) {
             val t = next.time
             if (t != null) {
@@ -648,7 +653,14 @@ class Repo(private val ctx: Context) {
         val mine = if (hasScore) (if (mineHome) j.optInt("sh") else j.optInt("sa")) else null
         val opp = if (hasScore) (if (mineHome) j.optInt("sa") else j.optInt("sh")) else null
         val oppName = (if (mineHome) j.optString("awayTeam") else j.optString("homeTeam")).ifBlank { null }
-        if (mine != null && opp != null) setManualMatch(slot, round, oppName, mine, opp, mineHome)
+        if (mine != null && opp != null) {
+            setManualMatch(slot, round, oppName, mine, opp, mineHome)
+            // jogo desta rodada acabou: a "próxima rodada" passa a ser a seguinte (o pré-jogo confirma depois)
+            val cur = dao.fieldsOf(slot).firstOrNull { it.fkey == K.ROUND }
+            if (cur != null && cur.fvalue.toIntOrNull() == round && cur.source != "manual") {
+                dao.putField(FieldEntity(slot, K.ROUND, (round + 1).toString(), 0.75, now, "resultado"))
+            }
+        }
         val p = dao.plan(slot, "tlog_R$round") ?: return
         val t = try { org.json.JSONObject(p.json) } catch (e: Exception) { return }
         if (mine != null && opp != null && t.isNull("result")) {

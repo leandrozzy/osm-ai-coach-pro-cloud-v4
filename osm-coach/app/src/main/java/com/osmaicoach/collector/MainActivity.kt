@@ -603,22 +603,13 @@ private fun scoredRounds(reports: List<PlanEntity>): Set<Int> = reports.mapNotNu
 }.toSet()
 
 /** A tática guardada é da próxima rodada (senão a previsão usa só as forças). */
-private fun tacticCurrent(j: JSONObject, f: Map<String, StoredField>): Boolean {
-    val r = f[K.ROUND]?.value?.toIntOrNull() ?: return true
-    return j.optInt("forRound", -1) == r
-}
+private fun tacticCurrent(j: JSONObject, f: Map<String, StoredField>): Boolean =
+    Director.tacticValid(j, System.currentTimeMillis(), f, System.currentTimeMillis())
 
 private fun known(f: Map<String, StoredField>, key: String): String? =
     f[key]?.value?.takeIf { FieldMerge.known(it) }
 
-private suspend fun tacticFor(repo: Repo, slot: Int, round: Int?): Boolean {
-    val p = repo.dao.plan(slot, "tactic") ?: return false
-    return try {
-        round != null && JSONObject(p.json).optInt("forRound", -1) == round
-    } catch (e: Exception) {
-        false
-    }
-}
+private suspend fun tacticFor(repo: Repo, slot: Int, @Suppress("UNUSED_PARAMETER") round: Int?): Boolean = Director.tacticReady(repo, slot)
 
 private fun countdown(ms: Long): String {
     val d = ms - System.currentTimeMillis()
@@ -2406,6 +2397,13 @@ private fun SlotTactic(slot: Int, d: SlotData) {
     if (curRound != null && forRound != curRound) {
         Text(
             "⚠ A tática guardada é de outra rodada (${if (forRound > 0) forRound else "?"}); o próximo jogo é a rodada $curRound. Toque em “Gerar tática” para criar a desta rodada.",
+            color = C.WARN, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp)
+        )
+        return
+    }
+    if (!Director.tacticValid(j, plan.at, d.fields, System.currentTimeMillis())) {
+        Text(
+            "⚠ A tática guardada foi gerada para o jogo anterior (ou o jogo já começou). Toque em “Gerar tática” para criar a do próximo jogo.",
             color = C.WARN, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp)
         )
         return

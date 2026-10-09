@@ -194,15 +194,8 @@ object Notifier {
         }
     }
 
-    private suspend fun tacticReady(repo: Repo, slot: Int, f: Map<String, StoredField>): Boolean {
-        val plan = repo.dao.plan(slot, "tactic") ?: return false
-        val round = f[K.ROUND]?.value?.toIntOrNull() ?: return false
-        return try {
-            JSONObject(plan.json).optInt("forRound", -1) == round
-        } catch (e: Exception) {
-            false
-        }
-    }
+    @Suppress("UNUSED_PARAMETER")
+    private suspend fun tacticReady(repo: Repo, slot: Int, f: Map<String, StoredField>): Boolean = Director.tacticReady(repo, slot)
 
     suspend fun fire(ctx: Context, kind: String, slot: Int) {
         if (!canPost(ctx)) return
