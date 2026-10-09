@@ -319,6 +319,27 @@ object WinModel {
             }
             val m = (p.mentality - 50) / 50.0
             if (m != 0.0) t.add(Term("Mentalidade ${p.mentality}", 0.12 * m, 0.10 * m))
+            // Antídotos ao estilo do rival (o que mais pesa contra humanos, que escolhem o estilo a dedo).
+            val myD = mine?.first()
+            when (Osm.style(i.rivalStyle)) {
+                "Contra-ataque" -> {
+                    var opp = 0.0
+                    if (m > 0) opp += 0.06 * m
+                    if (Osm.midfield(p.advMid) == "Pressionar na frente") opp += 0.03
+                    if (Osm.midfield(p.advMid) == "Ajudar a defesa" || Osm.midfield(p.advMid) == "Manter posições") opp -= 0.02
+                    if (opp != 0.0) t.add(Term(if (opp > 0) "Linha alta contra o contra-ataque dele" else "Bloco seguro contra o contra-ataque dele", 0.0, opp))
+                }
+                "Jogar pelas alas" -> {
+                    val opp = (if (myD != null && myD >= 5) -0.05 else if (myD != null && myD <= 3) 0.05 else 0.0) +
+                        (if (Osm.marking(p.marking) == "À zona") -0.02 else 0.0)
+                    if (opp != 0.0) t.add(Term(if (opp < 0) "Laterais fechando as alas dele" else "Alas dele contra 3 defensores", 0.0, opp))
+                }
+                "Remate à vista", "Jogo de passe" -> {
+                    val pr = (p.pressure - 50) / 50.0
+                    if (pr > 0) t.add(Term("Pressão alta tira o tempo de ${Osm.style(i.rivalStyle)}", 0.0, -0.03 * pr))
+                }
+                else -> {}
+            }
             val pr = (p.pressure - 50) / 50.0
             if (pr != 0.0) {
                 var opp = if (midGap >= 0) -0.03 * pr else 0.04 * pr

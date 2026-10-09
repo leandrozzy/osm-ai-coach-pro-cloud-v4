@@ -502,10 +502,27 @@ object Director {
         if (squad < 8) {
             return Outcome(false, null, "Dados insuficientes: só $squad jogadores do seu elenco foram lidos. Abra o Plantel do SEU time e role a lista inteira.")
         }
-        val res = TacticEngine.recommend(inp) ?: return Outcome(false, null, "Não consegui montar um XI com o elenco lido.")
+        val rules = TacticEngine.recommend(inp) ?: return Outcome(false, null, "Não consegui montar um XI com o elenco lido.")
         val round = f[K.ROUND]?.value?.toIntOrNull()
         val rival = f[K.RIVAL_TEAM]?.value
         val now = System.currentTimeMillis()
+        // A regra dá o rascunho; a simulação escolhe a melhor variação (contra humano: robusta às táticas dele).
+        val base = simInput(repo, slot)
+        val scen = scenarios(repo, slot, base)
+        val hist = history(repo, slot)
+        val lost = lostAgainst(repo, slot)
+        val draftPts = score(rules.tactic, rules.rows, scen, hist, lost)
+        val best = candidates(rules, inp, scen, hist, lost).firstOrNull()
+        val res = if (best != null && draftPts != null && best.points > draftPts + 0.03) {
+            val why = ArrayList<String>()
+            why.add(
+                "Simulação: ${best.tactic.formation} • ${best.tactic.playStyle} rende ${"%.2f".format(best.points)} pontos esperados " +
+                    "contra ${"%.2f".format(draftPts)} da regra."
+            )
+            if (scen.size > 1) why.add("Rival humano: testada contra as ${scen.size - 1} últimas táticas dele, não só a atual.")
+            if (lost.isNotEmpty()) why.add("Evitei o que já perdeu para este rival: ${lost.keys.joinToString { it.replace("|", " • ") }}.")
+            rules.copy(tactic = best.tactic.copy(notes = why + rules.tactic.notes), rows = best.rows)
+        } else rules
         val json = tacticPlanJson(res, round, rival, false)
         repo.dao.putPlan(PlanEntity(slot, "tactic", json.toString(), now))
         repo.dao.putPlan(PlanEntity(slot, "tlog_R${round ?: 0}", logJson(res.tactic, round, rival, inp).toString(), now))
@@ -526,20 +543,90 @@ object Director {
      * Simula alternativas: 3 melhores formações do cálculo x 5 estilos x variações de mentalidade, desarme,
      * impedimento e marcação. Devolve da melhor para a pior (pontos esperados).
      */
-    private fun candidates(res: TacticEngine.Result, inp: TacticEngine.Input, base: WinModel.Input, hist: List<HistRow>): List<Cand> {
+    /**
+     * Cenários do rival com peso. Contra humano: o que foi lido agora + as últimas táticas que ESSE usuário já
+     * usou (perfil pelo apelido), porque ele pode mudar antes do jogo. Contra CPU: só o lido.
+     */
+    private suspend fun scenarios(repo: Repo, slot: Int, base: WinModel.Input): List<Pair<WinModel.Input, Double>> {
+        if (base.rivalHuman != true) return listOf(Pair(base, 1.0))
+        val entries = ArrayList<JSONObject>()
+        try {
+            val arr = repo.rivalProfile(slot)?.json?.let { JSONObject(it).optJSONArray("entries") }
+            if (arr != null) for (i in 0 until arr.length()) arr.optJSONObject(i)?.let { entries.add(it) }
+        } catch (e: Exception) {
+            // perfil ilegível: só o cenário atual
+        }
+        val past = entries.takeLast(5)
+        if (past.isEmpty()) return listOf(Pair(base, 1.0))
+        val readNow = base.rivalFormation != null || base.rivalStyle != null
+        val out = ArrayList<Pair<WinModel.Input, Double>>()
+        out.add(Pair(base, if (readNow) 0.5 else 0.2))
+        val w = (if (readNow) 0.5 else 0.8) / past.size
+        for (e in past) {
+            out.add(
+                Pair(
+                    base.copy(
+                        rivalFormation = Formations.canonical(e.optString("formation")) ?: base.rivalFormation,
+                        rivalStyle = Osm.style(e.optString("plan")) ?: base.rivalStyle,
+                        rivalMarking = Osm.marking(e.optString("marking")) ?: base.rivalMarking,
+                        rivalOffside = e.optString("offside").takeIf { it == "Sim" || it == "Não" } ?: base.rivalOffside,
+                        rivalTackle = Osm.tackle(e.optString("tackle")) ?: base.rivalTackle
+                    ),
+                    w
+                )
+            )
+        }
+        return out
+    }
+
+    /** Formação+estilo que já PERDERAM para este mesmo rival (aprendizado: não repetir o erro). */
+    private suspend fun lostAgainst(repo: Repo, slot: Int): Map<String, Int> {
+        val rival = repo.fieldMap(slot)[K.RIVAL_TEAM]?.value?.let { Txt.key(it) } ?: return emptyMap()
+        val out = HashMap<String, Int>()
+        for (p in repo.dao.tacticLogs(slot)) {
+            val j = try { JSONObject(p.json) } catch (e: Exception) { continue }
+            if (j.optString("result") != "D") continue
+            if (Txt.sim(Txt.key(j.optString("rival")), rival) < 0.85) continue
+            val k = Formations.base(j.optString("formation")) + "|" + (Osm.style(j.optString("playStyle")) ?: "")
+            out[k] = (out[k] ?: 0) + 1
+        }
+        return out
+    }
+
+    /** Nota de uma tática: pontos esperados médios nos cenários do rival, menos o que já deu errado contra ele. */
+    private fun score(t: Tactic, rows: List<List<PlayerEntity?>>, scen: List<Pair<WinModel.Input, Double>>, hist: List<HistRow>, lost: Map<String, Int>): Double? {
+        val sp = simPlan(t, rows)
+        var sum = 0.0
+        var wsum = 0.0
+        for ((inp, w) in scen) {
+            val ep = WinModel.expectedPoints(inp.copy(plan = sp, tacticRecord = record(hist, sp))) ?: return null
+            sum += ep * w
+            wsum += w
+        }
+        if (wsum <= 0.0) return null
+        val penalty = 0.25 * (lost[Formations.base(t.formation) + "|" + (Osm.style(t.playStyle) ?: "")] ?: 0)
+        return sum / wsum - penalty
+    }
+
+    private fun candidates(
+        res: TacticEngine.Result, inp: TacticEngine.Input, scen: List<Pair<WinModel.Input, Double>>,
+        hist: List<HistRow>, lost: Map<String, Int>
+    ): List<Cand> {
         val out = ArrayList<Cand>()
         val t0 = res.tactic
+        val human = inp.rivalHuman == true
+        // contra humano testa também o meio-campo mais protegido (ele pode mudar a tática na última hora)
+        val mids = if (human) listOf(t0.advMid, "Manter posições", "Ajudar a defesa").distinct() else listOf(t0.advMid)
         for (f in res.ranking.take(3).map { it.first }.ifEmpty { listOf(t0.formation) }) {
             val rows = TacticEngine.lineup(f, inp.players, inp.fitness)?.first ?: continue
             for (st in SIM_STYLES) for (dm in listOf(-12, 0, 12)) for (tk in listOf("Normal", "Agressivo"))
-                for (off in listOf("Não", "Sim")) for (mk in listOf("À zona", "Homem-a-homem")) {
+                for (off in listOf("Não", "Sim")) for (mk in listOf("À zona", "Homem-a-homem")) for (md in mids) {
                     if (tk == "Agressivo" && inp.referee == "Rigoroso") continue
                     val t = t0.copy(
                         formation = Formations.variant(f, st), playStyle = st, mentality = (t0.mentality + dm).coerceIn(0, 100),
-                        tackle = tk, offside = off, marking = mk, notes = emptyList()
+                        tackle = tk, offside = off, marking = mk, advMid = md, notes = emptyList()
                     )
-                    val sp = simPlan(t, rows)
-                    val ep = WinModel.expectedPoints(base.copy(plan = sp, tacticRecord = record(hist, sp))) ?: continue
+                    val ep = score(t, rows, scen, hist, lost) ?: continue
                     out.add(Cand(t, rows, ep))
                 }
         }
@@ -551,7 +638,9 @@ object Director {
             "(chance V/E/D e pontos esperados contra este rival, considerando setores, formação, estilo, marcação, impedimento, " +
             "desarme, árbitro e histórico) e os DADOS do jogo. Sua tarefa: escolher a tática que dá MAIS pontos neste jogo. " +
             "NÃO repita o rascunho por comodidade: só mantenha o rascunho se ele for de fato o melhor; se a simulação mostrar algo " +
-            "melhor, troque. Você pode divergir da simulação só com um motivo concreto dos dados (ex.: perfil do rival humano, " +
+            "melhor, troque. Contra rival HUMANO a simulação já testou cada tática contra as últimas táticas que ele usou: " +
+            "prefira a que não perde para nenhuma delas, mesmo que não seja a mais ofensiva. " +
+            "Você pode divergir da simulação só com um motivo concreto dos dados (ex.: perfil do rival humano, " +
             "resultado real de jogos anteriores). REGRAS: formation deve ser uma de $allowed; pressure, mentality e tempo de 0 a 100 " +
             "(até 15 pontos de distância do rascunho); árbitro Rigoroso => tackle Normal ou Cuidadoso. " +
             "Use os nomes EXATOS do OSM: playStyle ${Osm.STYLES}; marking ${Osm.MARKING}; tackle ${Osm.TACKLES}; " +
@@ -584,9 +673,11 @@ object Director {
             return WinModel.predict(base.copy(plan = sp, tacticRecord = record(hist, sp)))
         }
         AiStatus.set("Simulando táticas alternativas…")
-        val cands = candidates(res, inp, base, hist)
+        val scen = scenarios(repo, slot, base)
+        val lost = lostAgainst(repo, slot)
+        val cands = candidates(res, inp, scen, hist, lost)
         val draftProb = prob(res.tactic, res.rows)
-        val draftPts = draftProb?.points ?: 0.0
+        val draftPts = score(res.tactic, res.rows, scen, hist, lost) ?: draftProb?.points ?: 0.0
         val best = cands.firstOrNull()
         val table = cands.distinctBy { it.tactic.formation + it.tactic.playStyle }.take(8).joinToString("\n") { c ->
             val p = prob(c.tactic, c.rows)
@@ -614,7 +705,7 @@ object Director {
                     Math.abs(t.mentality - res.tactic.mentality) <= 15 && Math.abs(t.tempo - res.tactic.tempo) <= 15
                 val rows = TacticEngine.lineup(t.formation, inp.players, inp.fitness)?.first
                 if (okLimits && rows != null) {
-                    val pts = prob(t, rows)?.points ?: 0.0
+                    val pts = score(t, rows, scen, hist, lost) ?: prob(t, rows)?.points ?: 0.0
                     val bestPts = best?.points ?: pts
                     val repeated = same(t, res.tactic)
                     if (repeated && best != null && bestPts > draftPts + 0.05) {
