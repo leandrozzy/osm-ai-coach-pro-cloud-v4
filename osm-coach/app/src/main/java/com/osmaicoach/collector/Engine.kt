@@ -219,12 +219,22 @@ object TacticEngine {
         if (d >= 6 && (diff ?: 0) > -20) b -= 12.0
         if (lines.size == 4 && lines[2] == 1 && (diff ?: 0) > -10) b -= 4.0
         if (diff != null) {
+            // Rival bem mais fraco: é o jogo de golear. 2 atacantes desperdiça a vantagem; 3 atacantes é a base.
             if (diff >= 15) {
-                b += (k - 2) * 6.0
+                b += (k - 2) * 14.0
+                if (k <= 2) b -= 10.0
                 if (d < 4) b -= 8.0
-                if (k > 3) b -= 8.0
+                if (d >= 5) b -= 8.0 * (d - 4)
+                // 4 atacantes só se a diferença for enorme: 3 atacantes já goleia sem abrir a defesa
+                if (k > 3) b -= 16.0 * (k - 3)
+            } else if (diff >= 8) {
+                b += (k - 2) * 9.0
+                if (k <= 2) b -= 6.0
+                if (d < 4) b -= 6.0
+                if (d >= 5) b -= 6.0 * (d - 4)
+                if (k > 3) b -= 10.0 * (k - 3)
             } else if (diff >= 5) {
-                b += (k - 2) * 3.0
+                b += (k - 2) * 4.0
                 if (d < 4) b -= 6.0
                 if (k > 3) b -= 8.0
             } else if (diff >= -4) {

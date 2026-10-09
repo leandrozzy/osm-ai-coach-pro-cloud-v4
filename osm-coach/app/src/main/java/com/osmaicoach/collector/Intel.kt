@@ -343,6 +343,19 @@ object WinModel {
             if (risk != 0.0) t.add(Term("Atacantes rivais × meus defensores", 0.0, risk))
         }
 
+        // Volume ofensivo: contra rival mais fraco, cada atacante a mais vira gol (mais gols no jogo favorecem o
+        // mais forte); contra mais forte, atacante a mais só expõe a defesa.
+        if (mine != null) {
+            val edge = (my - rv).toDouble()
+            val k = mine.last() - 2
+            val d = mine.first() - 4
+            if (k != 0) {
+                val gain = 0.05 * k * (edge / 8.0).coerceIn(-1.0, 2.0)
+                t.add(Term(if (k > 0) "${mine.last()} atacantes" else "Só ${mine.last()} atacante", gain, 0.025 * k))
+            }
+            if (d > 0 && edge >= 5) t.add(Term("Defensores a mais contra rival fraco", -0.04 * d, -0.02 * d))
+        }
+
         if (p != null) {
             val style = n(p.style)
             val rStyle = n(i.rivalStyle)
@@ -411,12 +424,20 @@ object WinModel {
                 val opp = if (rStyle.contains("contra") || rStyle.contains("long")) 0.10 else if (def >= rAtk) -0.04 else 0.05
                 t.add(Term("Linha de impedimento", 0.0, opp))
             }
-            if (n(p.tackle).contains("agress")) {
-                when (i.referee) {
-                    "Rigoroso" -> t.add(Term("Desarme agressivo × árbitro rigoroso", -0.03, 0.10))
-                    "Brando" -> t.add(Term("Desarme agressivo × árbitro brando", 0.05, -0.04))
-                    else -> t.add(Term("Desarme agressivo", 0.03, 0.03))
+            // Desarme × árbitro: cartões (expulsão) custam muito mais do que a bola roubada a mais.
+            when (Osm.tackle(p.tackle)) {
+                "Extremo" -> when (i.referee) {
+                    "Brando" -> t.add(Term("Desarme extremo (risco de expulsão)", 0.0, 0.08))
+                    "Rigoroso" -> t.add(Term("Desarme extremo × árbitro rigoroso", -0.10, 0.22))
+                    else -> t.add(Term("Desarme extremo × árbitro ${i.referee ?: "não lido"}", -0.06, 0.15))
                 }
+                "Agressivo" -> when (i.referee) {
+                    "Brando" -> t.add(Term("Desarme agressivo × árbitro brando", 0.05, -0.04))
+                    "Rigoroso" -> t.add(Term("Desarme agressivo × árbitro rigoroso", -0.05, 0.12))
+                    else -> t.add(Term("Desarme agressivo × árbitro ${i.referee ?: "não lido"}", -0.02, 0.06))
+                }
+                "Cuidadoso" -> t.add(Term("Desarme cuidadoso", 0.0, if (i.referee == "Rigoroso") -0.01 else 0.03))
+                else -> {}
             }
             when {
                 n(p.advAttack).contains("atacar") -> t.add(Term("Atacantes: atacar apenas", 0.03, 0.02))

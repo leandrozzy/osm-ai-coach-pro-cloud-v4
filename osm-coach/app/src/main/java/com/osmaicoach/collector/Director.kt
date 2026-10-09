@@ -46,10 +46,10 @@ object TacticValidator {
         val notes = ArrayList<String>()
         val ra = j.optJSONArray("rationale")
         if (ra != null) for (i in 0 until minOf(ra.length(), 6)) notes.add(ra.optString(i).take(160))
-        var tackle = text(j, "tackle")
-        if (refereeSeverity == "Rigoroso" && Txt.norm(tackle).contains("agress")) {
-            tackle = "Normal"
-            notes.add("Árbitro rigoroso: desarme agressivo foi trocado por Normal para evitar cartões.")
+        val asked = text(j, "tackle")
+        val tackle = Osm.clampTackle(asked, refereeSeverity)
+        if (Osm.tackle(asked) != null && Osm.tackle(asked) != tackle) {
+            notes.add("Árbitro ${refereeSeverity ?: "não lido"}: desarme ${Osm.tackle(asked)} trocado por $tackle para evitar cartões.")
         }
         val offside = when (Txt.norm(j.optString("offside"))) {
             "sim" -> "Sim"
@@ -631,6 +631,19 @@ object Director {
         return sum / wsum - penalty
     }
 
+    /** As 3 melhores das regras e, contra rival bem mais fraco, sempre as formações de 3 atacantes. */
+    private fun candidateFormations(res: TacticEngine.Result, inp: TacticEngine.Input): List<String> {
+        val out = res.ranking.take(3).map { it.first }.ifEmpty { listOf(Formations.base(res.tactic.formation)) }.toMutableList()
+        val diff = res.diff
+        if (diff != null && diff >= 8) {
+            for (f in listOf("4-3-3", "3-4-3", "4-2-4")) {
+                if (f == "4-2-4" && diff < 20) continue
+                if (f in Formations.BASES && f !in out) out.add(f)
+            }
+        }
+        return out
+    }
+
     private fun candidates(
         res: TacticEngine.Result, inp: TacticEngine.Input, scen: List<Pair<WinModel.Input, Double>>,
         hist: List<HistRow>, lost: Map<String, Int>
@@ -640,11 +653,10 @@ object Director {
         val human = inp.rivalHuman == true
         // contra humano testa também o meio-campo mais protegido (ele pode mudar a tática na última hora)
         val mids = if (human) listOf(t0.advMid, "Manter posições", "Ajudar a defesa").distinct() else listOf(t0.advMid)
-        for (f in res.ranking.take(3).map { it.first }.ifEmpty { listOf(t0.formation) }) {
+        for (f in candidateFormations(res, inp)) {
             val rows = TacticEngine.lineup(f, inp.players, inp.fitness)?.first ?: continue
-            for (st in SIM_STYLES) for (dm in listOf(-12, 0, 12)) for (tk in listOf("Normal", "Agressivo"))
+            for (st in SIM_STYLES) for (dm in listOf(-12, 0, 12)) for (tk in Osm.allowedTackles(inp.referee).filter { it != "Cuidadoso" })
                 for (off in listOf("Não", "Sim")) for (mk in listOf("À zona", "Homem-a-homem")) for (md in mids) {
-                    if (tk == "Agressivo" && inp.referee == "Rigoroso") continue
                     val t = t0.copy(
                         formation = Formations.variant(f, st), playStyle = st, mentality = (t0.mentality + dm).coerceIn(0, 100),
                         tackle = tk, offside = off, marking = mk, advMid = md, notes = emptyList()
@@ -656,7 +668,7 @@ object Director {
         return out.sortedByDescending { it.points }
     }
 
-    private fun tacticRefinePrompt(context: JSONObject, draft: JSONObject, draftSim: String, table: String, statsText: String, allowed: List<String>): String =
+    private fun tacticRefinePrompt(context: JSONObject, draft: JSONObject, draftSim: String, table: String, statsText: String, allowed: List<String>, tackles: List<String>): String =
         "Você é o analista tático do OSM 26. Abaixo: o RASCUNHO calculado por regras, uma SIMULAÇÃO de táticas alternativas " +
             "(chance V/E/D e pontos esperados contra este rival, considerando setores, formação, estilo, marcação, impedimento, " +
             "desarme, árbitro e histórico) e os DADOS do jogo. Sua tarefa: escolher a tática que dá MAIS pontos neste jogo. " +
@@ -665,7 +677,9 @@ object Director {
             "prefira a que não perde para nenhuma delas, mesmo que não seja a mais ofensiva. " +
             "Você pode divergir da simulação só com um motivo concreto dos dados (ex.: perfil do rival humano, " +
             "resultado real de jogos anteriores). REGRAS: formation deve ser uma de $allowed; pressure, mentality e tempo de 0 a 100 " +
-            "(até 15 pontos de distância do rascunho); árbitro Rigoroso => tackle Normal ou Cuidadoso. " +
+            "(até 15 pontos de distância do rascunho); tackle SÓ entre $tackles (limite do árbitro; Extremo nunca). " +
+            "Contra rival BEM MAIS FRACO não jogue com 2 atacantes: use 3 atacantes, mentalidade ofensiva e estilo de ataque — " +
+            "é o jogo para vencer com folga. " +
             "Use os nomes EXATOS do OSM: playStyle ${Osm.STYLES}; marking ${Osm.MARKING}; tackle ${Osm.TACKLES}; " +
             "advAttack ${Osm.ATTACK}; advMid ${Osm.MIDFIELD}; advDef ${Osm.DEFENSE}. " +
             "Responda APENAS JSON com: formation, playStyle, pressure, mentality, tempo, marking, offside, tackle, advAttack, " +
@@ -714,12 +728,12 @@ object Director {
         for (x in Learning.byContext(inp.history)) statLines.add("${x.formation}: ${x.v}V ${x.e}E ${x.d}D")
         for (r in recentReports(repo, slot)) statLines.add("jogo analisado: $r")
         val stats = statLines.joinToString("\n").ifBlank { "sem jogos registrados ainda" }
-        val allowed = res.ranking.take(3).map { it.first }
+        val allowed = candidateFormations(res, inp)
         val allowedNames = allowed.flatMap { Formations.variants(it).ifEmpty { listOf(it) } }
 
         val notes = ArrayList<String>()
         var chosen: Cand? = null
-        val reply = AiClient.ask(ctx, tacticRefinePrompt(context(repo, slot), draft, pct(draftProb), table, stats, allowedNames), null)
+        val reply = AiClient.ask(ctx, tacticRefinePrompt(context(repo, slot), draft, pct(draftProb), table, stats, allowedNames, Osm.allowedTackles(inp.referee)), null)
         val json = AiClient.parseJson(reply.text)
         if (reply.ok && json != null) {
             val (validated, err) = TacticValidator.validate(json, inp.referee)

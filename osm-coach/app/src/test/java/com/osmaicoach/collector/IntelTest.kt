@@ -228,4 +228,19 @@ class IntelTest {
         assertEquals(Completeness.gameMissing(cpu).size + 2, Completeness.gameMissing(human).size)
         assertTrue(Completeness.gameMissing(cpu).none { it.key == K.MY_STAD_CAP })
     }
+
+    @Test fun extremeTackleIsPunishedUnlessTheRefereeIsLenient() {
+        val base = WinModel.Input(80, 80, referee = "Médio")
+        val normal = WinModel.predict(base.copy(plan = plan))!!
+        val extreme = WinModel.predict(base.copy(plan = plan.copy(tackle = "Extremo")))!!
+        assertTrue(extreme.loss > normal.loss)
+        assertTrue(extreme.win < normal.win)
+    }
+
+    @Test fun threeStrikersBeatTwoAgainstAMuchWeakerRival() {
+        val base = WinModel.Input(84, 70, rivalFormation = "4-4-2")
+        val two = WinModel.expectedPoints(base.copy(plan = plan.copy(formation = "4-4-2")))!!
+        val three = WinModel.expectedPoints(base.copy(plan = plan.copy(formation = "4-3-3")))!!
+        assertTrue(three > two)
+    }
 }
