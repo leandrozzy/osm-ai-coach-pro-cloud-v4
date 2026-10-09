@@ -73,4 +73,14 @@ class StateMachineTest {
         m.restore(2, false, emptyList())
         assertEquals(2, m.onScreen(ScreenType.CALENDAR, emptyList(), null, null, emptyList()).slot)
     }
+
+    @Test fun matchReportFromTheHubFindsItsSlotByMyTeam() {
+        val m = SlotStateMachine()
+        m.onHub(listOf(HubCard(1, "Tobol", "Cazaquistão", 25, 34), HubCard(3, "Nasaf", "Superliga", 10, 30)))
+        // relatório aberto direto da central: sem slot herdado, o meu time (Nasaf) decide
+        val a = m.onScreen(ScreenType.RESULT, listOf("Nasaf", "Pakhtakor"), null, "Nasaf", emptyList())
+        assertEquals(3, a.slot)
+        // rolando a tela (sem cabeçalho) continua no mesmo slot
+        assertEquals(3, m.onScreen(ScreenType.RESULT, emptyList(), null, null, emptyList()).slot)
+    }
 }

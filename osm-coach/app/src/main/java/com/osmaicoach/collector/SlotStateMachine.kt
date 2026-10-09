@@ -110,6 +110,21 @@ class SlotStateMachine {
                 }
                 return Assignment(null, 0.0, "sem slot")
             }
+            ScreenType.RESULT -> {
+                // Relatório do jogo: o cabeçalho tem os dois times; o meu (lado do apelido) identifica o slot.
+                val cands = if (ownerTeam != null) listOf(ownerTeam) else teamCandidates
+                if (cands.isNotEmpty()) {
+                    val m = SlotMatcher.match(cands, null, merged(known))
+                    if (m != null && m.conf >= 0.85) {
+                        val switched = current != null && current != m.slot
+                        current = m.slot
+                        awaitingEntry = false
+                        return Assignment(m.slot, m.conf, if (switched) "relatório de outro slot" else "relatório do jogo (time)")
+                    }
+                }
+                val c = current
+                return if (c != null) Assignment(c, 0.8, "herdado") else Assignment(null, 0.0, "sem slot")
+            }
             else -> {
                 val c = current
                 return if (c != null) Assignment(c, 0.8, "herdado") else Assignment(null, 0.0, "sem slot")

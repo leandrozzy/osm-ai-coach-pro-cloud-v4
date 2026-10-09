@@ -323,7 +323,7 @@ class FramePipeline private constructor(private val ctx: Context) {
                 }
             }
             val dataType = type == ScreenType.SQUAD || type == ScreenType.CALENDAR ||
-                type == ScreenType.MARKET || type == ScreenType.PREGAME || type == ScreenType.REPORT
+                type == ScreenType.MARKET || type == ScreenType.PREGAME || type == ScreenType.REPORT || type == ScreenType.RESULT
             val unassigned = asg.slot == null && type != ScreenType.HUB
             if (unassigned) Diag.unassigned.incrementAndGet()
 
@@ -375,6 +375,8 @@ class FramePipeline private constructor(private val ctx: Context) {
                     ScreenType.PREGAME -> SlotMatcher.match(ex.teamCandidates, ex.roundRead, known)
                     ScreenType.SQUAD, ScreenType.CALENDAR ->
                         ex.ownerTeam?.let { SlotMatcher.match(listOf(it), null, known) }?.takeIf { it.conf >= 0.85 }
+                    ScreenType.RESULT ->
+                        SlotMatcher.match(ex.ownerTeam?.let { listOf(it) } ?: ex.teamCandidates, null, known)?.takeIf { it.conf >= 0.85 }
                     else -> null
                 }
                 if (m != null) {
