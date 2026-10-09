@@ -697,7 +697,13 @@ object Parsers {
             ratingsAway = if (ratingsAway.size >= 3) ratingsAway else emptyList(),
             events = events
         )
-        return Extraction(ScreenType.RESULT, matchReport = rep)
+        // Meu time é o do lado do meu apelido: é ele que diz de qual slot é o relatório (vindo direto da central).
+        val mine = when {
+            homeNick != null && Txt.sim(Txt.key(homeNick), MY_NICK) >= 0.75 -> home
+            awayNick != null && Txt.sim(Txt.key(awayNick), MY_NICK) >= 0.75 -> away
+            else -> null
+        }
+        return Extraction(ScreenType.RESULT, matchReport = rep, teamCandidates = listOfNotNull(home, away), ownerTeam = mine)
     }
 
     /** Tela com cara de relatório/análise do adversário (será lida pela IA, que confirma se é mesmo). */
