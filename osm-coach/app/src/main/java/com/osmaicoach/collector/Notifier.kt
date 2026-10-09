@@ -309,6 +309,7 @@ class NotifyReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val pending = goAsync()
         val app = context.applicationContext
+        Health.install(app)
         val kind = intent.getStringExtra("kind") ?: ""
         val slot = intent.getIntExtra("slot", 0)
         AppScope.scope.launch(Dispatchers.IO) {

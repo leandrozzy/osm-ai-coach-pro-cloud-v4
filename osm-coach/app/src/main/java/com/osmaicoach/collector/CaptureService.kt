@@ -42,6 +42,8 @@ class CaptureService : AccessibilityService() {
     }
 
     override fun onServiceConnected() {
+        Health.install(applicationContext)
+        Health.beat(applicationContext)
         instance = this
         Diag.serviceConnected = true
         Diag.lastError = null
@@ -78,6 +80,7 @@ class CaptureService : AccessibilityService() {
         loop = scope.launch {
             val pipeline = FramePipeline.get(applicationContext)
             while (isActive) {
+                Health.beat(applicationContext)
                 val sid = Control.activeSession(applicationContext)
                 // Botão "Encerrar" por cima do jogo enquanto captura (some quando o próprio app está na tela).
                 withContext(Dispatchers.Main) { syncOverlay(sid != null) }

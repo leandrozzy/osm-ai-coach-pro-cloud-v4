@@ -155,6 +155,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Health.install(applicationContext)
         Settings.migrate(applicationContext)
         AppScope.scope.launch { Repo(applicationContext).purgeLegacy() }
         Notifier.ensureChannels(applicationContext)
@@ -778,6 +779,47 @@ private fun PendingRow(text: String, button: String, onClick: () -> Unit) {
     }
 }
 
+/**
+ * O Android fechou o app à força (a leitura estava ativa e agora está desligada, ou o app travou): explica
+ * o motivo e dá os atalhos para não acontecer de novo. Some quando tudo volta ao normal.
+ */
+@Composable
+private fun KilledBanner(ctx: Context, enabled: Boolean, connected: Boolean, batteryOk: Boolean) {
+    val alive = Health.lastAlive(ctx)
+    val crash = Health.lastCrash(ctx)
+    // o serviço bate a cada minuto: sem batida há 3+ min e sem conexão = foi fechado (não é só o início do app)
+    val killed = alive > 0L && System.currentTimeMillis() - alive > 180000L && !(enabled && connected)
+    if (!killed && crash == null) return
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).border(1.dp, C.BAD, RoundedCornerShape(14.dp)),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF2A1218))
+    ) {
+        Column(Modifier.padding(12.dp)) {
+            Text(
+                if (killed) "⚠ O Android fechou o app e desligou a leitura" else "⚠ O app travou",
+                fontWeight = FontWeight.Bold, color = C.BAD, fontSize = 14.sp
+            )
+            Text(
+                (if (killed) "A leitura funcionou até ${ago(alive)}. Quando o sistema fecha o app à força (economia de bateria " +
+                    "do fabricante), ele desliga a leitura e cancela os lembretes — por isso não chegou aviso. "
+                else "") +
+                    (if (crash != null) "Último travamento: ${fmtTime(crash.first)} (${crash.second.take(90)}). " else "") +
+                    Health.brandSteps(),
+                fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp)
+            )
+            if (killed && !enabled) PendingRow("1. Reativar a leitura (Acessibilidade → OSM AI Coach)", "Abrir") {
+                openSettings(ctx, android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            }
+            if (!batteryOk) PendingRow("2. Bateria sem restrição", "Bateria") { openBatterySettings(ctx) }
+            PendingRow("3. Inicialização automática / não suspender", "Abrir") { Health.openAutostart(ctx) }
+            if (crash != null) {
+                TextButton(onClick = { Health.clearCrash(ctx) }) { Text("Já vi, ocultar aviso do travamento", fontSize = 11.sp) }
+            }
+        }
+    }
+}
+
 /** Faixa compacta: só mostra o que ainda falta configurar e fica recolhida quando a leitura já está ativa. */
 @Composable
 private fun SetupBanner(ctx: Context, enabled: Boolean, connected: Boolean, batteryOk: Boolean, hasKey: Boolean, onGoSettings: () -> Unit) {
@@ -952,6 +994,7 @@ private fun TodayTab(onGoSettings: () -> Unit, onOpenSlot: (Int, Int) -> Unit) {
             }
         }
 
+        KilledBanner(ctx, enabled, connected, batteryOk)
         if (!ready || !batteryOk || !hasKey) SetupBanner(ctx, enabled, connected, batteryOk, hasKey, onGoSettings)
 
         Spacer(Modifier.height(8.dp))
@@ -1044,6 +1087,9 @@ private fun TodayTab(onGoSettings: () -> Unit, onOpenSlot: (Int, Int) -> Unit) {
                 KV("Chamadas de IA (sessão)", Diag.aiCalls.get().toString())
                 KV("Última atualização de dados", ago(Diag.lastUpdateAt))
                 KV("Último erro", Diag.lastError ?: "nenhum")
+                KV("Último travamento", Health.lastCrash(ctx)?.let { fmtTime(it.first) + " — " + it.second } ?: "nenhum")
+                KV("Leitura viva pela última vez", ago(Health.lastAlive(ctx)))
+                KV("Aparelho", android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL + " • Android " + android.os.Build.VERSION.RELEASE)
             }
         }
         Spacer(Modifier.height(16.dp))
