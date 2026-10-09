@@ -226,7 +226,7 @@ object TacticEngine {
                 if (d < 4) b -= 8.0
                 if (d >= 5) b -= 8.0 * (d - 4)
                 // 4 atacantes só se a diferença for enorme: 3 atacantes já goleia sem abrir a defesa
-                if (k > 3) b -= 14.0 * (k - 3)
+                if (k > 3) b -= 16.0 * (k - 3)
             } else if (diff >= 8) {
                 b += (k - 2) * 9.0
                 if (k <= 2) b -= 6.0
