@@ -82,8 +82,12 @@ class Repo(private val ctx: Context) {
             f[K.TEAM]?.let { names.add(Txt.key(it.value)) }
             f[K.HUB_TITLE]?.let { names.add(Txt.key(it.value)) }
             names.removeAll { it.length < 3 }
-            if (names.isEmpty()) continue
-            out.add(SlotIdentity(slot, names, f[K.ROUND]?.value?.toIntOrNull()))
+            val rivals = HashSet<String>()
+            f[K.RIVAL_TEAM]?.value?.takeIf { FieldMerge.known(it) }?.let { rivals.add(Txt.key(it)) }
+            f[K.RIVAL_NICK]?.value?.takeIf { FieldMerge.known(it) && Evidence.plausibleNick(it) }?.let { rivals.add(Txt.key(it)) }
+            rivals.removeAll { it.length < 4 }
+            if (names.isEmpty() && rivals.isEmpty()) continue
+            out.add(SlotIdentity(slot, names, f[K.ROUND]?.value?.toIntOrNull(), rivals))
         }
         return out
     }
@@ -152,11 +156,13 @@ class Repo(private val ctx: Context) {
         val ot = ex.ownerTeam
         if (ot != null) {
             val k = Txt.key(ot)
-            if (myTeam != null && Txt.sim(k, Txt.key(myTeam)) >= 0.8) guess = "MY"
-            else if (rival != null && Txt.sim(k, Txt.key(rival)) >= 0.8) guess = "RIVAL"
+            if (myTeam != null && SlotMatcher.nameSim(k, Txt.key(myTeam)) >= 0.8) guess = "MY"
+            else if (rival != null && SlotMatcher.nameSim(k, Txt.key(rival)) >= 0.8) guess = "RIVAL"
         }
         val nick = ex.ownerNick
         if (guess == null && nick != null && Txt.sim(Txt.key(nick), MY_NICK) >= 0.75) guess = "MY"
+        val rivalNick = f[K.RIVAL_NICK]?.value?.takeIf { FieldMerge.known(it) }
+        if (guess == null && nick != null && rivalNick != null && Txt.sim(Txt.key(nick), Txt.key(rivalNick)) >= 0.8) guess = "RIVAL"
         val owner: String = guess ?: run {
             learn(slot, "elenco", "Elenco de dono desconhecido ou de outro time (${ot ?: "sem cabeçalho"}) ignorado.", now)
             return 0

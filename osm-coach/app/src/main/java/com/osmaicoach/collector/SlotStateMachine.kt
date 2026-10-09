@@ -1,6 +1,7 @@
 package com.osmaicoach.collector
 
-data class SlotIdentity(val slot: Int, val names: Set<String>, val roundNext: Int?)
+/** names = meu time; rivals = próximo adversário (time e apelido), para reconhecer o plantel/análise do rival. */
+data class SlotIdentity(val slot: Int, val names: Set<String>, val roundNext: Int?, val rivals: Set<String> = emptySet())
 
 data class Assignment(val slot: Int?, val confidence: Double, val reason: String)
 
@@ -11,10 +12,21 @@ object SlotMatcher {
      * Casa o time lido (e a rodada) com um dos slots conhecidos.
      * Nome forte (>= 0.85) manda; rodada sozinha só vale se for única; senão devolve null (não inventa).
      */
+    /** Semelhança de nomes; "Surkhan" x "FK Surkhan Termez" (um contém o outro) também conta como forte. */
+    fun nameSim(a: String, b: String): Double {
+        if (a.length >= 4 && b.length >= 4 && (a.contains(b) || b.contains(a))) return 0.9
+        return Txt.sim(a, b)
+    }
+
+    /** O plantel/análise é do RIVAL de qual slot? Só aceita se um único slot bater forte. */
+    fun matchRival(candidates: List<String>, ids: List<SlotIdentity>): Match? =
+        match(candidates, null, ids.map { SlotIdentity(it.slot, it.rivals, null) }.filter { it.names.isNotEmpty() })
+            ?.takeIf { it.conf >= 0.85 }
+
     fun match(candidates: List<String>, round: Int?, ids: List<SlotIdentity>): Match? {
         val keys = candidates.map { Txt.key(it) }.filter { it.length >= 3 }
         val scored = ids.map { id ->
-            val s = keys.maxOfOrNull { k -> id.names.maxOfOrNull { n -> Txt.sim(k, n) } ?: 0.0 } ?: 0.0
+            val s = keys.maxOfOrNull { k -> id.names.maxOfOrNull { n -> nameSim(k, n) } ?: 0.0 } ?: 0.0
             Pair(id, s)
         }
         val strong = scored.filter { it.second >= 0.85 }.sortedByDescending { it.second }
@@ -69,7 +81,7 @@ class SlotStateMachine {
         for (k in known) out[k.slot] = k
         for (h in hubIdentities) {
             val old = out[h.slot]
-            out[h.slot] = if (old == null) h else SlotIdentity(h.slot, old.names + h.names, h.roundNext ?: old.roundNext)
+            out[h.slot] = if (old == null) h else SlotIdentity(h.slot, old.names + h.names, h.roundNext ?: old.roundNext, old.rivals)
         }
         return out.values.toList()
     }
@@ -98,16 +110,21 @@ class SlotStateMachine {
                 else Assignment(null, 0.0, "pré-jogo sem identidade")
             }
             ScreenType.SQUAD, ScreenType.CALENDAR -> {
-                val c = current
-                if (c != null) return Assignment(c, 0.8, "herdado")
+                // O cabeçalho diz de quem é a lista: meu time (de qual slot) ou o próximo rival de qual slot.
+                // Vale mais que a herança, que fica errada quando se troca de slot sem passar pela central.
                 if (ownerTeam != null) {
-                    val m = SlotMatcher.match(listOf(ownerTeam), null, merged(known))
-                    if (m != null && m.conf >= 0.85) {
+                    val ids = merged(known)
+                    val mine = SlotMatcher.match(listOf(ownerTeam), null, ids)?.takeIf { it.conf >= 0.85 }
+                    val rival = if (type == ScreenType.SQUAD && mine == null) SlotMatcher.matchRival(listOf(ownerTeam), ids) else null
+                    val m = mine ?: rival
+                    if (m != null) {
                         current = m.slot
                         awaitingEntry = false
-                        return Assignment(m.slot, 0.8, "dono do cabeçalho")
+                        return Assignment(m.slot, 0.85, if (mine != null) "dono do cabeçalho" else "plantel do rival do slot")
                     }
                 }
+                val c = current
+                if (c != null) return Assignment(c, 0.8, "herdado")
                 return Assignment(null, 0.0, "sem slot")
             }
             ScreenType.RESULT -> {

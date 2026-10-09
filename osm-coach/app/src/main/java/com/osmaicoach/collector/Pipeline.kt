@@ -80,6 +80,7 @@ class FramePipeline private constructor(private val ctx: Context) {
     private var dupCounted = false
     private var lastProcessed: LongArray? = null
     private val lastOwners = HashMap<ScreenType, Triple<Int, String, Long>>()
+    private val noSlot = ArrayList<Pair<Extraction, Long>>()
     private var reportCandidates = 0
     private var tacticSaved = 0
     private var calendarSaved = 0
@@ -296,6 +297,20 @@ class FramePipeline private constructor(private val ctx: Context) {
             }
 
             if (type == ScreenType.HUB) saveCrests(bmp, ex.hubCards.map { it.slot })
+            // Telas de dados lidas antes de o slot ser reconhecido (entrou no slot por uma tela sem nome do time):
+            // ficam guardadas e vão para o slot assim que ele é identificado, sem passar pela central no meio.
+            val asgSlot = asg.slot
+            if (type == ScreenType.HUB) {
+                noSlot.clear()
+            } else if (asgSlot == null && (type == ScreenType.REPORT || type == ScreenType.PREGAME || type == ScreenType.SQUAD)) {
+                noSlot.add(Pair(ex, now))
+                while (noSlot.size > 15) noSlot.removeAt(0)
+            } else if (asgSlot != null && noSlot.isNotEmpty()) {
+                var late = 0
+                for ((e, at) in noSlot) if (now - at < 300000L) late += repo.apply(asgSlot, e, "ocr", at)
+                Diag.log("${noSlot.size} tela(s) lidas antes de reconhecer o slot → S$asgSlot (+$late campos)")
+                noSlot.clear()
+            }
             val changed = repo.apply(asg.slot, ex, "ocr", now)
             val counts = when (type) {
                 ScreenType.CALENDAR -> " [${ex.matches.size} cards" + (if (ex.ownerTeam == null) ", sem dono" else "") + "]"
@@ -376,6 +391,7 @@ class FramePipeline private constructor(private val ctx: Context) {
                     ScreenType.PREGAME -> SlotMatcher.match(ex.teamCandidates, ex.roundRead, known)
                     ScreenType.SQUAD, ScreenType.CALENDAR ->
                         ex.ownerTeam?.let { SlotMatcher.match(listOf(it), null, known) }?.takeIf { it.conf >= 0.85 }
+                            ?: if (type == ScreenType.SQUAD) ex.ownerTeam?.let { SlotMatcher.matchRival(listOf(it), known) } else null
                     ScreenType.RESULT ->
                         SlotMatcher.match(ex.ownerTeam?.let { listOf(it) } ?: ex.teamCandidates, null, known)?.takeIf { it.conf >= 0.85 }
                     else -> null
