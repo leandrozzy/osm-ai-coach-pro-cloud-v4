@@ -530,7 +530,9 @@ data class SlotSummary(
     val missing: Int = 0,
     /** O card do calendário (data e hora) já passou e o jogo ainda não tem placar: pede o resultado. */
     val needsResult: Boolean = false,
-    val win: WinModel.Prob? = null
+    val win: WinModel.Prob? = null,
+    /** Campos do próximo jogo ainda não lidos (mesmo critério para todos os slots). */
+    val missingNames: List<String> = emptyList()
 )
 
 data class TodayData(val active: Boolean = false, val slots: List<SlotSummary> = emptyList())
@@ -636,9 +638,10 @@ private suspend fun loadToday(ctx: Context): TodayData {
         val players = repo.dao.playersOf(slot).count { it.owner == "MY" }
         val all = repo.dao.matchesOf(slot)
         val matches = all.count { it.round != null }
-        val awaiting = Fixtures.awaitingResult(
+        val awaiting = Fixtures.resultDue(
             all, scoredRounds(repo.dao.matchReports(slot)), now, clk?.round ?: f[K.ROUND]?.value?.toIntOrNull(), clk?.at
         )
+        val gameMissing = Completeness.gameMissing(f)
         val tplan = repo.dao.plan(slot, "tactic")?.json?.let { try { JSONObject(it) } catch (e: Exception) { null } }
         val market = repo.dao.snapshots("TRANSFER", slot).isNotEmpty()
         val c = Completeness.compute(f, players, matches, market, f[K.ROUND_TOTAL]?.value?.toIntOrNull())
@@ -650,7 +653,8 @@ private suspend fun loadToday(ctx: Context): TodayData {
                 roundDone = known(f, K.ROUND_DONE), roundTotal = known(f, K.ROUND_TOTAL),
                 rival = known(f, K.RIVAL_TEAM), human = known(f, K.RIVAL_HUMAN),
                 pct = c.percent, updated = f.values.maxOfOrNull { it.updatedAt } ?: 0L,
-                missing = c.missing.size,
+                missing = gameMissing.size,
+                missingNames = gameMissing.map { it.label },
                 nextAt = known(f, K.MATCH_AT)?.toLongOrNull(),
                 tacticReady = tacticFor(repo, slot, known(f, K.ROUND)?.toIntOrNull()),
                 needsResult = awaiting != null,
@@ -943,10 +947,24 @@ private fun SlotCard(s: SlotSummary, onClick: () -> Unit, onTactic: () -> Unit, 
                     Box(
                         Modifier.fillMaxWidth().padding(top = 8.dp).clip(RoundedCornerShape(12.dp))
                             .background(winColor(w.win).copy(alpha = 0.12f)).padding(horizontal = 10.dp, vertical = 8.dp)
-                    ) { Column { WinCard(w, compact = true) } }
+                    ) {
+                        Column {
+                            WinCard(w, compact = true)
+                            Text(
+                                if (s.tacticReady) "com a tática gerada para este jogo" else "só pelas forças — a tática ainda não foi gerada",
+                                fontSize = 10.sp, color = C.MUTED, modifier = Modifier.padding(top = 3.dp)
+                            )
+                        }
+                    }
                 }
                 if (s.missing > 0) {
-                    Box(Modifier.clickable { onClick() }.padding(top = 4.dp)) { Pill("faltam ${s.missing} campos — toque para ver/preencher") }
+                    Column(Modifier.clickable { onClick() }.padding(top = 4.dp)) {
+                        Pill("faltam ${s.missing} do próximo jogo — toque para preencher")
+                        Text(
+                            s.missingNames.take(4).joinToString(", ") + (if (s.missingNames.size > 4) " e mais ${s.missingNames.size - 4}" else ""),
+                            fontSize = 11.sp, color = C.MUTED, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 4.dp, top = 2.dp)
+                        )
+                    }
                 }
                 Spacer(Modifier.height(6.dp))
                 Bar(s.pct)
