@@ -593,7 +593,7 @@ private suspend fun loadSlot(ctx: Context, slot: Int): SlotData {
         reports = dao.matchReports(slot),
         fitness = repo.fitness(slot),
         rivalProfile = repo.rivalProfile(slot),
-        win = Director.winProb(repo, slot, tplan?.takeIf { tacticCurrent(it, f) }),
+        win = tplan?.takeIf { tacticCurrent(it, f) }?.let { Director.winProb(repo, slot, it) },
         evidence = repo.evidence(slot)
     )
 }
@@ -658,7 +658,7 @@ private suspend fun loadToday(ctx: Context): TodayData {
                 nextAt = known(f, K.MATCH_AT)?.toLongOrNull(),
                 tacticReady = tacticFor(repo, slot, known(f, K.ROUND)?.toIntOrNull()),
                 needsResult = awaiting != null,
-                win = Director.winProb(repo, slot, tplan?.takeIf { tacticCurrent(it, f) })
+                win = tplan?.takeIf { tacticCurrent(it, f) }?.let { Director.winProb(repo, slot, it) }
             )
         )
     }
@@ -948,13 +948,7 @@ private fun SlotCard(s: SlotSummary, onClick: () -> Unit, onTactic: () -> Unit, 
                         Modifier.fillMaxWidth().padding(top = 8.dp).clip(RoundedCornerShape(12.dp))
                             .background(winColor(w.win).copy(alpha = 0.12f)).padding(horizontal = 10.dp, vertical = 8.dp)
                     ) {
-                        Column {
-                            WinCard(w, compact = true)
-                            Text(
-                                if (s.tacticReady) "com a tática gerada para este jogo" else "só pelas forças — a tática ainda não foi gerada",
-                                fontSize = 10.sp, color = C.MUTED, modifier = Modifier.padding(top = 3.dp)
-                            )
-                        }
+                        Column { WinCard(w, compact = true) }
                     }
                 }
                 if (s.missing > 0) {
@@ -2305,7 +2299,10 @@ private fun WinBar(p: WinModel.Prob, height: Dp) {
 @Composable
 private fun WinCard(p: WinModel.Prob?, compact: Boolean = false) {
     if (p == null) {
-        Text("📈 Previsão: leia o Pré-jogo (força dos dois times) para calcular a chance de vitória.", fontSize = 12.sp, color = C.MUTED)
+        Text(
+            "📈 Previsão: aparece quando a tática deste jogo for gerada — ela junta a sua tática, a do rival, as forças, o mando, o árbitro e o histórico.",
+            fontSize = 12.sp, color = C.MUTED
+        )
         return
     }
     val wc = winColor(p.win)
