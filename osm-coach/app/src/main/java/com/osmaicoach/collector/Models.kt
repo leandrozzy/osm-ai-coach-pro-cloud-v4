@@ -316,6 +316,20 @@ object Osm {
         }
     }
 
+    /**
+     * Desarme permitido pelo árbitro (termômetro do pré-jogo): Extremo nunca (expulsão quase certa);
+     * Agressivo só com árbitro brando (azul); médio (laranja), rigoroso (vermelho) ou desconhecido: até Normal.
+     */
+    fun allowedTackles(referee: String?): List<String> =
+        if (referee == "Brando") listOf("Cuidadoso", "Normal", "Agressivo") else listOf("Cuidadoso", "Normal")
+
+    /** Rebaixa o desarme para o máximo que o árbitro permite. */
+    fun clampTackle(t: String?, referee: String?): String {
+        val v = tackle(t) ?: "Normal"
+        val ok = allowedTackles(referee)
+        return if (v in ok) v else ok.last()
+    }
+
     fun tackle(s: String?): String? {
         val n = Txt.norm(s ?: "")
         return when {

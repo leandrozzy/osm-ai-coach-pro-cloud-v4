@@ -264,4 +264,24 @@ class EngineTest {
         assertTrue(plan.buy.isEmpty())
         assertNotNull(plan.steps.firstOrNull { it.contains("faltam") || it.contains("Nenhuma") })
     }
+
+    @Test fun clearlyWeakerRivalNeverGetsTwoStrikers() {
+        // squad com meio-campo mais forte que o 3º atacante: antes saía 4-4-2
+        val r = TacticEngine.recommend(input(84, 74))!!
+        assertTrue(Formations.lines(r.tactic.formation).last() >= 3)
+    }
+
+    @Test fun tackleFollowsTheReferee() {
+        assertEquals("Normal", Osm.clampTackle("Extremo", "Médio"))
+        assertEquals("Normal", Osm.clampTackle("Agressivo", "Médio"))
+        assertEquals("Normal", Osm.clampTackle("Extremo", null))
+        assertEquals("Agressivo", Osm.clampTackle("Extremo", "Brando"))
+        assertEquals("Cuidadoso", Osm.clampTackle("Cuidadoso", "Rigoroso"))
+        assertEquals("Normal", TacticEngine.recommend(input(91, 61, "Médio"))!!.tactic.tackle)
+        val (t, _) = TacticValidator.validate(
+            org.json.JSONObject().put("formation", "4-3-3 A").put("pressure", 60).put("mentality", 70).put("tempo", 60).put("tackle", "Extremo"),
+            "Médio"
+        )
+        assertEquals("Normal", t!!.tackle)
+    }
 }
