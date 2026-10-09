@@ -473,8 +473,30 @@ object Director {
         return out
     }
 
-    fun tacticPlanJson(res: TacticEngine.Result, round: Int?, rival: String?, refined: Boolean): JSONObject {
+    /**
+     * A tática guardada vale para o PRÓXIMO jogo? Mesma rodada, jogo ainda não começou e gerada para o mesmo
+     * horário (uma tática do jogo anterior não pode aparecer como pronta só porque a rodada não foi relida).
+     */
+    fun tacticValid(j: JSONObject, planAt: Long, f: Map<String, StoredField>, now: Long): Boolean {
+        val round = f[K.ROUND]?.value?.toIntOrNull() ?: return false
+        if (j.optInt("forRound", -1) != round) return false
+        val curAt = f[K.MATCH_AT]?.value?.toLongOrNull()
+        if (curAt != null && curAt <= now) return false
+        val planMatch = if (j.has("matchAt") && !j.isNull("matchAt")) j.optLong("matchAt") else null
+        if (planMatch != null && curAt != null && Math.abs(planMatch - curAt) > 3L * 3600000L) return false
+        if (planMatch == null && curAt != null && planAt < curAt - 18L * 3600000L) return false
+        return true
+    }
+
+    suspend fun tacticReady(repo: Repo, slot: Int): Boolean {
+        val p = repo.dao.plan(slot, "tactic") ?: return false
+        val j = try { JSONObject(p.json) } catch (e: Exception) { return false }
+        return tacticValid(j, p.at, repo.fieldMap(slot), System.currentTimeMillis())
+    }
+
+    fun tacticPlanJson(res: TacticEngine.Result, round: Int?, rival: String?, refined: Boolean, matchAt: Long? = null): JSONObject {
         val j = TacticValidator.toJson(res.tactic)
+        j.put("matchAt", matchAt ?: JSONObject.NULL)
         j.put("lineup", lineupJson(res.rows))
         j.put("forRound", round ?: -1)
         j.put("rival", rival ?: NI)
@@ -523,7 +545,7 @@ object Director {
             if (lost.isNotEmpty()) why.add("Evitei o que já perdeu para este rival: ${lost.keys.joinToString { it.replace("|", " • ") }}.")
             rules.copy(tactic = best.tactic.copy(notes = why + rules.tactic.notes), rows = best.rows)
         } else rules
-        val json = tacticPlanJson(res, round, rival, false)
+        val json = tacticPlanJson(res, round, rival, false, f[K.MATCH_AT]?.value?.toLongOrNull())
         repo.dao.putPlan(PlanEntity(slot, "tactic", json.toString(), now))
         repo.dao.putPlan(PlanEntity(slot, "tlog_R${round ?: 0}", logJson(res.tactic, round, rival, inp).toString(), now))
         return Outcome(true, json.toString(), null)
@@ -731,7 +753,7 @@ object Director {
         notes.add("Chance com esta tática: ${pct(pickProb)} (rascunho: ${pct(draftProb)}).")
         notes.addAll(res.tactic.notes)
         val merged = res.copy(tactic = pick.tactic.copy(notes = notes), rows = pick.rows)
-        val out = tacticPlanJson(merged, round, rival, true)
+        val out = tacticPlanJson(merged, round, rival, true, f[K.MATCH_AT]?.value?.toLongOrNull())
         val now = System.currentTimeMillis()
         repo.dao.putPlan(PlanEntity(slot, "tactic", out.toString(), now))
         repo.dao.putPlan(PlanEntity(slot, "tlog_R${round ?: 0}", logJson(pick.tactic, round, rival, inp).toString(), now))

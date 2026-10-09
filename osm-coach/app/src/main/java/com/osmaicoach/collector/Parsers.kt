@@ -585,6 +585,10 @@ object Parsers {
         val t = Txt.norm(o.fullText)
         if (t.contains("estatisticas do jogo") || t.contains("homem do jogo") || t.contains("zonas de acao")) return true
         if (t.contains("primeira parte") && t.contains("segunda parte")) return true
+        // Topo do relatório (Jornada N, placar no centro, botão Rever, dicas): é aqui que estão os times e a
+        // rodada que dizem de qual slot é o resultado. Antes era descartado por conter "Jornada".
+        val scoreCenter = o.lines.any { it.xc in 0.40f..0.60f && it.yc in 0.12f..0.40f && RX_SCORE.find(it.text.trim()) != null }
+        if (scoreCenter && (t.contains("rever") || t.contains("primeira parte") || t.contains("segunda parte"))) return true
         if (t.contains("jornada")) return false
         val l = o.tokens.count { val n = intTok(it); n != null && n in 1..10 && it.xc in 0.44f..0.49f && it.yc in 0.10f..0.97f }
         val r = o.tokens.count { val n = intTok(it); n != null && n in 1..10 && it.xc in 0.50f..0.56f && it.yc in 0.10f..0.97f }

@@ -436,4 +436,22 @@ class ParsersTest {
         assertEquals(0.942, Money.parse("942K")!!, 0.001)
         assertNull(Money.parse("73"))
     }
+
+    @Test fun topOfTheMatchReportIsAResultAndTellsMySlot() {
+        // topo da análise do jogo (vídeo do usuário): Jornada 11, Nasaf 1-2 Pakhtakor, botão Rever
+        val o = Fx.ocr(
+            Fx.line("Casa", 0.01f, 0.127f, 0.03f), Fx.line("Jornada 11", 0.5f, 0.127f, 0.08f), Fx.line("Fora", 0.98f, 0.127f, 0.03f),
+            Fx.line("Nasaf", 0.08f, 0.236f, 0.06f), Fx.line("leandrozzy", 0.09f, 0.283f, 0.08f, 0.02f),
+            Fx.line("1-2", 0.5f, 0.26f, 0.06f, 0.08f),
+            Fx.line("Pakhtakor", 0.9f, 0.236f, 0.08f), Fx.line("UzMRobozao", 0.9f, 0.283f, 0.08f, 0.02f),
+            Fx.line("Rever", 0.5f, 0.39f, 0.05f),
+            Fx.line("Bom golo de Cepeda. Esteve como peixe na água no Contra-ataque!", 0.3f, 0.53f, 0.45f)
+        )
+        assertEquals(ScreenType.RESULT, ScreenClassifier.classify(o, true))
+        val ex = Parsers.matchResult(o)
+        assertEquals("Nasaf", ex.ownerTeam)
+        assertEquals(11, ex.matchReport?.round)
+        assertEquals(1, ex.matchReport?.scoreHome)
+        assertEquals(2, ex.matchReport?.scoreAway)
+    }
 }
