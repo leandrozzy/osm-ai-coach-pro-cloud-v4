@@ -125,6 +125,20 @@ object Fixtures {
             .minByOrNull { it.round!! }
 
     /**
+     * Alerta "Registrar resultado" (Hoje, Diretor e notificação): só o jogo da rodada atual depois do horário
+     * dele, enquanto ainda não tem placar. Se o próximo jogo já está marcado no futuro, não há o que pedir —
+     * rodadas antigas sem placar ficam só na aba Resultado, sem alerta. Sem rodada atual conhecida, vale a
+     * data/hora do próprio card.
+     */
+    fun resultDue(ms: List<MatchEntity>, scored: Set<Int>, now: Long, curRound: Int?, curAt: Long?): MatchEntity? {
+        if (curRound == null) return awaitingResult(ms, scored, now, null, null)
+        if (curAt == null || curAt > now) return null
+        return ms.firstOrNull {
+            it.round == curRound && it.result == null && it.scoreMine == null && curRound !in scored && !void(it, ms)
+        }
+    }
+
+    /**
      * Jogo que acabou de acontecer (a rodada atual depois do horário, ou a anterior) e ainda não tem placar nem
      * análise lida. Só esse pede resultado; rodadas antigas sem placar ficam na aba Resultado, sem alerta.
      */

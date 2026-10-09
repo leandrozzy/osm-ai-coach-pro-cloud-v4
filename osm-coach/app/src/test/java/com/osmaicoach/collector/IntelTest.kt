@@ -207,4 +207,25 @@ class IntelTest {
         assertFalse(Overlay.isChip("Encerrado"))
         assertFalse(Overlay.isChip("J. Silva"))
     }
+
+    @Test fun resultAlertOnlyAfterTheCurrentGameTime() {
+        val now = at(2026, 10, 9, 13, 7)
+        val tonight = at(2026, 10, 9, 22, 18)
+        // J26 de ontem sem placar lido, J27 hoje à noite: nada de "Registrar resultado" no Hoje
+        val ms = listOf(m(26, "Kairat", time = "22:18"), m(27, "FK Ulytau", time = "22:18"))
+        assertNull(Fixtures.resultDue(ms, emptySet(), now, 27, tonight))
+        // passou do horário de hoje: pede o da J27
+        assertEquals(27, Fixtures.resultDue(ms, emptySet(), at(2026, 10, 9, 23, 0), 27, tonight)?.round)
+        // placar lido: não pede mais
+        assertNull(Fixtures.resultDue(ms, setOf(27), at(2026, 10, 9, 23, 0), 27, tonight))
+        // horário desconhecido: não pede
+        assertNull(Fixtures.resultDue(ms, emptySet(), now, 27, null))
+    }
+
+    @Test fun missingFieldsUseTheSameRuleForEverySlot() {
+        val cpu = mapOf(K.RIVAL_HUMAN to StoredField("Não", 0.9, 1L))
+        val human = mapOf(K.RIVAL_HUMAN to StoredField("Sim", 0.9, 1L))
+        assertEquals(Completeness.gameMissing(cpu).size + 2, Completeness.gameMissing(human).size)
+        assertTrue(Completeness.gameMissing(cpu).none { it.key == K.MY_STAD_CAP })
+    }
 }

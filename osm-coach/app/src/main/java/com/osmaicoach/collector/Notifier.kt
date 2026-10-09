@@ -227,7 +227,7 @@ object Notifier {
         } else if (kind == "result") {
             if (!enabled(ctx, "result")) return
             // mesma regra da tela Hoje: só o jogo que já passou do horário e ainda não tem placar
-            val pending = Fixtures.awaitingResult(repo.dao.matchesOf(slot), repo.scoredRounds(slot), now, clk?.round, clk?.at)
+            val pending = Fixtures.resultDue(repo.dao.matchesOf(slot), repo.scoredRounds(slot), now, clk?.round, clk?.at)
             if (pending == null) return
             post(
                 ctx, CH_GAME, slot * 10 + 3, "📊 Registre o resultado: $head",

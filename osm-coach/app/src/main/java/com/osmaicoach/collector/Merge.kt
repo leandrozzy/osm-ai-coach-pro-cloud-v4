@@ -88,6 +88,20 @@ object Completeness {
 
     data class Result(val known: List<String>, val missing: List<String>, val percent: Int, val missingItems: List<Item> = emptyList())
 
+    /** Campos do PRÓXIMO jogo (pré-jogo e análise do rival): é o que a tática e a previsão usam. */
+    private val GAME = setOf(
+        K.MATCH_AT, K.HOME, K.RIVAL_TEAM, K.RIVAL_HUMAN, K.MY_STRENGTH, K.RIVAL_STRENGTH, K.RIVAL_FORMATION,
+        K.RIVAL_PLAN, K.RIVAL_MARKING, K.RIVAL_OFFSIDE, K.RIVAL_TACKLE, K.REFEREE,
+        K.MY_GOL, K.MY_DEF, K.MY_MID, K.MY_ATK, K.RIVAL_GOL, K.RIVAL_DEF, K.RIVAL_MID, K.RIVAL_ATK
+    )
+
+    /** O que falta para o próximo jogo, pelo mesmo critério em todos os slots (humano: + apelido e bônus). */
+    fun gameMissing(fields: Map<String, StoredField>): List<Item> {
+        val human = fields[K.RIVAL_HUMAN]?.value == "Sim"
+        return (ITEMS.filter { it.key in GAME } + (if (human) HUMAN_ONLY else emptyList()))
+            .filter { !FieldMerge.known(fields[it.key]?.value) }
+    }
+
     /** Calculado somente por campos realmente preenchidos; nunca por quantidade de frames. */
     fun compute(fields: Map<String, StoredField>, squadCount: Int, calendarCount: Int, marketSeen: Boolean, calendarTotal: Int? = null): Result {
         val known = ArrayList<String>()
