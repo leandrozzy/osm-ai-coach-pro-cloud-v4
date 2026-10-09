@@ -153,4 +153,11 @@ class IntelTest {
         assertTrue(good.win > base.win)
         assertTrue(bad.win < base.win)
     }
+
+    @Test fun highLineIsPunishedByACounterAttackingHuman() {
+        val base = WinModel.Input(80, 80, rivalAtk = 80, rivalMid = 80, rivalDef = 80, rivalGol = 80, rivalHuman = true, rivalStyle = "Contra-ataque")
+        val safe = WinModel.predict(base.copy(plan = plan.copy(mentality = 45, advMid = "Manter posições")))!!
+        val risky = WinModel.predict(base.copy(plan = plan.copy(mentality = 85, advMid = "Pressionar na frente")))!!
+        assertTrue(risky.loss > safe.loss)
+    }
 }
