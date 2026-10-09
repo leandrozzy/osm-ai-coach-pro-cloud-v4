@@ -518,6 +518,7 @@ object Director {
     /** Tática calculada por regras e números: instantânea, não depende de IA nem de internet. */
     suspend fun generateTacticLocal(repo: Repo, slot: Int): Outcome {
         resolveTacticLogs(repo, slot)
+        repo.syncRound(slot)
         val f = repo.fieldMap(slot)
         val inp = tacticInput(repo, slot)
         val squad = inp.players.count { it.strength != null }
@@ -677,6 +678,7 @@ object Director {
      * claramente melhor, ou falhar, aplica a melhor tática simulada (com a explicação).
      */
     suspend fun refineTactic(ctx: Context, repo: Repo, slot: Int): Outcome {
+        repo.syncRound(slot)
         val curPlan = repo.dao.plan(slot, "tactic")
         val curRound = repo.fieldMap(slot)[K.ROUND]?.value?.toIntOrNull()
         val current = curPlan != null && curRound != null &&

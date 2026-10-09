@@ -160,4 +160,51 @@ class IntelTest {
         val risky = WinModel.predict(base.copy(plan = plan.copy(mentality = 85, advMid = "Pressionar na frente")))!!
         assertTrue(risky.loss > safe.loss)
     }
+
+    @Test fun registeredResultMovesTheClockAndDropsTheOldTime() {
+        val now = at(2026, 10, 9, 12, 0)
+        val j11At = at(2026, 10, 8, 21, 0)
+        val ms = listOf(m(11, "Pakhtakor"), m(12, "Surkhan", time = "21:00", readAt = at(2026, 10, 8, 10, 0)))
+        // análise do jogo J11 lida; a rodada ainda dizia 11 e o horário era o da J11 (já passou)
+        val c = Fixtures.clock(ms, setOf(11), now, 11, at(2026, 10, 8, 10, 0), j11At, "Surkhan")
+        assertEquals(12, c.round)
+        assertNull(c.at)
+        assertNull(Fixtures.awaitingResult(ms, setOf(11), now, c.round, c.at))
+        assertEquals(12, Fixtures.next(ms, now, c.round, c.at)?.round)
+    }
+
+    @Test fun roundBumpedAfterTheGameTimeKeepsNoStaleTime() {
+        val now = at(2026, 10, 9, 12, 0)
+        val j11At = at(2026, 10, 8, 21, 0)
+        val ms = listOf(m(11, "Pakhtakor", result = "D"), m(12, "Surkhan", time = "21:00"))
+        // a rodada virou 12 depois do jogo, mas o horário guardado ainda é o da J11: não é o da J12
+        val c = Fixtures.clock(ms, emptySet(), now, 12, at(2026, 10, 9, 8, 0), j11At, "Surkhan")
+        assertEquals(12, c.round)
+        assertNull(c.at)
+        assertNull(Fixtures.awaitingResult(ms, emptySet(), now, c.round, c.at))
+    }
+
+    @Test fun roundThatJumpedOneTooFarComesBack() {
+        val now = at(2026, 10, 9, 12, 0)
+        val tonight = at(2026, 10, 9, 21, 0)
+        val ms = listOf(m(11, "Pakhtakor", result = "D"), m(12, "Surkhan", time = "21:00"), m(13, "Navbahor", time = "21:00"))
+        // a rodada foi para 13, mas o rival do pré-jogo (Surkhan) é o da J12, que ainda não tem placar
+        val c = Fixtures.clock(ms, setOf(11), now, 13, at(2026, 10, 9, 8, 0), tonight, "Surkhan")
+        assertEquals(12, c.round)
+        assertEquals(tonight, c.at)
+        assertNull(Fixtures.awaitingResult(ms, setOf(11), now, c.round, c.at))
+        // depois do horário, aí sim pede o resultado da J12
+        assertEquals(12, Fixtures.awaitingResult(ms, setOf(11), at(2026, 10, 9, 23, 0), c.round, c.at)?.round)
+        // rodada legítima (rival já é o da J13) não volta
+        assertEquals(13, Fixtures.clock(ms, setOf(11), now, 13, at(2026, 10, 9, 8, 0), tonight, "Navbahor").round)
+    }
+
+    @Test fun overlayButtonsAreNotScreenText() {
+        assertTrue(Overlay.isChip("■ Encerrar"))
+        assertTrue(Overlay.isChip("Encerrar"))
+        assertTrue(Overlay.isChip("📱 App"))
+        assertTrue(Overlay.isChip("⚽ OSM"))
+        assertFalse(Overlay.isChip("Encerrado"))
+        assertFalse(Overlay.isChip("J. Silva"))
+    }
 }

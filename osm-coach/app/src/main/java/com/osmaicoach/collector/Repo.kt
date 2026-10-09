@@ -48,6 +48,31 @@ class Repo(private val ctx: Context) {
     suspend fun fieldMap(slot: Int): Map<String, StoredField> =
         dao.fieldsOf(slot).associate { it.fkey to StoredField(it.fvalue, it.conf, it.updatedAt) }
 
+    /** Rodadas que já têm placar lido da análise do jogo. */
+    suspend fun scoredRounds(slot: Int): Set<Int> = dao.matchReports(slot).mapNotNull { p ->
+        val r = p.kind.removePrefix("mr_R").toIntOrNull() ?: return@mapNotNull null
+        val j = try { org.json.JSONObject(p.json) } catch (e: Exception) { return@mapNotNull null }
+        if (j.has("sh") && j.has("sa")) r else null
+    }.toSet()
+
+    /**
+     * Grava a rodada atual e o horário conferidos (Fixtures.clock), para todas as telas, o Diretor e as
+     * notificações enxergarem o mesmo próximo jogo. A rodada digitada à mão só é corrigida para frente
+     * (quando já há placar dela).
+     */
+    suspend fun syncRound(slot: Int, now: Long = System.currentTimeMillis()): Fixtures.Clock {
+        val rows = dao.fieldsOf(slot)
+        val f = rows.associate { it.fkey to StoredField(it.fvalue, it.conf, it.updatedAt) }
+        val c = Fixtures.clock(dao.matchesOf(slot), scoredRounds(slot), now, f)
+        val cur = rows.firstOrNull { it.fkey == K.ROUND }
+        val old = cur?.fvalue?.toIntOrNull()
+        if (c.round != null && c.round != old && (cur?.source != "manual" || (old != null && c.round > old))) {
+            dao.putField(FieldEntity(slot, K.ROUND, c.round.toString(), 0.8, now, "sync"))
+        }
+        if (c.at == null && f.containsKey(K.MATCH_AT)) dao.deleteField(slot, K.MATCH_AT)
+        return c
+    }
+
     /** Identidades conhecidas de cada slot (para reconhecer o slot sem passar pela central). */
     suspend fun knownIdentities(): List<SlotIdentity> {
         val out = ArrayList<SlotIdentity>()
@@ -296,9 +321,9 @@ class Repo(private val ctx: Context) {
             }?.opponentNick
             if (nk != null) changed += recordEvidence(slot, mapOf(K.RIVAL_NICK to nk.trim()), "CALENDAR", now)
         }
-        val fNow = fieldMap(slot)
-        val curRound = fNow[K.ROUND]?.value?.toIntOrNull()
-        val curAt = fNow[K.MATCH_AT]?.value?.toLongOrNull()
+        val clk = syncRound(slot, now)
+        val curRound = clk.round
+        val curAt = clk.at
         val next = Fixtures.next(all, now, curRound, curAt)
         // A rodada guardada fica para trás quando o pré-jogo não é relido depois do jogo: o calendário avança.
         val nr = next?.round
@@ -327,7 +352,7 @@ class Repo(private val ctx: Context) {
             if (ev.isNotEmpty()) changed += recordEvidence(slot, ev, "CALENDAR", now)
             // Card do próximo rival lido com o nome e SEM apelido embaixo: rival é CPU (se nada confirmou humano).
             val opp = Fixtures.opponent(next)
-            val rk = fNow[K.RIVAL_TEAM]?.value?.let { Txt.key(it) }
+            val rk = fieldMap(slot)[K.RIVAL_TEAM]?.value?.let { Txt.key(it) }
             if (opp != null && next.opponentNick == null && rk != null && Txt.sim(Txt.key(opp), rk) >= 0.85) {
                 changed += putFields(slot, mapOf(K.RIVAL_HUMAN to Reading("Não", 0.7)), source, now)
             }
@@ -589,7 +614,8 @@ class Repo(private val ctx: Context) {
         put("referee", rep.referee)
         put("tip", rep.tip)
         put("advice", rep.advice)
-        put("mom", rep.mom)
+        if (Overlay.isChip(j.optString("mom"))) j.remove("mom")
+        put("mom", rep.mom?.takeIf { !Overlay.isChip(it) })
         if (rep.homeNick != null || rep.awayNick != null) {
             val mineHome = rep.homeNick != null && Txt.sim(Txt.key(rep.homeNick), MY_NICK) >= 0.75
             val mineAway = rep.awayNick != null && Txt.sim(Txt.key(rep.awayNick), MY_NICK) >= 0.75
@@ -655,11 +681,9 @@ class Repo(private val ctx: Context) {
         val oppName = (if (mineHome) j.optString("awayTeam") else j.optString("homeTeam")).ifBlank { null }
         if (mine != null && opp != null) {
             setManualMatch(slot, round, oppName, mine, opp, mineHome)
-            // jogo desta rodada acabou: a "próxima rodada" passa a ser a seguinte (o pré-jogo confirma depois)
-            val cur = dao.fieldsOf(slot).firstOrNull { it.fkey == K.ROUND }
-            if (cur != null && cur.fvalue.toIntOrNull() == round && cur.source != "manual") {
-                dao.putField(FieldEntity(slot, K.ROUND, (round + 1).toString(), 0.75, now, "resultado"))
-            }
+            // jogo desta rodada acabou: a "próxima rodada" passa a ser a seguinte e o horário antigo sai
+            // (o pré-jogo ou o calendário confirmam depois)
+            syncRound(slot, now)
         }
         val p = dao.plan(slot, "tlog_R$round") ?: return
         val t = try { org.json.JSONObject(p.json) } catch (e: Exception) { return }
@@ -679,7 +703,7 @@ class Repo(private val ctx: Context) {
         side("remates", true)?.let { v -> pct(v)?.let { t.put("myShots", it) } }
         side("remates", false)?.let { v -> pct(v)?.let { t.put("oppShots", it) } }
         side("formacao", false)?.let { t.put("oppFormation", it) }
-        j.optString("mom").takeIf { it.isNotBlank() }?.let { t.put("mom", it) }
+        j.optString("mom").takeIf { it.isNotBlank() && !Overlay.isChip(it) }?.let { t.put("mom", it) }
         dao.putPlan(PlanEntity(slot, "tlog_R$round", t.toString(), p.at))
     }
 
@@ -693,6 +717,10 @@ class Repo(private val ctx: Context) {
             val round = p.kind.removePrefix("mr_R").toIntOrNull() ?: continue
             val j = try { org.json.JSONObject(p.json) } catch (e: Exception) { continue }
             if (!j.has("sh") || !j.has("sa")) continue
+            if (j.has("mom") && Overlay.isChip(j.optString("mom"))) {
+                j.remove("mom")
+                dao.putPlan(PlanEntity(slot, p.kind, j.toString(), p.at))
+            }
             val m = dao.match(slot, "L$round")
             val tl = dao.plan(slot, "tlog_R$round")?.json?.let { try { org.json.JSONObject(it) } catch (e: Exception) { null } }
             val linked = j.has("mineHome") && m?.scoreMine != null && (tl == null || !tl.isNull("result"))

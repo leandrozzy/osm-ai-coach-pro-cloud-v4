@@ -18,7 +18,6 @@ import androidx.compose.runtime.setValue
 import java.util.Calendar
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import org.json.JSONObject
 
 /** Navegação pedida por uma notificação: abre o slot na aba certa. */
 object Route {
@@ -169,7 +168,7 @@ object Notifier {
             e.apply()
         }
         for (slot in 1..4) {
-            val nextAt = repo.fieldMap(slot)[K.MATCH_AT]?.value?.toLongOrNull()
+            val nextAt = try { repo.syncRound(slot, now).at } catch (e: Exception) { repo.fieldMap(slot)[K.MATCH_AT]?.value?.toLongOrNull() }
             val wanted = if (nextAt == null) emptyList() else alarms(nextAt, now)
             for (kind in listOf("tactic", "pre", "result")) {
                 val key = "alarm_${slot}_$kind"
@@ -206,6 +205,7 @@ object Notifier {
         }
         ensureChannels(ctx)
         val repo = Repo(ctx)
+        val clk = try { repo.syncRound(slot) } catch (e: Exception) { null }
         val f = repo.fieldMap(slot)
         val team = f[K.TEAM]?.value ?: f[K.HUB_TITLE]?.value ?: "Slot $slot"
         val rival = f[K.RIVAL_TEAM]?.value ?: "adversário"
@@ -226,14 +226,9 @@ object Notifier {
             post(ctx, CH_GAME, slot * 10 + 2, "🧠 Falta a tática: $head", "O jogo é em cerca de 1 hora e a tática desta rodada ainda não foi gerada. Toque para gerar.", slot, 4, false)
         } else if (kind == "result") {
             if (!enabled(ctx, "result")) return
-            val pendingResult = repo.dao.tacticLogs(slot).any {
-                try {
-                    JSONObject(it.json).isNull("result")
-                } catch (e: Exception) {
-                    false
-                }
-            }
-            if (!pendingResult) return
+            // mesma regra da tela Hoje: só o jogo que já passou do horário e ainda não tem placar
+            val pending = Fixtures.awaitingResult(repo.dao.matchesOf(slot), repo.scoredRounds(slot), now, clk?.round, clk?.at)
+            if (pending == null) return
             post(
                 ctx, CH_GAME, slot * 10 + 3, "📊 Registre o resultado: $head",
                 "O jogo já deve ter terminado. Abra a análise do jogo no OSM (o app lê sozinho) ou registre o placar na aba Resultado para a IA aprender.",

@@ -560,6 +560,13 @@ data class SessionRow(val s: SessionEntity, val counts: String, val unassigned: 
 private suspend fun loadSlot(ctx: Context, slot: Int): SlotData {
     val repo = Repo(ctx)
     val dao = repo.dao
+    try {
+        repo.relinkResults(slot)
+        repo.validateHuman(slot)
+        repo.syncRound(slot)
+    } catch (e: Exception) {
+        Diag.lastError = "Resultados: " + (e.message ?: e.javaClass.simpleName)
+    }
     val f = repo.fieldMap(slot)
     val players = repo.playersOf(slot)
     val matches = dao.matchesOf(slot)
@@ -568,12 +575,6 @@ private suspend fun loadSlot(ctx: Context, slot: Int): SlotData {
         f, players.count { it.owner == "MY" }, matches.count { it.round != null }, market,
         f[K.ROUND_TOTAL]?.value?.toIntOrNull()
     )
-    try {
-        repo.relinkResults(slot)
-        repo.validateHuman(slot)
-    } catch (e: Exception) {
-        Diag.lastError = "Resultados: " + (e.message ?: e.javaClass.simpleName)
-    }
     Director.resolveTacticLogs(repo, slot)
     val tplan = dao.plan(slot, "tactic")?.json?.let { try { JSONObject(it) } catch (e: Exception) { null } }
     return SlotData(
@@ -626,13 +627,17 @@ private suspend fun loadToday(ctx: Context): TodayData {
     val list = ArrayList<SlotSummary>()
     val now = System.currentTimeMillis()
     for (slot in 1..4) {
-        try { repo.validateHuman(slot) } catch (e: Exception) { }
+        try {
+            repo.relinkResults(slot)
+            repo.validateHuman(slot)
+        } catch (e: Exception) { }
+        val clk = try { repo.syncRound(slot, now) } catch (e: Exception) { null }
         val f = repo.fieldMap(slot)
         val players = repo.dao.playersOf(slot).count { it.owner == "MY" }
         val all = repo.dao.matchesOf(slot)
         val matches = all.count { it.round != null }
         val awaiting = Fixtures.awaitingResult(
-            all, scoredRounds(repo.dao.matchReports(slot)), now, f[K.ROUND]?.value?.toIntOrNull(), f[K.MATCH_AT]?.value?.toLongOrNull()
+            all, scoredRounds(repo.dao.matchReports(slot)), now, clk?.round ?: f[K.ROUND]?.value?.toIntOrNull(), clk?.at
         )
         val tplan = repo.dao.plan(slot, "tactic")?.json?.let { try { JSONObject(it) } catch (e: Exception) { null } }
         val market = repo.dao.snapshots("TRANSFER", slot).isNotEmpty()
@@ -2761,7 +2766,7 @@ private fun SlotResult(slot: Int, d: SlotData, goTactic: () -> Unit) {
         var mFouls by remember { mutableStateOf(digits(repStat(rep, "faltas", home0, true))) }
         var oFouls by remember { mutableStateOf(digits(repStat(rep, "faltas", home0, false))) }
         var oForm by remember { mutableStateOf(repStat(rep, "formacao", home0, false)?.takeIf { it != NI } ?: "") }
-        var mom by remember { mutableStateOf(rep?.optString("mom")?.ifBlank { null } ?: "") }
+        var mom by remember { mutableStateOf(rep?.optString("mom")?.ifBlank { null }?.takeIf { !Overlay.isChip(it) } ?: "") }
         var msg by remember { mutableStateOf<String?>(null) }
 
         // Placar grande, como no fim de jogo do OSM.
