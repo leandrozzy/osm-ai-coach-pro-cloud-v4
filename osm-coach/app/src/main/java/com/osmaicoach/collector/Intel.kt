@@ -77,6 +77,48 @@ object Fixtures {
         return started(m, now)
     }
 
+    /** Rodada atual (a próxima a ser jogada) e o horário dela, já conferidos com os placares e o calendário. */
+    data class Clock(val round: Int?, val at: Long?, val lastDone: Int?)
+
+    /** Última rodada com placar (card com resultado ou análise do jogo lida). */
+    fun lastDone(ms: List<MatchEntity>, scored: Set<Int>): Int? =
+        (ms.filter { it.round != null && (it.result != null || it.scoreMine != null) }.map { it.round!! } + scored).maxOrNull()
+
+    /**
+     * Fonte única da verdade para "qual é o próximo jogo e quando": Hoje, Resultado, Calendário, Diretor e
+     * notificações usam isto. Corrige três incoerências que apareciam juntas:
+     *  - a rodada guardada ficou para trás de um placar já lido (vira a seguinte);
+     *  - o horário guardado já passou quando a rodada mudou (era do jogo anterior: descarta);
+     *  - a rodada pulou uma a mais, mas o rival lido no pré-jogo é o da rodada anterior ainda sem placar (volta uma).
+     */
+    fun clock(
+        ms: List<MatchEntity>, scored: Set<Int>, now: Long,
+        round: Int?, roundAt: Long?, matchAt: Long?, rival: String?
+    ): Clock {
+        val done = lastDone(ms, scored)
+        var r = round
+        var at = matchAt
+        if (at != null && at <= now && roundAt != null && roundAt > at + 60000L) at = null
+        if (done != null && (r == null || r <= done)) {
+            r = done + 1
+            if (at != null && at <= now) at = null
+        }
+        val rk = rival?.takeIf { FieldMerge.known(it) }?.let { Txt.key(it) }
+        val cur = r
+        if (done != null && cur != null && cur - 1 > done && rk != null && rk.length >= 3) {
+            fun vs(m: MatchEntity?): Boolean = m?.let { opponent(it) }?.let { Txt.sim(Txt.key(it), rk) >= 0.85 } == true
+            val prev = ms.firstOrNull { it.round == cur - 1 && !isCup(it) && it.result == null && it.scoreMine == null }
+            if (prev != null && vs(prev) && !vs(ms.firstOrNull { it.round == cur && !isCup(it) })) r = cur - 1
+        }
+        return Clock(r, at, done)
+    }
+
+    fun clock(ms: List<MatchEntity>, scored: Set<Int>, now: Long, f: Map<String, StoredField>): Clock =
+        clock(
+            ms, scored, now, f[K.ROUND]?.value?.toIntOrNull(), f[K.ROUND]?.updatedAt,
+            f[K.MATCH_AT]?.value?.toLongOrNull(), f[K.RIVAL_TEAM]?.value
+        )
+
     /** Próximo jogo de verdade: sem resultado, não anulado pela eliminação da copa e que ainda não aconteceu. */
     fun next(ms: List<MatchEntity>, now: Long, curRound: Int? = null, curAt: Long? = null): MatchEntity? =
         ms.filter { it.round != null && it.result == null && !void(it, ms) && !happened(it, now, curRound, curAt) }

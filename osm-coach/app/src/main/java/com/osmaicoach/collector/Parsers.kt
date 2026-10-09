@@ -665,7 +665,7 @@ object Parsers {
             .sortedBy { it.xc }.mapNotNull { Regex("(\\d{1,3})\\s*%").find(it.text)?.groupValues?.get(1)?.toIntOrNull() }
         val momHeader = o.lines.firstOrNull { Txt.norm(it.text) == "homem do jogo" }
         val mom = if (momHeader == null) null else o.lines.filter {
-            it.yc > momHeader.yc && it.yc - momHeader.yc <= 0.16f && Txt.letters(it.text) >= 3
+            it.yc > momHeader.yc && it.yc - momHeader.yc <= 0.16f && Txt.letters(it.text) >= 3 && !Overlay.isChip(it.text)
         }.minByOrNull { it.yc }?.text?.trim()
 
         // Eventos (minuto no centro; jogador e descrição do lado do time).

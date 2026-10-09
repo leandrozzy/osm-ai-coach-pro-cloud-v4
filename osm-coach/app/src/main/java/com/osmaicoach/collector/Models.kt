@@ -166,6 +166,13 @@ object K {
     const val RIVAL_ATK = "rival.atk"
 }
 
+/** Botões do próprio app por cima do jogo durante a captura: o OCR não pode tratá-los como texto do OSM. */
+object Overlay {
+    private val CHIPS = setOf("encerrar", "app", "osm", "toque de novo para encerrar", "encerrar captura")
+
+    fun isChip(text: String): Boolean = Txt.norm(text).replace(Regex("[^a-z ]"), " ").replace(Regex("\\s+"), " ").trim() in CHIPS
+}
+
 object Txt {
     fun norm(s: String): String =
         Normalizer.normalize(s.lowercase(), Normalizer.Form.NFD)

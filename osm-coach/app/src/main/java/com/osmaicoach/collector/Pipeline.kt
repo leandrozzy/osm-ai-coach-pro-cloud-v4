@@ -26,6 +26,7 @@ object OcrEngine {
         for (block in res.textBlocks) {
             for (ln in block.lines) {
                 val r = ln.boundingBox ?: continue
+                if (Overlay.isChip(ln.text)) continue
                 val toks = ArrayList<OcrToken>()
                 for (e in ln.elements) {
                     val b = e.boundingBox ?: continue

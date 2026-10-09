@@ -667,12 +667,16 @@ object Processor {
         var failed = 0
         var skipped = 0
         var noData = 0
+        var lastFail = ""
         for ((i, s) in pending.withIndex()) {
             ProcessState.label("Lendo tela ${i + 1} de ${pending.size} com IA…")
             val r = readScreen(ctx, repo, s)
             dao.updateScreenAi(s.id, r.state, s.extracted + r.changed, r.note)
             when {
-                r.state == "failed" -> failed++
+                r.state == "failed" -> {
+                    failed++
+                    lastFail = r.note
+                }
                 r.state == "skipped" -> skipped++
                 r.changed > 0 -> applied += r.changed
                 else -> noData++
@@ -684,7 +688,13 @@ object Processor {
             try { repo.reconcileSquads(since) } catch (e: Exception) { 0 }
         } else 0
         ProcessState.finish(
-            "Telas reprocessadas: $fixed • IA: $applied campos aplicados, $noData sem dados do rival, $failed falhas, $skipped ignoradas" +
+            listOfNotNull(
+                "Telas reprocessadas: $fixed",
+                if (pending.isEmpty()) "IA: nada pendente" else "IA: $applied campos aplicados",
+                if (noData > 0) "$noData tela(s) sem relatório do rival" else null,
+                if (failed > 0) "$failed não lida(s) pela IA (${lastFail.take(60)})" else null,
+                if (skipped > 0) "$skipped ignorada(s)" else null
+            ).joinToString(" • ") +
                 (if (gone > 0) " • $gone jogador(es) que não existem mais saíram do elenco" else "")
         )
     }
