@@ -83,4 +83,20 @@ class StateMachineTest {
         // rolando a tela (sem cabeçalho) continua no mesmo slot
         assertEquals(3, m.onScreen(ScreenType.RESULT, emptyList(), null, null, emptyList()).slot)
     }
+
+    @Test fun rivalSquadFindsItsSlotWithoutPregame() {
+        val m = sm()
+        val known = listOf(
+            SlotIdentity(3, setOf(Txt.key("Nasaf")), 12, setOf(Txt.key("Surkhan"), Txt.key("natan bianque_5"))),
+            SlotIdentity(4, setOf(Txt.key("Universidad de Chile")), 5, setOf(Txt.key("Colo-Colo")))
+        )
+        // entrou no slot por uma tela sem nome do time: o plantel do rival (nome completo) diz que é o S3
+        assertEquals(3, m.onScreen(ScreenType.SQUAD, emptyList(), null, "FK Surkhan", known).slot)
+        assertEquals(3, m.onScreen(ScreenType.REPORT, emptyList(), null, null, known).slot)
+        m.onHub(Fx.hubCards())
+        assertEquals(4, m.onScreen(ScreenType.SQUAD, emptyList(), null, "Colo-Colo", known).slot)
+        // time desconhecido: não inventa slot
+        m.onHub(Fx.hubCards())
+        assertNull(m.onScreen(ScreenType.SQUAD, emptyList(), null, "Pakhtakor", known).slot)
+    }
 }
