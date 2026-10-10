@@ -90,13 +90,20 @@ class IntelTest {
 
     @Test fun nickNeedsTwoIndependentScreens() {
         val j = JSONObject()
-        Evidence.add(j, K.RIVAL_NICK, "amar111_13", "PREGAME", 1L)
+        Evidence.add(j, K.RIVAL_NICK, "amar111_13", "CALENDAR", 1L)
         assertNull(Evidence.confirmed(j, K.RIVAL_NICK))
-        Evidence.add(j, K.RIVAL_NICK, "amar11l_13", "CALENDAR", 2L)
+        Evidence.add(j, K.RIVAL_NICK, "amar11l_13", "CALENDAR2", 2L)
         val ok = Evidence.confirmed(j, K.RIVAL_NICK)
         assertNotNull(ok)
         assertEquals("amar111_13", ok!!.value)
         assertEquals(2, ok.sources.size)
+        // o nome do usuário sob o time no pré-jogo (ou no plantel dele) já basta: humano não precisa de bônus
+        val pre = JSONObject()
+        Evidence.add(pre, K.RIVAL_NICK, "natan bianque_5", "PREGAME", 1L)
+        assertNotNull(Evidence.confirmed(pre, K.RIVAL_NICK))
+        val sq = JSONObject()
+        Evidence.add(sq, K.RIVAL_NICK, "natan bianque_5", "SQUAD", 1L)
+        assertNotNull(Evidence.confirmed(sq, K.RIVAL_NICK))
         // a etiqueta "Apelido [S3]" da análise sozinha já confirma
         val r = JSONObject()
         Evidence.add(r, K.RIVAL_NICK, "leo_fc", "REPORT", 1L)

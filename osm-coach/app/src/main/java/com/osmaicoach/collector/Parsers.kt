@@ -99,8 +99,17 @@ object Parsers {
         }
         val leftTeam = teamLines.filter { it.xc < 0.5f }.maxByOrNull { it.h }
         val rightTeam = teamLines.filter { it.xc >= 0.5f }.maxByOrNull { it.h }
-        val nickLines = o.lines.filter { it.yc in 0.395f..0.45f && Txt.letters(it.text) >= 2 }
+        val nickLines = o.lines.filter { it.yc in 0.39f..0.47f && Txt.letters(it.text) >= 2 }
         val myNick = nickLines.firstOrNull { Txt.sim(Txt.key(it.text), MY_NICK) >= 0.75 }
+        // Apelido sob cada time (mesmo sem achar o meu): o Repo casa com o rival guardado.
+        val sideNicks = LinkedHashMap<String, String?>()
+        for ((teamOrNull, left) in listOf(Pair(leftTeam, true), Pair(rightTeam, false))) {
+            val team = teamOrNull ?: continue
+            val tk = Txt.key(team.text).takeIf { it.length >= 3 } ?: continue
+            val nk = nickLines.filter { (it.xc < 0.5f) == left && it !== myNick && isNick(it.text) }
+                .minByOrNull { abs(it.xc - team.xc) }?.text?.trim()
+            if (nk != null && Txt.sim(Txt.key(nk), MY_NICK) < 0.75) sideNicks[tk] = nk
+        }
 
         var candidates = listOfNotNull(leftTeam?.text?.trim(), rightTeam?.text?.trim())
         if (myNick != null) {
@@ -117,9 +126,8 @@ object Parsers {
             if (rivalNick != null) {
                 f[K.RIVAL_HUMAN] = Reading("Sim", 0.85)
                 f[K.RIVAL_NICK] = Reading(rivalNick.text.trim(), 0.8)
-            } else if (rival != null) {
-                f[K.RIVAL_HUMAN] = Reading("Não", 0.55)
             }
+            // Sem apelido legível NÃO marca CPU: o OCR pode só ter perdido o nome do usuário.
             var left: Int? = null
             var right: Int? = null
             for (t in o.tokens) {
@@ -175,7 +183,8 @@ object Parsers {
             ScreenType.PREGAME,
             fields = f,
             teamCandidates = candidates,
-            roundRead = roundRead
+            roundRead = roundRead,
+            humans = sideNicks
         )
     }
 

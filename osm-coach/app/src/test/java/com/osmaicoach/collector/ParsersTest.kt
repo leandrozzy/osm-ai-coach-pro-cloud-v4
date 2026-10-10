@@ -41,7 +41,15 @@ class ParsersTest {
         val lines = Fx.pregameLines().map { if (it.text == "ChicoR78") Fx.line("25 Anniversary", 0.23f, 0.41f, 0.12f) else it }
         val ex = Parsers.pregame(Fx.ocr(*lines.toTypedArray()), null, 0L)
         assertNull(ex.fields[K.RIVAL_NICK])
-        assertEquals("Não", ex.fields[K.RIVAL_HUMAN]?.value)
+        // sem apelido legível não vira CPU (o OCR pode ter perdido o nome do usuário)
+        assertNull(ex.fields[K.RIVAL_HUMAN])
+        assertTrue(ex.humans.values.none { it == "25 Anniversary" })
+    }
+
+    @Test fun rivalNickIsKeptEvenWhenMyNickIsNotRead() {
+        val lines = Fx.pregameLines().filter { it.text != "leandrozzy" }
+        val ex = Parsers.pregame(Fx.ocr(*lines.toTypedArray()), null, 0L)
+        assertTrue(ex.humans.values.contains("ChicoR78"))
     }
 
     @Test fun pregameWithoutMyNickDoesNotGuessSides() {

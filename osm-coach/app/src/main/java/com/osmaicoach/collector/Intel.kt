@@ -158,7 +158,12 @@ object Fixtures {
  */
 object Evidence {
     /** Peso de cada fonte: a etiqueta "Apelido [S3]" da análise é inequívoca; as demais contam 1. */
-    private fun weight(source: String): Int = if (source == "REPORT") 2 else 1
+    /**
+     * Peso de cada fonte. O nome do usuário escrito sob o time do rival no pré-jogo, no plantel dele ou na
+     * análise do jogo é inequívoco (só humano tem): basta uma dessas telas. O calendário (texto pequeno no card,
+     * com fundo decorado) precisa de outra tela junto.
+     */
+    private fun weight(source: String): Int = if (source == "REPORT" || source == "PREGAME" || source == "SQUAD") 2 else 1
 
     private val JUNK_PREFIX = listOf("anniv", "aniver")
     private val JUNK_WORDS = setOf(
