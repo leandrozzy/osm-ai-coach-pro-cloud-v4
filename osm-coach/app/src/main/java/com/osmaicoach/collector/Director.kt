@@ -542,13 +542,27 @@ object Director {
                 "Simulação: ${best.tactic.formation} • ${best.tactic.playStyle} rende ${"%.2f".format(best.points)} pontos esperados " +
                     "contra ${"%.2f".format(draftPts)} da regra."
             )
-            if (scen.size > 1) why.add("Rival humano: testada contra as ${scen.size - 1} últimas táticas dele, não só a atual.")
+            if (scen.size > 1) why.add("Rival humano: testada contra ${scen.size - 1} táticas que ele pode usar (as dele já vistas ou as mais comuns entre humanos), não só a atual.")
             if (lost.isNotEmpty()) why.add("Evitei o que já perdeu para este rival: ${lost.keys.joinToString { it.replace("|", " • ") }}.")
             rules.copy(tactic = best.tactic.copy(notes = why + rules.tactic.notes), rows = best.rows)
         } else rules
-        val json = tacticPlanJson(res, round, rival, false, f[K.MATCH_AT]?.value?.toLongOrNull())
+        // Contra humano sem os dados dele a tática é às cegas: avisa o que ler antes do jogo.
+        val miss = listOfNotNull(
+            if (base.rivalStrength == null) "força" else null,
+            if (base.rivalFormation == null) "formação" else null,
+            if (base.rivalStyle == null) "estilo" else null
+        )
+        val res2 = if (base.rivalHuman == true && miss.isNotEmpty()) res.copy(
+            tactic = res.tactic.copy(
+                notes = listOf(
+                    "⚠ Rival humano sem ${miss.joinToString(", ")} lidos: tática feita para aguentar as táticas mais usadas por humanos. " +
+                        "Abra o pré-jogo, a análise e o plantel do rival e gere de novo para ficar sob medida."
+                ) + res.tactic.notes
+            )
+        ) else res
+        val json = tacticPlanJson(res2, round, rival, false, f[K.MATCH_AT]?.value?.toLongOrNull())
         repo.dao.putPlan(PlanEntity(slot, "tactic", json.toString(), now))
-        repo.dao.putPlan(PlanEntity(slot, "tlog_R${round ?: 0}", logJson(res.tactic, round, rival, inp).toString(), now))
+        repo.dao.putPlan(PlanEntity(slot, "tlog_R${round ?: 0}", logJson(res2.tactic, round, rival, inp).toString(), now))
         return Outcome(true, json.toString(), null)
     }
 
@@ -570,7 +584,20 @@ object Director {
      * Cenários do rival com peso. Contra humano: o que foi lido agora + as últimas táticas que ESSE usuário já
      * usou (perfil pelo apelido), porque ele pode mudar antes do jogo. Contra CPU: só o lido.
      */
-    private suspend fun scenarios(repo: Repo, slot: Int, base: WinModel.Input): List<Pair<WinModel.Input, Double>> {
+    /** Táticas que humanos mais usam no OSM: contra humano sem perfil, a nossa tem que aguentar todas. */
+    private val HUMAN_TYPICAL = listOf(
+        Triple("4-3-3 A", "Contra-ataque", "Agressivo"),
+        Triple("4-5-1", "Contra-ataque", "Normal"),
+        Triple("4-4-2 A", "Jogo de passe", "Normal"),
+        Triple("3-4-3 A", "Jogar pelas alas", "Agressivo"),
+        Triple("5-3-2", "Contra-ataque", "Normal")
+    )
+
+    private suspend fun scenarios(repo: Repo, slot: Int, base0: WinModel.Input): List<Pair<WinModel.Input, Double>> {
+        // Força do rival não lida: simula como jogo parelho (não deixa a escolha sem simulação).
+        val base = if (base0.rivalStrength == null && base0.rivalAtk == null && base0.rivalMid == null && base0.rivalDef == null &&
+            base0.myStrength != null
+        ) base0.copy(rivalStrength = base0.myStrength + if (base0.rivalHuman == true) 2 else 0) else base0
         if (base.rivalHuman != true) return listOf(Pair(base, 1.0))
         val entries = ArrayList<JSONObject>()
         try {
@@ -580,9 +607,18 @@ object Director {
             // perfil ilegível: só o cenário atual
         }
         val past = entries.takeLast(5)
-        if (past.isEmpty()) return listOf(Pair(base, 1.0))
         val readNow = base.rivalFormation != null || base.rivalStyle != null
         val out = ArrayList<Pair<WinModel.Input, Double>>()
+        if (past.isEmpty()) {
+            // Humano sem histórico: ele escolhe a tática a dedo e pode trocar antes do jogo. A nossa precisa
+            // render contra o que foi lido agora E contra as táticas típicas de humanos.
+            if (readNow) out.add(Pair(base, 0.55))
+            val w = (if (readNow) 0.45 else 1.0) / HUMAN_TYPICAL.size
+            for ((f, st, tk) in HUMAN_TYPICAL) {
+                out.add(Pair(base.copy(rivalFormation = f, rivalStyle = st, rivalTackle = tk), w))
+            }
+            return out
+        }
         out.add(Pair(base, if (readNow) 0.5 else 0.2))
         val w = (if (readNow) 0.5 else 0.8) / past.size
         for (e in past) {

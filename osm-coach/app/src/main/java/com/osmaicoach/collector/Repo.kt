@@ -144,8 +144,12 @@ class Repo(private val ctx: Context) {
                 learn(slot, "rival", "Rival mudou de ${old.fvalue} para ${newRival.value}: dados do rival anterior foram descartados.", now)
             }
         }
-        val n = putTracked(slot, ex.fields, source, "PREGAME", now)
-        return n + estimateMid(slot, "rival.", now) + estimateMid(slot, "my.", now)
+        // Bônus de login (+N%) no círculo do rival só aparece para humanos: nunca vira "CPU" por falta do apelido.
+        val readings = if (ex.fields[K.RIVAL_HUMAN]?.value == "Não" && (ex.fields.containsKey(K.RIVAL_LOGIN_BONUS) || humanHints(slot))) {
+            ex.fields - K.RIVAL_HUMAN
+        } else ex.fields
+        val n = putTracked(slot, readings, source, "PREGAME", now)
+        return n + confirmHuman(slot, planJson(slot, "evidence"), now) + estimateMid(slot, "rival.", now) + estimateMid(slot, "my.", now)
     }
 
     private suspend fun applySquad(slot: Int, ex: Extraction, source: String, now: Long): Int {
@@ -273,7 +277,7 @@ class Repo(private val ctx: Context) {
                         // apelido sob o time: é uma evidência; vira "humano" só se outra tela confirmar
                         changed += recordEvidence(slot, mapOf(K.RIVAL_NICK to nick.trim()), "CALENDAR", now)
                     } else {
-                        changed += putFields(slot, mapOf(K.RIVAL_HUMAN to Reading("Não", 0.7)), source, now)
+                        if (!humanHints(slot)) changed += putFields(slot, mapOf(K.RIVAL_HUMAN to Reading("Não", 0.7)), source, now)
                     }
                 }
             }
@@ -360,7 +364,7 @@ class Repo(private val ctx: Context) {
             val opp = Fixtures.opponent(next)
             val rk = fieldMap(slot)[K.RIVAL_TEAM]?.value?.let { Txt.key(it) }
             if (opp != null && next.opponentNick == null && rk != null && Txt.sim(Txt.key(opp), rk) >= 0.85) {
-                changed += putFields(slot, mapOf(K.RIVAL_HUMAN to Reading("Não", 0.7)), source, now)
+                if (!humanHints(slot)) changed += putFields(slot, mapOf(K.RIVAL_HUMAN to Reading("Não", 0.7)), source, now)
             }
         }
         return changed
@@ -801,7 +805,25 @@ class Repo(private val ctx: Context) {
         if (ok != null) {
             return putFields(slot, mapOf(K.RIVAL_NICK to Reading(ok.value, 0.9), K.RIVAL_HUMAN to Reading("Sim", 0.9)), "evidencia", now)
         }
+        // Bônus de login do rival lido no pré-jogo: prova de humano (time de CPU mostra a força, não bônus).
+        val bonus = dao.fieldsOf(slot).firstOrNull { it.fkey == K.RIVAL_LOGIN_BONUS }?.fvalue?.takeIf { FieldMerge.known(it) }
+        if (bonus != null && (human == null || human.fvalue != "Sim")) {
+            val r = LinkedHashMap<String, Reading>()
+            r[K.RIVAL_HUMAN] = Reading("Sim", 0.9)
+            Evidence.best(j, K.RIVAL_NICK)?.let { r[K.RIVAL_NICK] = Reading(it.value, 0.85) }
+            val n = putFields(slot, r, "bonus", now)
+            if (n > 0) learn(slot, "rival", "Rival com bônus de login ($bonus): é humano.", now)
+            return n
+        }
         return 0
+    }
+
+    /** Algum sinal de que o rival é humano (bônus de login, apelido lido em alguma tela ou humano já marcado). */
+    private suspend fun humanHints(slot: Int): Boolean {
+        val rows = dao.fieldsOf(slot).associateBy { it.fkey }
+        if (rows[K.RIVAL_HUMAN]?.fvalue == "Sim") return true
+        if (rows[K.RIVAL_LOGIN_BONUS]?.fvalue?.let { FieldMerge.known(it) } == true) return true
+        return Evidence.best(planJson(slot, "evidence"), K.RIVAL_NICK) != null
     }
 
     /**
@@ -811,7 +833,8 @@ class Repo(private val ctx: Context) {
     suspend fun validateHuman(slot: Int) {
         val rows = dao.fieldsOf(slot).associateBy { it.fkey }
         val human = rows[K.RIVAL_HUMAN] ?: return
-        if (human.fvalue != "Sim" || human.source == "manual" || human.source == "hub") return
+        if (human.fvalue != "Sim" || human.source == "manual" || human.source == "hub" || human.source == "bonus") return
+        if (rows[K.RIVAL_LOGIN_BONUS]?.fvalue?.let { FieldMerge.known(it) } == true) return
         val nick = rows[K.RIVAL_NICK]
         val ev = planJson(slot, "evidence")
         val conf = Evidence.confirmed(ev, K.RIVAL_NICK)
