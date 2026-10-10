@@ -190,7 +190,19 @@ class Repo(private val ctx: Context) {
             }
         }
         // Bônus de login (+N%) no círculo do rival só aparece para humanos: nunca vira "CPU" por falta do apelido.
-        val readings = if (ex.fields[K.RIVAL_HUMAN]?.value == "Não" && (ex.fields.containsKey(K.RIVAL_LOGIN_BONUS) || humanHints(slot))) {
+        val cpuProof = ex.fields[K.RIVAL_HUMAN]?.let { it.value == "Não" && it.conf >= 0.95 } == true
+        if (cpuProof) {
+            // prova de CPU (círculo do rival sem bônus enquanto o meu mostra): desfaz humano, apelido e bônus antigos
+            val rows = dao.fieldsOf(slot).associateBy { it.fkey }
+            if (rows[K.RIVAL_HUMAN]?.source != "manual" && rows[K.RIVAL_HUMAN]?.source != "hub") {
+                dao.putField(FieldEntity(slot, K.RIVAL_HUMAN, "Não", 0.95, now, "cpu"))
+                if (rows[K.RIVAL_NICK]?.source != "manual") dao.deleteField(slot, K.RIVAL_NICK)
+                if (rows[K.RIVAL_LOGIN_BONUS]?.source != "manual") dao.deleteField(slot, K.RIVAL_LOGIN_BONUS)
+                dao.deletePlan(slot, "evidence")
+            }
+        }
+        val readings = if (cpuProof) ex.fields - K.RIVAL_HUMAN
+        else if (ex.fields[K.RIVAL_HUMAN]?.value == "Não" && (ex.fields.containsKey(K.RIVAL_LOGIN_BONUS) || humanHints(slot))) {
             ex.fields - K.RIVAL_HUMAN
         } else ex.fields
         var n = putTracked(slot, readings, source, "PREGAME", now)

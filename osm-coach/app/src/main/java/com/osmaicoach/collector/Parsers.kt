@@ -166,6 +166,11 @@ object Parsers {
             val rivalStr = if (mineLeft) right else left
             if (mineStr != null) f[K.MY_STRENGTH] = Reading(mineStr.toString(), 0.85)
             if (rivalStr != null) f[K.RIVAL_STRENGTH] = Reading(rivalStr.toString(), 0.8)
+            // Os círculos alternam força <-> bônus ao mesmo tempo. Se o meu mostra o bônus e o do rival continua
+            // com a força (e não há usuário sob o nome dele), o rival é CPU: time de CPU não tem bônus de login.
+            if (myBonus != null && rivalBonus == null && rivalStr != null && rivalNick == null) {
+                f[K.RIVAL_HUMAN] = Reading("Não", 0.95)
+            }
 
             // Classificação (tabela no canto inferior direito): linha do meu time.
             val myKey = Txt.key(f[K.TEAM]?.value ?: "")
