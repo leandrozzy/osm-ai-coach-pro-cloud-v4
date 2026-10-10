@@ -9,7 +9,8 @@ import org.json.JSONObject
  */
 object Parsers {
     private val RX_HUB_ROUND = Regex("(\\d{1,2})\\s*/\\s*(\\d{1,2})\\s*jornada")
-    private val RX_JORNADA = Regex("^jornada\\s*(\\d{1,2})$")
+    // "Jornada 7", "Jornada 7 de 10", "Ronda 7" (batalha) — o número logo depois da palavra.
+    private val RX_JORNADA = Regex("^(?:jornada|ronda|rodada)\\s*(\\d{1,2})\\b")
     private val RX_DATE = Regex("\\b(\\d{2})-(\\d{2})-(\\d{2})\\b")
     // O texto do fundo do estádio ("25 ANNIVERSARY") gruda na data e some o \b: aceita a data colada.
     private val RX_DATE_LOOSE = Regex("(\\d{2})-(\\d{2})-(\\d{2})")
@@ -75,7 +76,9 @@ object Parsers {
             val rm = RX_JORNADA.find(n)
             if (rm != null) roundRead = rm.groupValues[1].toIntOrNull()
             val units = Regex("(\\d+)\\s*([dhms])\\b").findAll(n).toList()
-            if (units.size >= 2) {
+            // contagem do pré-jogo: "21h 5m 10s", ou uma unidade só perto do jogo ("45m", "2d")
+            val lone = units.size == 1 && Regex("^\\d{1,3}\\s*[dhm]$").matches(n.trim())
+            if (units.size >= 2 || lone) {
                 var secs = 0L
                 for (u in units) {
                     val v = u.groupValues[1].toLongOrNull() ?: 0L
@@ -143,13 +146,17 @@ object Parsers {
             // O OCR às vezes separa "+12" e "%" ou junta com o ícone: procura em tokens e linhas, numa área maior.
             val bonusCands = o.tokens.map { Triple(it.text, it.xc, it.yc) } + o.lines.map { Triple(it.text, it.xc, it.yc) }
             for ((txt, xc, yc) in bonusCands) {
-                if (yc !in 0.17f..0.36f) continue
+                if (yc !in 0.12f..0.42f) continue
                 val t = txt.trim().replace(" ", "")
                 val m = RX_BONUS.find(t) ?: RX_BONUS_LOOSE.find(t) ?: continue
                 val v = m.groupValues[1].toIntOrNull() ?: continue
-                if (v !in 1..60) continue
-                if (xc in 0.24f..0.42f && leftBonus == null) leftBonus = v
-                if (xc in 0.58f..0.76f && rightBonus == null) rightBonus = v
+                // +0% também é leitura válida (humano sem bônus de login hoje)
+                if (v !in 0..60) continue
+                // fora da área do círculo só vale com o "+" (evita pegar outra porcentagem da tela)
+                val inCircle = yc in 0.17f..0.36f && (xc in 0.24f..0.42f || xc in 0.58f..0.76f)
+                if (!inCircle && !t.contains("+")) continue
+                if (xc in 0.18f..0.46f && leftBonus == null) leftBonus = v
+                if (xc in 0.54f..0.82f && rightBonus == null) rightBonus = v
             }
             val myBonus = if (mineLeft) leftBonus else rightBonus
             val rivalBonus = if (mineLeft) rightBonus else leftBonus
