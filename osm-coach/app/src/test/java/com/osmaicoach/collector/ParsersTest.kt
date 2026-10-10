@@ -462,4 +462,14 @@ class ParsersTest {
         assertEquals(1, ex.matchReport?.scoreHome)
         assertEquals(2, ex.matchReport?.scoreAway)
     }
+
+    @Test fun zeroBonusAndBattleRoundAreRead() {
+        val lines = Fx.pregameLines().map { if (it.text == "Jornada 4") Fx.line("Ronda 7", 0.5f, 0.126f, 0.08f) else it } +
+            listOf(Fx.line("+0%", 0.33f, 0.30f, 0.04f), Fx.line("+3%", 0.67f, 0.30f, 0.04f), Fx.line("45m", 0.5f, 0.18f, 0.05f))
+        val ex = Parsers.pregame(Fx.ocr(*lines.filter { it.text != "21h 5m 10s" }.toTypedArray()), null, 0L)
+        assertEquals(7, ex.roundRead)
+        assertEquals("+0%", ex.fields[K.RIVAL_LOGIN_BONUS]?.value)
+        assertEquals("+3%", ex.fields[K.MY_BONUS]?.value)
+        assertEquals((45L * 60000L).toString(), ex.fields[K.MATCH_AT]?.value)
+    }
 }
