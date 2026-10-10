@@ -64,6 +64,10 @@ class ManualTest {
         assertEquals("+3%", ManualFields.normalize(K.RIVAL_LOGIN_BONUS, "3 %"))
         assertEquals("+12%", ManualFields.normalize(K.MY_BONUS, "+12%"))
         assertNull(ManualFields.normalize(K.RIVAL_LOGIN_BONUS, "abc"))
+        // só o número também vale
+        assertEquals("+3%", ManualFields.normalize(K.RIVAL_LOGIN_BONUS, "3"))
+        assertEquals("+0%", ManualFields.normalize(K.MY_BONUS, "0"))
+        assertEquals("+5%", ManualFields.normalize(K.MY_BONUS, "+5"))
         assertEquals("2", ManualFields.normalize(K.MY_STAD_PITCH, "2"))
         assertNull(ManualFields.normalize(K.MY_STAD_PITCH, "4"))
     }

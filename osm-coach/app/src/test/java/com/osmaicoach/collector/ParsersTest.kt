@@ -485,4 +485,13 @@ class ParsersTest {
         val ex2 = Parsers.pregame(Fx.ocr(*hum.toTypedArray()), null, 0L)
         assertEquals("Sim", ex2.fields[K.RIVAL_HUMAN]?.value)
     }
+
+    @Test fun humanWithoutBonusKeepsTheNickAndGetsZero() {
+        // rival com usuário (ChicoR78) e círculo na força enquanto o meu mostra o bônus: humano sem bônus
+        val lines = Fx.pregameLines().filter { it.text != "73" } +
+            listOf(Fx.line("60", 0.34f, 0.27f, 0.03f), Fx.line("+3%", 0.66f, 0.27f, 0.04f))
+        val ex = Parsers.pregame(Fx.ocr(*lines.toTypedArray()), null, 0L)
+        assertEquals("Sim", ex.fields[K.RIVAL_HUMAN]?.value)
+        assertEquals("+0%", ex.fields[K.RIVAL_LOGIN_BONUS]?.value)
+    }
 }
