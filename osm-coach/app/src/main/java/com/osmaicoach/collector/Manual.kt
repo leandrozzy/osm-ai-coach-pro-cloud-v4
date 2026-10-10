@@ -51,13 +51,13 @@ object ManualFields {
         Spec(K.RIVAL_TACKLE, "Desarme do rival", Osm.TACKLES, ANALYSIS, "Normal"),
         Spec(K.RIVAL_SECRET, "Treino secreto do rival", YES_NO, ANALYSIS, "Não"),
         Spec(K.RIVAL_CAMP, "Campo de treinamento do rival", YES_NO, ANALYSIS, "Não"),
-        Spec(K.RIVAL_LOGIN_BONUS, "Bônus do rival (login)", null, "Pré-jogo (círculo do rival, +N%, só humano)", "+3%"),
+        Spec(K.RIVAL_LOGIN_BONUS, "Bônus do rival (login)", null, "Pré-jogo (círculo do rival, só humano). Digite só o número", "3"),
         Spec(K.STADIUM, "Nível do estádio do rival", null, ANALYSIS, "Nível 1"),
         Spec(K.MY_STADIUM, "Meu estádio", null, "Menu → Estádio", "Capacidade 3 • Relvado 2 • Treino 1"),
         Spec(K.MY_STAD_CAP, "Capacidade do estádio (receita por jogo)", listOf("1", "2", "3"), STADIUM_HINT, "3"),
         Spec(K.MY_STAD_PITCH, "Nível do estádio (relvado: bônus de jogar em casa)", listOf("1", "2", "3"), STADIUM_HINT, "2"),
         Spec(K.MY_STAD_TRAIN, "Treino do estádio (evolução nos treinos)", listOf("1", "2", "3"), STADIUM_HINT, "1"),
-        Spec(K.MY_BONUS, "Meu bônus", null, "Pré-jogo (círculo do seu time, +N%)", "+3%")
+        Spec(K.MY_BONUS, "Meu bônus", null, "Pré-jogo (círculo do seu time). Digite só o número", "3")
     ).associateBy { it.key }
 
     fun spec(key: String, fallbackLabel: String): Spec = SPECS[key] ?: Spec(key, fallbackLabel, null, "", "")
@@ -72,7 +72,8 @@ object ManualFields {
             return m.groupValues[1].replace('.', ',') + m.groupValues[2].uppercase()
         }
         if (key == K.RIVAL_LOGIN_BONUS || key == K.MY_BONUS) {
-            val m = Regex("^\\+?(\\d{1,2})\\s*%$").find(t) ?: return null
+            // aceita "3", "+3", "3%" ou "+3%" — o app grava sempre como "+3%"
+            val m = Regex("^\\+?\\s*(\\d{1,2})\\s*%?$").find(t) ?: return null
             return "+" + m.groupValues[1] + "%"
         }
         if (key == K.MATCH_AT) {

@@ -190,7 +190,19 @@ class Repo(private val ctx: Context) {
             }
         }
         // Bônus de login (+N%) no círculo do rival só aparece para humanos: nunca vira "CPU" por falta do apelido.
-        val cpuProof = ex.fields[K.RIVAL_HUMAN]?.let { it.value == "Não" && it.conf >= 0.95 } == true
+        // Humano sem bônus de login também deixa o círculo na força: a prova de CPU só vale se o nome de
+        // usuário desse rival não apareceu em NENHUMA tela (pré-jogo, plantel, calendário, análise).
+        val sameRival = run {
+            val old = dao.fieldsOf(slot).firstOrNull { it.fkey == K.RIVAL_TEAM }?.fvalue
+            val new = ex.fields[K.RIVAL_TEAM]?.value
+            old == null || new == null || SlotMatcher.nameSim(Txt.key(old), Txt.key(new)) >= 0.8
+        }
+        // (o próprio pré-jogo agora sem nome não conta contra: vale nome visto em OUTRA tela ou digitado à mão)
+        val nickSeen = sameRival && (
+            Evidence.values(planJson(slot, "evidence"), K.RIVAL_NICK).any { b -> b.sources.any { it != "PREGAME" } } ||
+                dao.fieldsOf(slot).any { it.fkey == K.RIVAL_NICK && it.source == "manual" && FieldMerge.known(it.fvalue) }
+            )
+        val cpuProof = !nickSeen && ex.fields[K.RIVAL_HUMAN]?.let { it.value == "Não" && it.conf >= 0.95 } == true
         if (cpuProof) {
             // prova de CPU (círculo do rival sem bônus enquanto o meu mostra): desfaz humano, apelido e bônus antigos
             val rows = dao.fieldsOf(slot).associateBy { it.fkey }
@@ -202,7 +214,7 @@ class Repo(private val ctx: Context) {
             }
         }
         val readings = if (cpuProof) ex.fields - K.RIVAL_HUMAN
-        else if (ex.fields[K.RIVAL_HUMAN]?.value == "Não" && (ex.fields.containsKey(K.RIVAL_LOGIN_BONUS) || humanHints(slot))) {
+        else if (ex.fields[K.RIVAL_HUMAN]?.value == "Não" && (nickSeen || ex.fields.containsKey(K.RIVAL_LOGIN_BONUS) || humanHints(slot))) {
             ex.fields - K.RIVAL_HUMAN
         } else ex.fields
         var n = putTracked(slot, readings, source, "PREGAME", now)

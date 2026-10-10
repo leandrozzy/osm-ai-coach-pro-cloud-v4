@@ -171,6 +171,10 @@ object Parsers {
             if (myBonus != null && rivalBonus == null && rivalStr != null && rivalNick == null) {
                 f[K.RIVAL_HUMAN] = Reading("Não", 0.95)
             }
+            // Humano (nome de usuário embaixo) sem bônus de login hoje: o círculo dele fica na força -> bônus 0%.
+            if (myBonus != null && rivalBonus == null && rivalStr != null && rivalNick != null) {
+                f[K.RIVAL_LOGIN_BONUS] = Reading("+0%", 0.8)
+            }
 
             // Classificação (tabela no canto inferior direito): linha do meu time.
             val myKey = Txt.key(f[K.TEAM]?.value ?: "")
