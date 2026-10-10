@@ -472,4 +472,17 @@ class ParsersTest {
         assertEquals("+3%", ex.fields[K.MY_BONUS]?.value)
         assertEquals((45L * 60000L).toString(), ex.fields[K.MATCH_AT]?.value)
     }
+
+    @Test fun cpuRivalKeepsStrengthWhileMyCircleShowsBonus() {
+        val lines = Fx.pregameLines().filter { it.text != "ChicoR78" && it.text != "73" } +
+            listOf(Fx.line("60", 0.34f, 0.27f, 0.03f), Fx.line("+3%", 0.66f, 0.27f, 0.04f))
+        val ex = Parsers.pregame(Fx.ocr(*lines.toTypedArray()), null, 0L)
+        assertEquals("Não", ex.fields[K.RIVAL_HUMAN]?.value)
+        assertEquals("60", ex.fields[K.RIVAL_STRENGTH]?.value)
+        // humano: os dois círculos mostram o bônus juntos -> não marca CPU
+        val hum = Fx.pregameLines().filter { it.text != "73" } +
+            listOf(Fx.line("+2%", 0.34f, 0.27f, 0.04f), Fx.line("+3%", 0.66f, 0.27f, 0.04f))
+        val ex2 = Parsers.pregame(Fx.ocr(*hum.toTypedArray()), null, 0L)
+        assertEquals("Sim", ex2.fields[K.RIVAL_HUMAN]?.value)
+    }
 }
