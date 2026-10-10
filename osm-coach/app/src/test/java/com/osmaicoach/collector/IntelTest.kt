@@ -250,4 +250,26 @@ class IntelTest {
         val three = WinModel.expectedPoints(base.copy(plan = plan.copy(formation = "4-3-3")))!!
         assertTrue(three > two)
     }
+
+    @Test fun coachFindsWhatWentWrongAndPlansTheFix() {
+        val log5 = JSONObject().put("round", 5).put("rival", "Colo-Colo").put("formation", "4-2-3-1").put("playStyle", "Contra-ataque").put("result", JSONObject.NULL)
+        val stats = JSONObject().put("posse de bola", org.json.JSONArray().put("32%").put("68%"))
+            .put("remates", org.json.JSONArray().put("4").put("12")).put("faltas", org.json.JSONArray().put("8").put("16"))
+            .put("formacao", org.json.JSONArray().put("4-2-3-1").put("4-4-2 B"))
+        val rep6 = JSONObject().put("round", 6).put("sh", 0).put("sa", 2).put("mineHome", true)
+            .put("homeTeam", "Universidad de Chile").put("awayTeam", "Colo-Colo").put("stats", stats)
+        val games = Coach.games(listOf(log5), listOf(rep6))
+        assertEquals(1, games.size)
+        // a tática gerada na "J5" contra o mesmo rival é a do jogo J6
+        assertEquals("4-2-3-1", games[0].formation)
+        val rv = Coach.review(games[0])
+        assertTrue(rv.wrong.any { it.contains("meio-campo") })
+        assertTrue(rv.wrong.any { it.contains("Criou pouco") })
+        assertTrue(rv.wrong.any { it.contains("Defesa exposta") })
+        val l = Coach.lessons(games, "Colo-Colo")
+        assertTrue(l.midNeed > 0 && l.defNeed > 0 && l.atkNeed > 0)
+        assertTrue("4-2-3-1|Contra-ataque" in l.avoid)
+        assertTrue(l.plan.isNotEmpty())
+        assertEquals(54, Coach.num("540", true))
+    }
 }

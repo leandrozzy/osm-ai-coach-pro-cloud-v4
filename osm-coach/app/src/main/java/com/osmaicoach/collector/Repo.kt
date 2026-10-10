@@ -701,8 +701,20 @@ class Repo(private val ctx: Context) {
             // (o pré-jogo ou o calendário confirmam depois)
             syncRound(slot, now)
         }
-        val p = dao.plan(slot, "tlog_R$round") ?: return
+        // Tática usada neste jogo: a da rodada, ou (rodada lida diferente) a última sem resultado contra o mesmo rival.
+        fun sameRival(js: String): Boolean = try {
+            val rv = Txt.key(org.json.JSONObject(js).optString("rival"))
+            oppName == null || rv.length < 3 || SlotMatcher.nameSim(rv, Txt.key(oppName)) >= 0.8
+        } catch (e: Exception) { false }
+        val p = dao.plan(slot, "tlog_R$round")?.takeIf { sameRival(it.json) }
+            ?: dao.tacticLogs(slot).filter { lp ->
+                val lj = try { org.json.JSONObject(lp.json) } catch (e: Exception) { null }
+                lj != null && lj.isNull("result") && lj.optInt("round", -99) in (round - 2)..round && oppName != null &&
+                    SlotMatcher.nameSim(Txt.key(lj.optString("rival")), Txt.key(oppName)) >= 0.8
+            }.maxByOrNull { it.at }
+            ?: return
         val t = try { org.json.JSONObject(p.json) } catch (e: Exception) { return }
+        t.put("round", round)
         if (mine != null && opp != null && t.isNull("result")) {
             t.put("result", if (mine > opp) "V" else if (mine == opp) "E" else "D")
             t.put("scoreMine", mine)
@@ -720,7 +732,7 @@ class Repo(private val ctx: Context) {
         side("remates", false)?.let { v -> pct(v)?.let { t.put("oppShots", it) } }
         side("formacao", false)?.let { t.put("oppFormation", it) }
         j.optString("mom").takeIf { it.isNotBlank() && !Overlay.isChip(it) }?.let { t.put("mom", it) }
-        dao.putPlan(PlanEntity(slot, "tlog_R$round", t.toString(), p.at))
+        dao.putPlan(PlanEntity(slot, p.kind, t.toString(), p.at))
     }
 
     /**
@@ -739,7 +751,14 @@ class Repo(private val ctx: Context) {
             }
             val m = dao.match(slot, "L$round")
             val tl = dao.plan(slot, "tlog_R$round")?.json?.let { try { org.json.JSONObject(it) } catch (e: Exception) { null } }
-            val linked = j.has("mineHome") && m?.scoreMine != null && (tl == null || !tl.isNull("result"))
+            // tática ainda sem resultado contra um dos times do relatório, numa rodada próxima (rodada lida diferente)
+            val teams = listOf(j.optString("homeTeam"), j.optString("awayTeam")).map { Txt.key(it) }.filter { it.length >= 3 }
+            val orphan = tl == null && dao.tacticLogs(slot).any { lp ->
+                val lj = try { org.json.JSONObject(lp.json) } catch (e: Exception) { null }
+                lj != null && lj.isNull("result") && lj.optInt("round", -99) in (round - 2)..round &&
+                    teams.any { SlotMatcher.nameSim(Txt.key(lj.optString("rival")), it) >= 0.8 }
+            }
+            val linked = j.has("mineHome") && m?.scoreMine != null && (tl == null || !tl.isNull("result")) && !orphan
             if (!linked) linkResult(slot, round, j, now)
         }
     }

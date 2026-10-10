@@ -140,7 +140,9 @@ object TacticEngine {
         val myMid: Int? = null,
         val rivalMid: Int? = null,
         val rivalDef: Int? = null,
-        val fitness: Map<String, Pair<Int, Int>> = emptyMap()
+        val fitness: Map<String, Pair<Int, Int>> = emptyMap(),
+        /** Ajustes que o treinador tirou dos últimos jogos (Coach.lessons). */
+        val lessons: Coach.Lessons? = null
     )
 
     private data class Sliders(val mentality: Int, val pressure: Int, val tempo: Int, val bucket: String)
@@ -268,6 +270,8 @@ object TacticEngine {
             if (rivalFw >= 3 && (diff ?: 0) < 5) b += (m - 3) * 1.5
             if (rivalFw <= 1 && (diff ?: 0) > -5) b += (k - 1) * 1.5
         }
+        // Aprendizado dos últimos jogos: o que faltou (meio, defesa, ataque) puxa a formação para corrigir.
+        inp.lessons?.let { l -> b += (m - 3) * 3.0 * l.midNeed + (d - 4) * 3.0 * l.defNeed + (k - 2) * 3.0 * l.atkNeed }
         val h = inp.history.filter { Formations.base(it.formation) == f && it.result != null }
         if (h.isNotEmpty()) {
             var pts = 0
@@ -305,6 +309,7 @@ object TacticEngine {
         val pressure = sl.pressure
         val tempo = sl.tempo
         val bucket = sl.bucket
+        inp.lessons?.let { l -> mentality += 3 * l.atkNeed - 5 * l.defNeed }
         if (inp.home == true) mentality += 3
         if (inp.home == false) mentality -= 3
         mentality = mentality.coerceIn(0, 100)
@@ -345,6 +350,10 @@ object TacticEngine {
                 disciplineNote = "Média de $avg faltas nos últimos ${foulRows.size} jogos: desarme Normal para evitar cartões."
             }
         }
+        if (inp.lessons?.discipline == true && tackleFinal == "Agressivo") {
+            tackleFinal = "Normal"
+            disciplineNote = "Faltas demais nos últimos jogos: desarme Normal."
+        }
         val marking = if (inp.rivalAtk != null && inp.myDef != null && inp.rivalAtk - inp.myDef >= 5) "Homem-a-homem" else "À zona"
         val offside = if (inp.rivalAtk != null && inp.myDef != null && inp.myDef - inp.rivalAtk >= 5) "Sim" else "Não"
 
@@ -353,7 +362,7 @@ object TacticEngine {
         else if (diff != null && diff <= -5) Pair("Ajudar a defender", "Ajudar a defesa")
         else Pair("Atacar apenas", "Manter posições")
         val advAttack = roles.first
-        val advMid = roles.second
+        val advMid = if ((inp.lessons?.midNeed ?: 0) > 0 && roles.second == "Pressionar na frente") "Manter posições" else roles.second
         val advDef = "Defender atrás"
 
         // Explicação com números.
@@ -383,6 +392,7 @@ object TacticEngine {
                 notes.add("Rotação: ${p.name} fora do XI (condição ${ft?.first ?: "?"}%, moral ${ft?.second ?: "?"}%).")
             }
         }
+        inp.lessons?.plan?.takeIf { it.isNotEmpty() }?.let { notes.add("Aprendizado: " + it.joinToString(" ")) }
         if (styleNote != null) notes.add(styleNote)
         if (disciplineNote != null) notes.add(disciplineNote)
         val stat = Learning.stats(inp.history).firstOrNull { it.formation == formation }

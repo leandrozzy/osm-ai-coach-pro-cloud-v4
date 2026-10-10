@@ -539,3 +539,151 @@ object WinModel {
         return Prob(win, draw, loss, factors, conf, all[3], all[4], best)
     }
 }
+
+/**
+ * O "treinador": lê cada jogo (placar, posse, remates, faltas, formação do rival e a tática usada), diz onde
+ * errou e o que deu certo, e transforma isso em ajustes concretos que a geração da tática aplica.
+ */
+object Coach {
+    data class Game(
+        val round: Int, val rival: String, val result: String?, val gf: Int?, val ga: Int?,
+        val formation: String?, val style: String?, val poss: Int?, val shots: Int?, val oppShots: Int?, val fouls: Int?,
+        val oppFormation: String?, val advice: String?
+    )
+
+    data class Review(val game: Game, val wrong: List<String>, val right: List<String>)
+
+    data class Lessons(
+        val midNeed: Int = 0, val defNeed: Int = 0, val atkNeed: Int = 0, val discipline: Boolean = false,
+        val avoid: Set<String> = emptySet(), val plan: List<String> = emptyList()
+    )
+
+    /** Número de uma estatística ("54%", "540" lido sem o %, "12"); valor impossível vira null. */
+    fun num(s: String?, pct: Boolean = false): Int? {
+        val v = s?.let { Regex("(\\d{1,3})").find(it)?.groupValues?.get(1)?.toIntOrNull() } ?: return null
+        if (!pct) return v
+        if (v in 0..100) return v
+        return if (v % 10 == 0 && v / 10 <= 100) v / 10 else null
+    }
+
+    private fun same(a: String?, b: String?): Boolean {
+        val x = Txt.key(a ?: "")
+        val y = Txt.key(b ?: "")
+        return x.length >= 3 && y.length >= 3 && SlotMatcher.nameSim(x, y) >= 0.8
+    }
+
+    private fun opt(j: JSONObject, k: String): String? = if (j.has(k) && !j.isNull(k)) j.optString(k).ifBlank { null } else null
+
+    /** Junta análises do jogo (estatísticas) com as táticas usadas (pela rodada ou pelo rival, se a rodada não bate). */
+    fun games(logs: List<JSONObject>, reports: List<JSONObject>): List<Game> {
+        val used = HashSet<JSONObject>()
+        val out = ArrayList<Game>()
+        for (r in reports) {
+            if (!r.has("sh") || !r.has("sa")) continue
+            val round = r.optInt("round", -1).takeIf { it > 0 } ?: continue
+            val mh = r.optBoolean("mineHome", true)
+            val gf = if (mh) r.optInt("sh") else r.optInt("sa")
+            val ga = if (mh) r.optInt("sa") else r.optInt("sh")
+            val opp = (if (mh) r.optString("awayTeam") else r.optString("homeTeam")).ifBlank { null }
+            val st = r.optJSONObject("stats")
+            fun side(label: String, mine: Boolean): String? = st?.optJSONArray(label)?.optString(if (mh == mine) 0 else 1)?.ifBlank { null }
+            val log = logs.firstOrNull { it !in used && it.optInt("round") == round && (opp == null || same(it.optString("rival"), opp)) }
+                ?: logs.filter { it !in used && opp != null && same(it.optString("rival"), opp) && it.optInt("round") in (round - 2)..round }
+                    .maxByOrNull { it.optInt("round") }
+                ?: logs.firstOrNull { it !in used && it.optInt("round") == round }
+            if (log != null) used.add(log)
+            out.add(
+                Game(
+                    round, opp ?: log?.optString("rival")?.ifBlank { null } ?: "adversário",
+                    if (gf > ga) "V" else if (gf == ga) "E" else "D", gf, ga,
+                    log?.let { opt(it, "formation") }, log?.let { opt(it, "playStyle") },
+                    num(side("posse de bola", true), true), num(side("remates", true)), num(side("remates", false)),
+                    num(side("faltas", true)), side("formacao", false), opt(r, "advice")
+                )
+            )
+        }
+        for (l in logs) {
+            if (l in used) continue
+            val res = opt(l, "result") ?: continue
+            out.add(
+                Game(
+                    l.optInt("round"), l.optString("rival").ifBlank { "adversário" }, res,
+                    if (l.has("scoreMine") && !l.isNull("scoreMine")) l.optInt("scoreMine") else null,
+                    if (l.has("scoreOpp") && !l.isNull("scoreOpp")) l.optInt("scoreOpp") else null,
+                    opt(l, "formation"), opt(l, "playStyle"),
+                    if (l.has("myPossession")) num(l.optString("myPossession"), true) else null,
+                    if (l.has("myShots")) l.optInt("myShots") else null, if (l.has("oppShots")) l.optInt("oppShots") else null,
+                    if (l.has("myFouls")) l.optInt("myFouls") else null, opt(l, "oppFormation"), null
+                )
+            )
+        }
+        return out.sortedByDescending { it.round }
+    }
+
+    private fun mids(f: String?): Int? = f?.let { Formations.lines(it) }?.takeIf { it.isNotEmpty() }?.let { 10 - it.first() - it.last() }
+
+    /** Onde errou e o que funcionou num jogo, com os números do próprio jogo. */
+    fun review(g: Game): Review {
+        val wrong = ArrayList<String>()
+        val right = ArrayList<String>()
+        val myM = mids(g.formation)
+        val rM = mids(g.oppFormation)
+        val p = g.poss
+        if (p != null && p < 42) {
+            wrong.add(
+                "Perdeu o meio-campo (posse $p%)" +
+                    (if (myM != null && rM != null && rM > myM) ": o rival (${g.oppFormation}) tinha $rM meias contra seus $myM." else ".")
+            )
+        } else if (p != null && p >= 58) right.add("Dominou a bola (posse $p%).")
+        val s = g.shots
+        val os = g.oppShots
+        if (s != null && os != null && s * 10 < os * 6) wrong.add("Criou pouco: $s remates contra $os do rival.")
+        else if (s != null && p != null && p >= 55 && s <= 6) wrong.add("Teve a bola ($p%) mas finalizou pouco ($s remates): faltou presença na área.")
+        if (g.gf == 0 && g.result != "V") wrong.add("Não marcou: ataque sem efeito.")
+        if ((os != null && os >= 10) || (g.ga ?: 0) >= 2) {
+            wrong.add("Defesa exposta: " + listOfNotNull(os?.let { "$it remates" }, g.ga?.let { "$it gol(s)" }).joinToString(" e ") + " do rival.")
+        } else if (g.ga == 0) right.add("Defesa segura (não sofreu gol).")
+        val f = g.fouls
+        if (f != null && f >= 16) wrong.add("Muitas faltas ($f): risco de cartão e expulsão.")
+        if (g.result == "V" && g.formation != null) right.add("${g.formation} • ${g.style ?: "?"} funcionou.")
+        if (g.result == "D" && g.formation != null) wrong.add("${g.formation} • ${g.style ?: "?"} perdeu para ${g.rival}.")
+        return Review(g, wrong, right)
+    }
+
+    /** Ajustes para o próximo jogo a partir dos últimos 5 (o mais recente pesa mais). */
+    fun lessons(games: List<Game>, nextRival: String?): Lessons {
+        val recent = games.sortedByDescending { it.round }.take(5)
+        if (recent.isEmpty()) return Lessons()
+        var mid = 0.0
+        var def = 0.0
+        var atk = 0.0
+        var discipline = false
+        val avoid = LinkedHashSet<String>()
+        val lostCount = HashMap<String, Int>()
+        for ((i, g) in recent.withIndex()) {
+            val w = listOf(1.0, 0.75, 0.55, 0.4, 0.3)[i]
+            val bad = g.result != "V"
+            val p = g.poss
+            if (bad && p != null && p < 42) mid += w
+            if (bad && ((g.oppShots ?: 0) >= 10 || (g.ga ?: 0) >= 2)) def += w
+            if (bad && (g.gf == 0 || (g.shots != null && g.oppShots != null && g.shots * 10 < g.oppShots * 6))) atk += w
+            if (i < 3 && (g.fouls ?: 0) >= 16) discipline = true
+            val key = g.formation?.let { Formations.base(it) + "|" + (Osm.style(g.style) ?: "") }
+            if (g.result == "D" && key != null) {
+                lostCount[key] = (lostCount[key] ?: 0) + 1
+                if (nextRival != null && same(g.rival, nextRival)) avoid.add(key)
+            }
+        }
+        for ((k, n) in lostCount) if (n >= 2) avoid.add(k)
+        fun need(x: Double): Int = if (x >= 1.6) 2 else if (x >= 0.7) 1 else 0
+        val l = Lessons(need(mid), need(def), need(atk), discipline, avoid)
+        val plan = ArrayList<String>()
+        if (l.midNeed > 0) plan.add("Reforçar o meio-campo: formação com mais meias e meias em \"Manter posições\" para não perder a posse de novo.")
+        if (l.defNeed > 0) plan.add("Proteger a defesa: mentalidade mais baixa, sem linha de impedimento arriscada e atacantes ajudando quando o rival for forte.")
+        if (l.atkNeed > 0) plan.add("Mais presença na área: um atacante a mais ou \"Remate à vista\" quando a defesa rival for fraca.")
+        if (l.discipline) plan.add("Disciplina: desarme Normal (as faltas recentes passaram de 16 por jogo).")
+        for (k in avoid) plan.add("Não repetir ${k.replace("|", " • ")}" + (if (nextRival != null) " contra $nextRival" else "") + ": já perdeu com ela.")
+        if (plan.isEmpty()) plan.add("Manter a linha que vem funcionando e ajustar só ao rival da vez.")
+        return l.copy(plan = plan)
+    }
+}
