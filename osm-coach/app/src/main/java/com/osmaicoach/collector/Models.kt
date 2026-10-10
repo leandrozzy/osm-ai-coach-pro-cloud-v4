@@ -168,7 +168,16 @@ object K {
 
 /** Botões do próprio app por cima do jogo durante a captura: o OCR não pode tratá-los como texto do OSM. */
 object Overlay {
-    private val CHIPS = setOf("encerrar", "app", "osm", "toque de novo para encerrar", "encerrar captura")
+    private val CHIPS = setOf("encerrar", "app", "osm", "toque de novo para encerrar", "encerrar captura", "tatica")
+
+    /** Área dos botões/painel flutuantes na tela (0..1: esquerda, topo, direita, base); o OCR ignora o que cai dentro. */
+    @Volatile
+    var bounds: FloatArray? = null
+
+    fun covers(xc: Float, yc: Float): Boolean {
+        val b = bounds ?: return false
+        return xc >= b[0] - 0.01f && xc <= b[2] + 0.01f && yc >= b[1] - 0.01f && yc <= b[3] + 0.01f
+    }
 
     fun isChip(text: String): Boolean = Txt.norm(text).replace(Regex("[^a-z ]"), " ").replace(Regex("\\s+"), " ").trim() in CHIPS
 }

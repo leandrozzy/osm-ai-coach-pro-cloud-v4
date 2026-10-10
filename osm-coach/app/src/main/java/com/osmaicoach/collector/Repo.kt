@@ -33,12 +33,30 @@ class Repo(private val ctx: Context) {
         var changed = 0
         for ((k, r) in readings) {
             val o = old[k]?.let { StoredField(it.fvalue, it.conf, it.updatedAt) }
+            if (k in CHECKED && o != null && old[k]?.source != "manual") noteConflict(slot, k, o, r.value, now)
             val n = FieldMerge.merge(k, o, r, now) ?: continue
             dao.putField(FieldEntity(slot, k, n.value, n.conf, n.updatedAt, source))
             if (k == K.RIVAL_FORMATION || k == K.MY_FORMATION) rememberFormation(n.value)
             changed++
         }
         return changed
+    }
+
+    /** Números que decidem a tática: duas leituras recentes muito diferentes viram aviso para conferir. */
+    private val CHECKED = setOf(
+        K.MY_STRENGTH, K.RIVAL_STRENGTH, K.RIVAL_GOL, K.RIVAL_DEF, K.RIVAL_MID, K.RIVAL_ATK, K.MY_GOL, K.MY_DEF, K.MY_MID, K.MY_ATK
+    )
+
+    private suspend fun noteConflict(slot: Int, k: String, o: StoredField, nv: String, now: Long) {
+        val a = o.value.toIntOrNull() ?: return
+        val b = nv.toIntOrNull() ?: return
+        val j = planJson(slot, "conflicts")
+        if (Math.abs(a - b) >= 8 && now - o.updatedAt < 6L * 3600000L) {
+            j.put(k, org.json.JSONObject().put("a", a).put("b", b).put("at", now))
+        } else if (a == b && j.has(k)) {
+            j.remove(k) // a mesma leitura de novo confirma o valor
+        } else return
+        dao.putPlan(PlanEntity(slot, "conflicts", j.toString(), now))
     }
 
     suspend fun learn(slot: Int, kind: String, text: String, now: Long = System.currentTimeMillis()) {
@@ -483,10 +501,84 @@ class Repo(private val ctx: Context) {
         dao.putPlan(PlanEntity(slot, kind, j.toString(), now))
     }
 
+    /** Perfil do usuário rival pelo apelido, juntando os 4 slots (o mesmo humano pode estar em mais de uma liga). */
     suspend fun rivalProfile(slot: Int): PlanEntity? {
         val nick = fieldMap(slot)[K.RIVAL_NICK]?.value ?: return null
         if (!FieldMerge.known(nick)) return null
-        return dao.plan(slot, profileKind(nick))
+        return profileOf(nick, slot)
+    }
+
+    suspend fun profileOf(nick: String, slot: Int): PlanEntity? {
+        val kind = profileKind(nick)
+        val parts = (1..4).mapNotNull { dao.plan(it, kind) }
+        if (parts.isEmpty()) return null
+        if (parts.size == 1) return parts[0]
+        val entries = ArrayList<org.json.JSONObject>()
+        var switches = 0
+        var checked = 0
+        for (p in parts) {
+            val j = try { org.json.JSONObject(p.json) } catch (e: Exception) { continue }
+            val a = j.optJSONArray("entries") ?: org.json.JSONArray()
+            for (i in 0 until a.length()) a.optJSONObject(i)?.let { entries.add(it) }
+            switches += j.optInt("switches")
+            checked += j.optInt("checked")
+        }
+        val arr = org.json.JSONArray()
+        for (e in entries.sortedBy { it.optLong("at") }.takeLast(10)) arr.put(e)
+        val out = org.json.JSONObject().put("nick", nick).put("entries", arr).put("switches", switches).put("checked", checked)
+        return PlanEntity(slot, kind, out.toString(), parts.maxOf { it.at })
+    }
+
+    /** O jogo mostrou a tática real do humano: se ela difere da lida antes, ele troca na última hora. */
+    private suspend fun recordSwitch(slot: Int, nick: String, readBefore: String?, played: String?, now: Long) {
+        if (readBefore == null || played == null) return
+        val a = Formations.canonical(readBefore) ?: return
+        val b = Formations.canonical(played) ?: return
+        val kind = profileKind(nick)
+        val old = dao.plan(slot, kind)
+        val j = try { if (old != null) org.json.JSONObject(old.json) else org.json.JSONObject().put("nick", nick) } catch (e: Exception) { org.json.JSONObject().put("nick", nick) }
+        j.put("checked", j.optInt("checked") + 1)
+        if (a != b) {
+            j.put("switches", j.optInt("switches") + 1)
+            learn(slot, "rival", "$nick trocou a tática na última hora: lida $a, jogou $b.", now)
+        }
+        dao.putPlan(PlanEntity(slot, kind, j.toString(), now))
+    }
+
+    /** Humano que já trocou a tática na última hora (pelo menos 1 vez em 3 conferidas). */
+    suspend fun rivalSwitches(slot: Int): Pair<Int, Int> {
+        val p = rivalProfile(slot) ?: return Pair(0, 0)
+        val j = try { org.json.JSONObject(p.json) } catch (e: Exception) { return Pair(0, 0) }
+        return Pair(j.optInt("switches"), j.optInt("checked"))
+    }
+
+    // ------------------------------------------------------------ jogadores indisponíveis
+
+    /** Jogadores marcados como fora do próximo jogo (suspenso/lesionado), valendo só para a rodada marcada. */
+    suspend fun unavailable(slot: Int): Set<String> {
+        val round = fieldMap(slot)[K.ROUND]?.value?.toIntOrNull() ?: -1
+        val j = planJson(slot, "unavail")
+        return j.keys().asSequence().filter { j.optInt(it, -9) == round }.toSet()
+    }
+
+    suspend fun setUnavailable(slot: Int, nameKey: String, out: Boolean) {
+        val round = fieldMap(slot)[K.ROUND]?.value?.toIntOrNull() ?: -1
+        val j = planJson(slot, "unavail")
+        if (out) j.put(nameKey, round) else j.remove(nameKey)
+        dao.putPlan(PlanEntity(slot, "unavail", j.toString(), System.currentTimeMillis()))
+    }
+
+    // ------------------------------------------------------------ leituras divergentes
+
+    /** Leituras da mesma informação que não batem (ex.: força 72 numa tela e 81 em outra), para o usuário conferir. */
+    suspend fun conflicts(slot: Int): List<String> {
+        val j = planJson(slot, "conflicts")
+        val now = System.currentTimeMillis()
+        return j.keys().asSequence().mapNotNull { k ->
+            val o = j.optJSONObject(k) ?: return@mapNotNull null
+            if (now - o.optLong("at") > 24L * 3600000L) return@mapNotNull null
+            "${Completeness.ITEMS.firstOrNull { it.key == k }?.label ?: k}: ${o.optString("a")} x ${o.optString("b")}"
+        }.toList()
     }
 
     /** Formação que esse rival humano mais usou (para quando a atual ainda não foi lida). */
@@ -731,6 +823,11 @@ class Repo(private val ctx: Context) {
         side("remates", true)?.let { v -> pct(v)?.let { t.put("myShots", it) } }
         side("remates", false)?.let { v -> pct(v)?.let { t.put("oppShots", it) } }
         side("formacao", false)?.let { t.put("oppFormation", it) }
+        val tn = t.optString("rivalNick").takeIf { it.isNotBlank() && FieldMerge.known(it) }
+        if (tn != null && !t.has("switchChecked")) {
+            recordSwitch(slot, tn, t.optString("rivalFormationRead").ifBlank { null }, side("formacao", false), now)
+            t.put("switchChecked", true)
+        }
         j.optString("mom").takeIf { it.isNotBlank() && !Overlay.isChip(it) }?.let { t.put("mom", it) }
         dao.putPlan(PlanEntity(slot, p.kind, t.toString(), p.at))
     }

@@ -107,12 +107,72 @@ class CaptureService : AccessibilityService() {
 
     private var overlayBox: LinearLayout? = null
     private var toggleView: TextView? = null
+    private var noticeView: TextView? = null
+    private var panelView: TextView? = null
+
+    /** Aviso curto por cima do OSM (ex.: tática montada diferente da gerada). Some sozinho. */
+    fun notice(text: String) {
+        mainExecutor.execute {
+            val tv = noticeView ?: return@execute
+            tv.text = text
+            tv.visibility = View.VISIBLE
+            tv.removeCallbacks(hideNotice)
+            tv.postDelayed(hideNotice, 10000L)
+        }
+    }
+
+    /** Guarda onde os botões estão na tela para o OCR não ler o próprio painel do app. */
+    private fun markBounds(v: View) {
+        val loc = IntArray(2)
+        v.getLocationOnScreen(loc)
+        val sw = resources.displayMetrics.widthPixels.toFloat()
+        val sh = resources.displayMetrics.heightPixels.toFloat()
+        if (sw <= 0f || sh <= 0f) return
+        Overlay.bounds = floatArrayOf(loc[0] / sw, loc[1] / sh, (loc[0] + v.width) / sw, (loc[1] + v.height) / sh)
+    }
+
+    private val hideNotice = Runnable { noticeView?.visibility = View.GONE }
+
+    /** Painel com a tática do slot atual, para montar no OSM sem trocar de app. */
+    private fun onTacticTap() {
+        val pv = panelView ?: return
+        if (pv.visibility == View.VISIBLE) {
+            pv.visibility = View.GONE
+            return
+        }
+        val app = applicationContext
+        scope.launch {
+            val text = try {
+                val slot = Diag.currentSlot
+                if (slot <= 0) "Entre no slot (pré-jogo) para eu saber qual tática mostrar."
+                else {
+                    val repo = Repo(app)
+                    val p = repo.dao.plan(slot, "tactic")
+                    val j = p?.json?.let { runCatching { org.json.JSONObject(it) }.getOrNull() }
+                    if (p == null || j == null) "S$slot: nenhuma tática gerada. Gere no app (aba Tática)."
+                    else {
+                        val ok = Director.tacticValid(j, p.at, repo.fieldMap(slot), System.currentTimeMillis())
+                        "S$slot • vs ${j.optString("rival")}\n" + (if (ok) "" else "⚠ Tática de outro jogo: gere de novo.\n") + Director.tacticSummary(j)
+                    }
+                }
+            } catch (e: Exception) {
+                "Não consegui carregar a tática: " + (e.message ?: e.javaClass.simpleName)
+            }
+            withContext(Dispatchers.Main) {
+                panelView?.text = text + "\n(toque para fechar)"
+                panelView?.visibility = View.VISIBLE
+            }
+        }
+    }
 
     private fun removeOverlay() {
         val v = overlayBox ?: return
+        Overlay.bounds = null
         overlayBox = null
         overlay = null
         toggleView = null
+        noticeView = null
+        panelView = null
         try {
             (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(v)
         } catch (e: Exception) {
@@ -163,13 +223,35 @@ class CaptureService : AccessibilityService() {
         val dp = resources.displayMetrics.density
         val end = chip("■ Encerrar", 0xE6D32F2F.toInt(), dp)
         val toggle = chip("📱 App", 0xE61F6BFF.toInt(), dp)
+        val tactic = chip("📋 Tática", 0xE6B8860B.toInt(), dp)
+        val maxW = (resources.displayMetrics.widthPixels * 0.72f).toInt()
+        val notice = chip("", 0xF2FFB300.toInt(), dp).apply {
+            setTextColor(android.graphics.Color.BLACK)
+            maxWidth = maxW
+            visibility = View.GONE
+        }
+        val panel = TextView(this).apply {
+            setTextColor(android.graphics.Color.WHITE)
+            textSize = 12f
+            maxWidth = maxW
+            setPadding((12 * dp).toInt(), (10 * dp).toInt(), (12 * dp).toInt(), (10 * dp).toInt())
+            background = GradientDrawable().apply {
+                cornerRadius = 14 * dp
+                setColor(0xF20B1220.toInt())
+            }
+            visibility = View.GONE
+        }
+        fun gap(): LinearLayout.LayoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = (6 * dp).toInt() }
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            alpha = 0.92f
+            alpha = 0.95f
             addView(toggle)
-            addView(end, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                topMargin = (6 * dp).toInt()
-            })
+            addView(tactic, gap())
+            addView(end, gap())
+            addView(notice, gap())
+            addView(panel, gap())
         }
         val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
@@ -200,6 +282,7 @@ class CaptureService : AccessibilityService() {
                             lp.x = startX + dx.toInt()
                             lp.y = startY + dy.toInt()
                             try { wm.updateViewLayout(box, lp) } catch (ex: Exception) { }
+                            box.post { markBounds(box) }
                         }
                     }
                     MotionEvent.ACTION_UP -> if (!moved) onTap()
@@ -209,11 +292,17 @@ class CaptureService : AccessibilityService() {
         }
         dragOrTap(end) { onOverlayTap() }
         dragOrTap(toggle) { onToggleTap() }
+        dragOrTap(tactic) { onTacticTap() }
+        dragOrTap(panel) { panel.visibility = View.GONE }
+        dragOrTap(notice) { notice.visibility = View.GONE }
+        box.addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ -> markBounds(v) }
         try {
             wm.addView(box, lp)
             overlayBox = box
             overlay = end
             toggleView = toggle
+            noticeView = notice
+            panelView = panel
             updateToggle()
         } catch (e: Exception) {
             Diag.lastError = "Botões flutuantes: " + (e.message ?: e.javaClass.simpleName)

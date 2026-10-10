@@ -272,4 +272,20 @@ class IntelTest {
         assertTrue(l.plan.isNotEmpty())
         assertEquals(54, Coach.num("540", true))
     }
+
+    @Test fun predictionsAreCalibratedWithRealResults() {
+        fun log(r: Int, res: String, pts: Double, w: Int, e: Int, d: Int) = JSONObject().put("round", r).put("result", res)
+            .put("predPts", pts).put("predW", w).put("predE", e).put("predD", d)
+        // previa vitória (2,1 pontos) e o time perdeu 3 vezes: corrige para baixo
+        val bad = listOf(log(1, "D", 2.1, 65, 20, 15), log(2, "D", 2.0, 60, 25, 15), log(3, "E", 2.2, 70, 20, 10))
+        assertTrue(Calib.offset(bad) < 0.0)
+        assertEquals(Pair(0, 3), Calib.accuracy(bad))
+        val good = listOf(log(1, "V", 2.0, 60, 25, 15), log(2, "V", 1.9, 55, 25, 20))
+        assertEquals(0.0, Calib.offset(good), 0.0001) // menos de 3 jogos: sem ajuste
+        assertEquals(Pair(2, 2), Calib.accuracy(good))
+        // o ajuste muda a previsão
+        val base = WinModel.predict(WinModel.Input(80, 80))!!
+        val down = WinModel.predict(WinModel.Input(80, 80, calib = -0.15))!!
+        assertTrue(down.win < base.win)
+    }
 }

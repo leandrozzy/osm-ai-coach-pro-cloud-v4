@@ -239,6 +239,9 @@ interface CoachDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun putPlan(p: PlanEntity)
 
+    @Query("SELECT * FROM plans WHERE slotId = :slot")
+    suspend fun plansOf(slot: Int): List<PlanEntity>
+
     @Query("SELECT * FROM plans WHERE slotId = :slot AND substr(kind, 1, 5) = 'tlog_'")
     suspend fun tacticLogs(slot: Int): List<PlanEntity>
 

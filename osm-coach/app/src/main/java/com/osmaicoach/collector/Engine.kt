@@ -399,8 +399,13 @@ object TacticEngine {
         if (stat != null) notes.add("Histórico de $formation: ${stat.v}V ${stat.e}E ${stat.d}D em ${stat.games} jogo(s) registrados.")
         if (inp.rivalHuman == true) notes.add("Rival humano: ele pode mudar a tática; confira o relatório antes do jogo.")
 
+        // Contra-ataque: ritmo alto para a transição e pressão baixa para atrair o rival (comunidade do OSM).
+        val counterStyle = playStyle == "Contra-ataque"
+        val tempoF = if (counterStyle) maxOf(tempo, 62) else tempo
+        val pressureF = if (counterStyle) minOf(pressure, 42) else pressure
+        if (counterStyle && (tempoF != tempo || pressureF != pressure)) notes.add("Contra-ataque: ritmo $tempoF (transição rápida) e pressão $pressureF (bloco baixo).")
         val tactic = Tactic(
-            formation = Formations.variant(formation, playStyle), playStyle = playStyle, pressure = pressure, mentality = mentality, tempo = tempo,
+            formation = Formations.variant(formation, playStyle), playStyle = playStyle, pressure = pressureF, mentality = mentality, tempo = tempoF,
             marking = marking, offside = offside, tackle = tackleFinal, advAttack = advAttack, advMid = advMid, advDef = advDef,
             notes = notes
         )
@@ -432,7 +437,8 @@ object MarketEngine {
 
     private fun fmt(m: Double?): String = if (m == null) NI else if (m >= 1.0) "%.1fM".format(m).replace('.', ',') else "%.0fK".format(m * 1000)
 
-    fun plan(players: List<PlayerEntity>, listings: List<ListingEntity>, cashM: Double?, sellSlots: Int): Plan {
+    /** [focus]: setor que o treinador apontou como fraco nos últimos jogos (prioridade de compra). */
+    fun plan(players: List<PlayerEntity>, listings: List<ListingEntity>, cashM: Double?, sellSlots: Int, focus: String? = null): Plan {
         val cats = MarketPlanner.TARGET.keys.toList()
         val byCat = cats.associateWith { c -> players.filter { it.cat == c && it.strength != null }.sortedByDescending { it.strength } }
         val sells = ArrayList<SellItem>()
@@ -446,6 +452,18 @@ object MarketEngine {
                 for (p in list.takeLast(extra)) {
                     if (sells.size >= sellSlots) break
                     sells.add(SellItem(p.name, c, p.strength, Money.parse(p.valueText), "excesso de $c (meta ${MarketPlanner.TARGET[c]}): é o mais fraco do setor"))
+                    soldKeys.add(p.nameKey)
+                }
+            }
+        }
+        // 1b) Veterano (31+) fora do time titular ainda vale dinheiro: vender antes de desvalorizar.
+        for (c in cats) {
+            val list = byCat[c] ?: continue
+            val core = CORE[c] ?: 3
+            for (p in list.drop(core)) {
+                if (sells.size >= sellSlots) break
+                if ((p.age ?: 0) >= 31 && p.nameKey !in soldKeys && (Money.parse(p.valueText) ?: 0.0) > 0.0) {
+                    sells.add(SellItem(p.name, c, p.strength, Money.parse(p.valueText), "${p.age} anos e reserva: vender agora, antes de perder valor"))
                     soldKeys.add(p.nameKey)
                 }
             }
@@ -466,7 +484,7 @@ object MarketEngine {
             if (gain < 2) return@mapNotNull null
             val price = Money.parse(l.priceText) ?: return@mapNotNull null
             val ageBonus = (28 - (l.age ?: 28)).coerceIn(-6, 6)
-            BuyCand(l, price, ref, gain, gain * 10.0 + ageBonus - price * 0.4)
+            BuyCand(l, price, ref, gain, gain * 10.0 + ageBonus - price * 0.4 + (if (c == focus) 15.0 else 0.0))
         }.sortedByDescending { it.score }
 
         var shortfall: Double? = null
@@ -476,7 +494,7 @@ object MarketEngine {
             val missing = (MarketPlanner.TARGET[c] ?: 0) - (have[c] ?: 0)
             if (missing > 0) {
                 if (cd.price <= budget) {
-                    buys.add(BuyItem(cd.l.name, c, cd.l.strength!!, cd.price, cd.gain, null, "preenche vaga de $c e supera o titular mais fraco (${cd.ref?.strength ?: "?"})"))
+                    buys.add(BuyItem(cd.l.name, c, cd.l.strength!!, cd.price, cd.gain, null, "preenche vaga de $c e supera o titular mais fraco (${cd.ref?.strength ?: "?"})" + (if (c == focus) " • setor que o treinador pediu reforço" else "")))
                     budget -= cd.price
                     have[c] = (have[c] ?: 0) + 1
                 } else if (shortfall == null) shortfall = cd.price - budget

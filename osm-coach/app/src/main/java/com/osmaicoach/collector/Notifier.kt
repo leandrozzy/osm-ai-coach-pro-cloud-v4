@@ -216,9 +216,11 @@ object Notifier {
             if (!enabled(ctx, "pre")) return
             if (nextAt != null) prefs(ctx).edit().putLong(firedKey(slot), nextAt / MIN).apply()
             val mins = if (nextAt != null) ((nextAt - now) / MIN).coerceAtLeast(0L).toString() else "~20"
+            val (sw, chk) = try { repo.rivalSwitches(slot) } catch (e: Exception) { Pair(0, 0) }
+            val extra = if (sw > 0) " ⚠ Este usuário já trocou a tática na última hora ($sw de $chk): releia a análise dele AGORA e gere de novo." else ""
             post(
                 ctx, CH_GAME, slot * 10 + 1, "⚽ Faltam $mins min: $head",
-                "Abra o OSM e passe pelo Pré-jogo e pela análise do rival para o app reler os dados (rival humano pode mudar a tática) e revisar a tática.",
+                "Abra o OSM e passe pelo Pré-jogo e pela análise do rival para o app reler os dados (rival humano pode mudar a tática) e revisar a tática.$extra",
                 slot, 4, true
             )
         } else if (kind == "tactic") {

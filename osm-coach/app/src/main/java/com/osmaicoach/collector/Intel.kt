@@ -290,7 +290,9 @@ object WinModel {
         /** Resultados anteriores contra este mesmo rival. */
         val headToHead: List<String> = emptyList(),
         /** Resultados já obtidos com esta formação/estilo. */
-        val tacticRecord: List<String> = emptyList()
+        val tacticRecord: List<String> = emptyList(),
+        /** Correção aprendida deste slot: o modelo vem prevendo gols a mais (<0) ou a menos (>0). */
+        val calib: Double = 0.0
     )
 
     /** Efeito de um fator: no log dos meus gols esperados, no log dos gols do rival e na imprevisibilidade. */
@@ -348,6 +350,12 @@ object WinModel {
             if (risk != 0.0) t.add(Term("Atacantes rivais × meus defensores", 0.0, risk))
         }
 
+        if (i.calib != 0.0) t.add(Term("Ajuste pelo histórico de previsões deste slot", i.calib, 0.0))
+        // Contra-tática da comunidade (OSM Guide / fórum) para a formação do rival.
+        if (p != null) {
+            val ct = CounterBook.matches(i.rivalFormation, my - rv, p.formation, p.style)
+            if (ct) t.add(Term("Contra-tática recomendada para ${i.rivalFormation}", 0.05, -0.02))
+        }
         // Volume ofensivo: contra rival mais fraco, cada atacante a mais vira gol (mais gols no jogo favorecem o
         // mais forte); contra mais forte, atacante a mais só expõe a defesa.
         if (mine != null) {
@@ -685,5 +693,67 @@ object Coach {
         for (k in avoid) plan.add("Não repetir ${k.replace("|", " • ")}" + (if (nextRival != null) " contra $nextRival" else "") + ": já perdeu com ela.")
         if (plan.isEmpty()) plan.add("Manter a linha que vem funcionando e ajustar só ao rival da vez.")
         return l.copy(plan = plan)
+    }
+}
+
+
+/**
+ * Contra-táticas publicadas pela comunidade do OSM (OSM Guide e fórum oficial) para a formação do rival.
+ * Peso pequeno no simulador: é um ponto de partida que os resultados do próprio slot confirmam ou derrubam.
+ */
+object CounterBook {
+    /** formação do rival -> (quando sou mais forte, quando sou mais fraco/parelho): formação e estilo. */
+    private val BOOK = mapOf(
+        "4-3-3 A" to Pair(Pair("4-3-3 B", "Jogar pelas alas"), Pair("4-5-1", "Remate à vista")),
+        "4-4-2 B" to Pair(Pair("4-3-3 B", "Jogar pelas alas"), Pair("4-2-3-1", "Remate à vista")),
+        "3-4-3 B" to Pair(Pair("4-4-2 A", null), Pair("6-3-1 A", "Contra-ataque")),
+        "4-4-2 A" to Pair(Pair("5-3-2", "Contra-ataque"), Pair("5-3-2", "Contra-ataque"))
+    )
+
+    fun suggestion(rivalFormation: String?, edge: Int): Pair<String, String?>? {
+        val rf = rivalFormation?.let { Formations.canonical(it) } ?: return null
+        val e = BOOK[rf] ?: return null
+        return if (edge >= 3) e.first else e.second
+    }
+
+    fun matches(rivalFormation: String?, edge: Int, formation: String, style: String?): Boolean {
+        val s = suggestion(rivalFormation, edge) ?: return false
+        val fOk = Formations.canonical(formation) == s.first || Formations.base(formation) == s.first
+        val stOk = s.second == null || Osm.style(style) == s.second
+        return fOk && stOk
+    }
+}
+
+/**
+ * Calibração das previsões com os resultados reais de cada slot: se o modelo vem prometendo mais pontos do que
+ * o time faz (ou menos), corrige; e mede quantas vezes o resultado mais provável foi o que aconteceu.
+ */
+object Calib {
+    private fun pts(r: String): Int = when (r) { "V" -> 3; "E" -> 1; else -> 0 }
+
+    private fun graded(logs: List<JSONObject>): List<JSONObject> = logs.filter {
+        !it.isNull("result") && it.optString("result") in setOf("V", "E", "D") && it.has("predPts")
+    }.sortedByDescending { it.optInt("round") }.take(8)
+
+    /** Ajuste no log dos meus gols esperados (entre -0.15 e +0.15); 0 com menos de 3 jogos previstos. */
+    fun offset(logs: List<JSONObject>): Double {
+        val g = graded(logs)
+        if (g.size < 3) return 0.0
+        val err = g.map { pts(it.optString("result")) - it.optDouble("predPts") }.average()
+        return (err * 0.12).coerceIn(-0.15, 0.15)
+    }
+
+    /** (acertos, jogos): o resultado mais provável previsto foi o que aconteceu. */
+    fun accuracy(logs: List<JSONObject>): Pair<Int, Int> {
+        val g = graded(logs).filter { it.has("predW") }
+        var hit = 0
+        for (x in g) {
+            val w = x.optInt("predW")
+            val e = x.optInt("predE")
+            val d = x.optInt("predD")
+            val fav = if (w >= e && w >= d) "V" else if (d >= e) "D" else "E"
+            if (fav == x.optString("result")) hit++
+        }
+        return Pair(hit, g.size)
     }
 }
