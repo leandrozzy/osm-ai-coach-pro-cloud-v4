@@ -2901,6 +2901,52 @@ private fun SlotLearning(slot: Int, d: SlotData) {
     }.sortedByDescending { it.round }
     val hist = rows.map { HistRow(it.formation, it.style, it.result, it.human, it.home) }
 
+    // Treinador: o que vai fazer no próximo jogo, onde errou e o que funcionou em cada jogo.
+    val games = Coach.games(
+        d.logs.mapNotNull { runCatching { JSONObject(it.json) }.getOrNull() },
+        d.reports.mapNotNull { p ->
+            runCatching { JSONObject(p.json).also { j -> if (!j.has("round")) p.kind.removePrefix("mr_R").toIntOrNull()?.let { j.put("round", it) } } }.getOrNull()
+        }
+    )
+    val nextRival = known(d.fields, K.RIVAL_TEAM)
+    val lessons = Coach.lessons(games, nextRival)
+    Panel {
+        Text("🧠 Treinador: o que vou fazer no próximo jogo", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+        if (games.isEmpty()) {
+            Text(
+                "Ainda sem jogos analisados. Depois de cada jogo, abra a análise do jogo no OSM: eu leio posse, remates e faltas e digo onde errou.",
+                fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp)
+            )
+        } else {
+            if (nextRival != null) Text("Próximo: vs $nextRival", fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 2.dp))
+            for (line in lessons.plan) Text("➜ $line", fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
+            Text("Esses ajustes já entram no “Gerar tática”.", fontSize = 10.sp, color = C.MUTED, modifier = Modifier.padding(top = 8.dp))
+        }
+    }
+    val reviews = games.take(5).map { Coach.review(it) }.filter { it.wrong.isNotEmpty() || it.right.isNotEmpty() }
+    if (reviews.isNotEmpty()) {
+        Panel {
+            Text("Onde errou e o que funcionou", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            for (rv in reviews) {
+                val g = rv.game
+                Column(Modifier.fillMaxWidth().padding(top = 10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        ResultBadge(g.result)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "J${g.round} • " + (if (g.gf != null && g.ga != null) "${g.gf}-${g.ga} " else "") + "vs ${g.rival}" +
+                                (g.formation?.let { " • $it" } ?: "") + (g.style?.let { " • $it" } ?: ""),
+                            fontWeight = FontWeight.Bold, fontSize = 13.sp
+                        )
+                    }
+                    for (w in rv.wrong) Text("✘ $w", fontSize = 12.sp, color = C.LOSS, modifier = Modifier.padding(top = 2.dp))
+                    for (r in rv.right) Text("✔ $r", fontSize = 12.sp, color = C.OK, modifier = Modifier.padding(top = 2.dp))
+                    if (g.formation == null) Text("Tática usada não registrada: gere a tática no app antes do jogo para eu comparar.", fontSize = 11.sp, color = C.MUTED)
+                }
+            }
+        }
+    }
+
     // Análise dos jogos (tela de resultado do OSM): estatísticas reais de cada partida.
     if (d.reports.isNotEmpty()) {
         Panel {
@@ -2909,8 +2955,10 @@ private fun SlotLearning(slot: Int, d: SlotData) {
                 val j = try { JSONObject(p.json) } catch (e: Exception) { null } ?: continue
                 val mineHome = j.optBoolean("mineHome", true)
                 val st = j.optJSONObject("stats")
-                fun mine(label: String): String = st?.optJSONArray(label)?.optString(if (mineHome) 0 else 1) ?: NI
-                fun opp(label: String): String = st?.optJSONArray(label)?.optString(if (mineHome) 1 else 0) ?: NI
+                fun fixPct(label: String, v: String): String =
+                    if (label == "posse de bola") Coach.num(v, true)?.let { "$it%" } ?: v else v
+                fun mine(label: String): String = st?.optJSONArray(label)?.optString(if (mineHome) 0 else 1)?.let { fixPct(label, it) } ?: NI
+                fun opp(label: String): String = st?.optJSONArray(label)?.optString(if (mineHome) 1 else 0)?.let { fixPct(label, it) } ?: NI
                 val myGoals = if (mineHome) j.optInt("sh") else j.optInt("sa")
                 val oppGoals = if (mineHome) j.optInt("sa") else j.optInt("sh")
                 val oppName = (if (mineHome) j.optString("awayTeam") else j.optString("homeTeam")).ifBlank { "adversário" }
@@ -2944,7 +2992,7 @@ private fun SlotLearning(slot: Int, d: SlotData) {
                     if (adv.isNotBlank()) Text("“$adv”", fontSize = 11.sp, color = C.GOLD, modifier = Modifier.padding(top = 2.dp))
                 }
             }
-            Text("A IA usa essas estatísticas (posse, remates, faltas) para ajustar tática e disciplina.", fontSize = 10.sp, color = C.MUTED, modifier = Modifier.padding(top = 8.dp))
+            Text("O treinador (acima) usa essas estatísticas para corrigir a próxima tática.", fontSize = 10.sp, color = C.MUTED, modifier = Modifier.padding(top = 8.dp))
         }
     }
     // Resultados do campeonato (lidos do calendário): é daqui que a IA aprende.

@@ -254,9 +254,18 @@ object Director {
             myMid = f[K.MY_MID]?.value?.toIntOrNull(),
             rivalMid = f[K.RIVAL_MID]?.value?.toIntOrNull(),
             rivalDef = f[K.RIVAL_DEF]?.value?.toIntOrNull(),
-            fitness = repo.fitness(slot)
+            fitness = repo.fitness(slot),
+            lessons = Coach.lessons(coachGames(repo, slot), f[K.RIVAL_TEAM]?.value?.takeIf { FieldMerge.known(it) })
         )
     }
+
+    /** Jogos do slot para o treinador: táticas usadas + análises do jogo lidas. */
+    suspend fun coachGames(repo: Repo, slot: Int): List<Coach.Game> = Coach.games(
+        repo.dao.tacticLogs(slot).mapNotNull { runCatching { JSONObject(it.json) }.getOrNull() },
+        repo.dao.matchReports(slot).mapNotNull { p ->
+            runCatching { JSONObject(p.json).also { j -> if (!j.has("round")) p.kind.removePrefix("mr_R").toIntOrNull()?.let { j.put("round", it) } } }.getOrNull()
+        }
+    )
 
     /** Força média de cada setor do XI (linha 0 = goleiro, 1 = defesa, última = ataque, o resto = meio). */
     private fun xi(rows: List<List<Int>>): List<Double?> {
@@ -642,8 +651,11 @@ object Director {
 
     /** Formação+estilo que já PERDERAM para este mesmo rival (aprendizado: não repetir o erro). */
     private suspend fun lostAgainst(repo: Repo, slot: Int): Map<String, Int> {
-        val rival = repo.fieldMap(slot)[K.RIVAL_TEAM]?.value?.let { Txt.key(it) } ?: return emptyMap()
+        val rivalName = repo.fieldMap(slot)[K.RIVAL_TEAM]?.value?.takeIf { FieldMerge.known(it) }
         val out = HashMap<String, Int>()
+        // o que o treinador mandou evitar (perdeu para este rival ou perdeu 2+ vezes com a mesma tática)
+        for (k in Coach.lessons(coachGames(repo, slot), rivalName).avoid) out[k] = (out[k] ?: 0) + 1
+        val rival = rivalName?.let { Txt.key(it) } ?: return out
         for (p in repo.dao.tacticLogs(slot)) {
             val j = try { JSONObject(p.json) } catch (e: Exception) { continue }
             if (j.optString("result") != "D") continue
@@ -771,6 +783,11 @@ object Director {
         for (x in Learning.byStyle(inp.history)) statLines.add("estilo ${x.formation}: ${x.v}V ${x.e}E ${x.d}D")
         for (x in Learning.byContext(inp.history)) statLines.add("${x.formation}: ${x.v}V ${x.e}E ${x.d}D")
         for (r in recentReports(repo, slot)) statLines.add("jogo analisado: $r")
+        for (g in coachGames(repo, slot).take(5)) {
+            val rv = Coach.review(g)
+            if (rv.wrong.isNotEmpty()) statLines.add("J${g.round} vs ${g.rival} (${g.result}): erros — ${rv.wrong.joinToString("; ")}")
+        }
+        inp.lessons?.plan?.forEach { statLines.add("LIÇÃO OBRIGATÓRIA do treinador: $it") }
         val stats = statLines.joinToString("\n").ifBlank { "sem jogos registrados ainda" }
         val allowed = candidateFormations(res, inp)
         val allowedNames = allowed.flatMap { Formations.variants(it).ifEmpty { listOf(it) } }
