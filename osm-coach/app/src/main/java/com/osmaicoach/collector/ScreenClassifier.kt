@@ -31,6 +31,11 @@ object ScreenClassifier {
         if (t.contains("para treinar") || t.contains("treinador universal") || t.contains("treinador de ")) {
             return ScreenType.TRAINING
         }
+        // Pré-jogo ANTES do mercado: a tela do próximo jogo tem o botão "Vender jogadores" (batalha e liga) e
+        // era lida como mercado — o slot nunca recebia rival, contagem nem bônus.
+        if (t.contains("preparacao para o jogo") || (t.contains("jogo rapido") && t.contains("treino")) ||
+            (jornada.containsMatchIn(t) && t.contains("arbitro") && t.contains("vs"))
+        ) return ScreenType.PREGAME
         if (t.contains("vender jogadores") || t.contains("lista de transferencias") ||
             (t.contains("olheiro") && t.contains("negociacoes"))
         ) return ScreenType.MARKET
