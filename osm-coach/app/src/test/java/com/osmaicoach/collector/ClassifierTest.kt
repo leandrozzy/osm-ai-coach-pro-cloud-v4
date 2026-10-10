@@ -70,4 +70,13 @@ class ClassifierTest {
         val o = Fx.ocr(Fx.line("Seleciona um Avançado para treinar", 0.5f, 0.1f, 0.3f), Fx.line("Jogador", 0.1f, 0.2f), Fx.line("Idade", 0.55f, 0.2f), Fx.line("Valor", 0.9f, 0.2f))
         assertEquals(ScreenType.TRAINING, ScreenClassifier.classify(o, true))
     }
+
+    @Test fun battlePregameWithSellButtonIsNotMarket() {
+        val o = Fx.ocr(
+            Fx.line("Jornada 7", 0.5f, 0.12f), Fx.line("18h 03m 42s", 0.5f, 0.18f), Fx.line("VS", 0.5f, 0.31f),
+            Fx.line("Árbitro", 0.52f, 0.47f), Fx.line("JOGO RÁPIDO", 0.2f, 0.65f), Fx.line("PREPARAÇÃO PARA O JOGO", 0.5f, 0.65f, 0.2f),
+            Fx.line("VENDER JOGADORES", 0.9f, 0.74f, 0.12f)
+        )
+        assertEquals(ScreenType.PREGAME, ScreenClassifier.classify(o, true))
+    }
 }
