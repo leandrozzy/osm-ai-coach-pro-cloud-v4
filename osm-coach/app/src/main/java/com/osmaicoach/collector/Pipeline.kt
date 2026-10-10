@@ -27,6 +27,7 @@ object OcrEngine {
             for (ln in block.lines) {
                 val r = ln.boundingBox ?: continue
                 if (Overlay.isChip(ln.text)) continue
+                if (Overlay.covers((r.left + r.right) / 2f / w, (r.top + r.bottom) / 2f / h)) continue
                 val toks = ArrayList<OcrToken>()
                 for (e in ln.elements) {
                     val b = e.boundingBox ?: continue
@@ -81,6 +82,26 @@ class FramePipeline private constructor(private val ctx: Context) {
     private var lastProcessed: LongArray? = null
     private val lastOwners = HashMap<ScreenType, Triple<Int, String, Long>>()
     private val noSlot = ArrayList<Pair<Extraction, Long>>()
+    private var lastCheck = ""
+    private var lastCheckAt = 0L
+
+    /** Tela de tática do OSM aberta: compara com a tática gerada e avisa por cima do jogo o que está diferente. */
+    private suspend fun checkTactic(slot: Int, ocr: OcrResult, now: Long) {
+        val p = dao.plan(slot, "tactic")
+        val j = p?.json?.let { runCatching { JSONObject(it) }.getOrNull() }
+        val f = repo.fieldMap(slot)
+        val msg = if (p == null || j == null || !Director.tacticValid(j, p.at, f, now)) {
+            "S$slot: sem tática gerada para este jogo. Gere no app antes de montar."
+        } else {
+            val w = Parsers.tacticCheck(ocr, j, f[K.REFEREE]?.value)
+            if (w.isEmpty()) "" else "⚠ S$slot: " + w.joinToString(" • ")
+        }
+        if (msg.isEmpty() || (msg == lastCheck && now - lastCheckAt < 20000L)) return
+        lastCheck = msg
+        lastCheckAt = now
+        Diag.log("Tática no OSM → $msg")
+        CaptureService.instance?.notice(msg)
+    }
     private var reportCandidates = 0
     private var tacticSaved = 0
     private var calendarSaved = 0
@@ -312,6 +333,9 @@ class FramePipeline private constructor(private val ctx: Context) {
                 noSlot.clear()
             }
             val changed = repo.apply(asg.slot, ex, "ocr", now)
+            if (type == ScreenType.TACTIC && asgSlot != null) {
+                try { checkTactic(asgSlot, ocr, now) } catch (e: Exception) { Diag.lastError = "Conferir tática: " + (e.message ?: "") }
+            }
             val counts = when (type) {
                 ScreenType.CALENDAR -> " [${ex.matches.size} cards" + (if (ex.ownerTeam == null) ", sem dono" else "") + "]"
                 ScreenType.SQUAD -> " [${ex.players.size} jogadores" + (if (ex.ownerTeam == null) ", sem dono" else "") + "]"

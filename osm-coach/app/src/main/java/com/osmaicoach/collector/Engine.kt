@@ -399,8 +399,13 @@ object TacticEngine {
         if (stat != null) notes.add("Histórico de $formation: ${stat.v}V ${stat.e}E ${stat.d}D em ${stat.games} jogo(s) registrados.")
         if (inp.rivalHuman == true) notes.add("Rival humano: ele pode mudar a tática; confira o relatório antes do jogo.")
 
+        // Contra-ataque: ritmo alto para a transição e pressão baixa para atrair o rival (comunidade do OSM).
+        val counterStyle = playStyle == "Contra-ataque"
+        val tempoF = if (counterStyle) maxOf(tempo, 62) else tempo
+        val pressureF = if (counterStyle) minOf(pressure, 42) else pressure
+        if (counterStyle && (tempoF != tempo || pressureF != pressure)) notes.add("Contra-ataque: ritmo $tempoF (transição rápida) e pressão $pressureF (bloco baixo).")
         val tactic = Tactic(
-            formation = Formations.variant(formation, playStyle), playStyle = playStyle, pressure = pressure, mentality = mentality, tempo = tempo,
+            formation = Formations.variant(formation, playStyle), playStyle = playStyle, pressure = pressureF, mentality = mentality, tempo = tempoF,
             marking = marking, offside = offside, tackle = tackleFinal, advAttack = advAttack, advMid = advMid, advDef = advDef,
             notes = notes
         )

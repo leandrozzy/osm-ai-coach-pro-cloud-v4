@@ -511,10 +511,58 @@ object Director {
         j.put("rival", rival ?: NI)
         j.put("diff", res.diff ?: JSONObject.NULL)
         j.put("refined", refined)
+        val (lose, win) = planB(res.tactic)
+        j.put("planBLose", lose)
+        j.put("planBWin", win)
         val rk = JSONArray()
         for ((f, sc) in res.ranking) rk.put(JSONArray().put(f).put(Math.round(sc)))
         j.put("ranking", rk)
         return j
+    }
+
+    /** Formação com um atacante a mais (para virar o jogo no intervalo). */
+    private val MORE_ATTACK = mapOf(
+        "4-5-1" to "4-3-3", "4-2-3-1" to "4-3-3", "4-4-2" to "4-3-3", "4-3-3" to "4-2-4", "5-4-1" to "4-4-2",
+        "5-3-2" to "4-4-2", "5-3-1-1" to "5-3-2", "3-5-2" to "3-4-3", "3-4-3" to "3-3-4", "6-3-1" to "5-4-1", "5-2-3" to "4-3-3"
+    )
+
+    /** Plano B para o intervalo: o que mudar se estiver perdendo e se estiver ganhando. */
+    fun planB(t: Tactic): Pair<String, String> {
+        val base = Formations.base(t.formation)
+        val up = MORE_ATTACK[base]?.takeIf { it in Formations.BASES }
+        val fUp = if (up != null) Formations.variant(up, t.playStyle) else t.formation
+        val mUp = (t.mentality + 15).coerceAtMost(90)
+        val mDown = (t.mentality - 15).coerceAtLeast(25)
+        val lose = "Perdendo no intervalo: $fUp • mentalidade $mUp (${Osm.mentalityLabel(mUp)}) • atacantes Atacar apenas • meias Pressionar na frente."
+        val win = "Ganhando no intervalo: mantenha a formação • mentalidade $mDown (${Osm.mentalityLabel(mDown)}) • meias Ajudar a defesa • " +
+            "ritmo ${(t.tempo - 10).coerceAtLeast(40)} • desarme Normal (sem cartão bobo)."
+        return Pair(lose, win)
+    }
+
+    /** Resumo curto para o painel por cima do OSM: tudo o que precisa ser marcado no jogo, na ordem da tela. */
+    fun tacticSummary(j: JSONObject): String {
+        val sb = StringBuilder()
+        sb.append(j.optString("formation")).append(" • ").append(j.optString("playStyle")).append('\n')
+        val pr = j.optInt("pressure")
+        val me = j.optInt("mentality")
+        val te = j.optInt("tempo")
+        sb.append("Pressão $pr (${Osm.pressureLabel(pr)})\nEstilo $me (${Osm.mentalityLabel(me)})\nRitmo $te (${Osm.tempoLabel(te)})\n")
+        sb.append("Marcação ${j.optString("marking")} • Fora-de-jogo ${j.optString("offside")} • Desarme ${j.optString("tackle")}\n")
+        sb.append("Atacantes: ${j.optString("advAttack")}\nMeias: ${j.optString("advMid")}\nDefesas: ${j.optString("advDef")}")
+        val lineup = j.optJSONArray("lineup")
+        if (lineup != null && lineup.length() > 0) {
+            sb.append("\nXI: ")
+            val parts = ArrayList<String>()
+            for (i in 0 until lineup.length()) {
+                val r = lineup.optJSONArray(i) ?: continue
+                val names = (0 until r.length()).mapNotNull { r.optJSONObject(it)?.optString("n")?.takeIf { n -> n.isNotBlank() && n != "?" } }
+                if (names.isNotEmpty()) parts.add(names.joinToString(", "))
+            }
+            sb.append(parts.joinToString(" | "))
+        }
+        val lose = j.optString("planBLose")
+        if (lose.isNotBlank()) sb.append("\n\nPlano B — ").append(lose)
+        return sb.toString()
     }
 
     private fun logJson(t: Tactic, round: Int?, rival: String?, inp: TacticEngine.Input): JSONObject =
@@ -691,6 +739,9 @@ object Director {
     private fun candidateFormations(res: TacticEngine.Result, inp: TacticEngine.Input): List<String> {
         val out = res.ranking.take(3).map { it.first }.ifEmpty { listOf(Formations.base(res.tactic.formation)) }.toMutableList()
         val diff = res.diff
+        // contra-tática da comunidade para a formação do rival entra sempre no teste
+        CounterBook.suggestion(inp.rivalFormation, diff ?: 0)?.let { Formations.base(it.first) }
+            ?.takeIf { it in Formations.BASES && it !in out }?.let { out.add(it) }
         if (diff != null && diff >= 8) {
             for (f in listOf("4-3-3", "3-4-3", "4-2-4")) {
                 if (f == "4-2-4" && diff < 20) continue
@@ -713,8 +764,12 @@ object Director {
             val rows = TacticEngine.lineup(f, inp.players, inp.fitness)?.first ?: continue
             for (st in SIM_STYLES) for (dm in listOf(-12, 0, 12)) for (tk in Osm.allowedTackles(inp.referee).filter { it != "Cuidadoso" })
                 for (off in listOf("Não", "Sim")) for (mk in listOf("À zona", "Homem-a-homem")) for (md in mids) {
+                    // contra-ataque pede ritmo alto (transição rápida) e bloco baixo (pressão baixa)
+                    val counter = st == "Contra-ataque"
                     val t = t0.copy(
                         formation = Formations.variant(f, st), playStyle = st, mentality = (t0.mentality + dm).coerceIn(0, 100),
+                        tempo = if (counter) maxOf(t0.tempo, 62) else t0.tempo,
+                        pressure = if (counter) minOf(t0.pressure, 42) else t0.pressure,
                         tackle = tk, offside = off, marking = mk, advMid = md, notes = emptyList()
                     )
                     val ep = score(t, rows, scen, hist, lost) ?: continue

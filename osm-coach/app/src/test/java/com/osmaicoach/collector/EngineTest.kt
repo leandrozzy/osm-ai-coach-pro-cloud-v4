@@ -284,4 +284,39 @@ class EngineTest {
         )
         assertEquals("Normal", t!!.tackle)
     }
+
+    @Test fun communityCounterTacticIsKnown() {
+        assertEquals("4-5-1", CounterBook.suggestion("4-3-3 A", -5)?.first)
+        assertEquals("4-3-3 B", CounterBook.suggestion("4-3-3 A", 8)?.first)
+        assertTrue(CounterBook.matches("4-4-2 B", -2, "4-2-3-1", "Remate à vista"))
+        assertFalse(CounterBook.matches("4-4-2 B", -2, "4-4-2 A", "Jogo de passe"))
+        assertNull(CounterBook.suggestion(null, 0))
+    }
+
+    @Test fun counterAttackGetsHighTempoAndLowPressure() {
+        val r = TacticEngine.recommend(input(70, 90))!!
+        if (r.tactic.playStyle == "Contra-ataque") {
+            assertTrue(r.tactic.tempo >= 60)
+            assertTrue(r.tactic.pressure <= 45)
+        }
+    }
+
+    @Test fun planBAttacksWhenLosingAndClosesWhenWinning() {
+        val t = TacticEngine.recommend(input(80, 80))!!.tactic
+        val (lose, win) = Director.planB(t)
+        assertTrue(lose.contains("Perdendo"))
+        assertTrue(win.contains("Ajudar a defesa"))
+    }
+
+    @Test fun tacticScreenDifferencesAreReported() {
+        val plan = org.json.JSONObject().put("formation", "4-3-3 A").put("playStyle", "Contra-ataque").put("tackle", "Normal").put("marking", "À zona")
+        val o = Fx.ocr(Fx.line("4-4-2 A", 0.5f, 0.2f, 0.1f), Fx.line("Jogo de passe", 0.5f, 0.3f, 0.1f), Fx.line("Extremo", 0.5f, 0.4f, 0.1f))
+        val w = Parsers.tacticCheck(o, plan, "Médio")
+        assertTrue(w.any { it.startsWith("Formação") })
+        assertTrue(w.any { it.startsWith("Estilo") })
+        assertTrue(w.any { it.contains("expulsão") })
+        // tudo certo: nenhum aviso
+        val ok = Fx.ocr(Fx.line("4-3-3 A", 0.5f, 0.2f, 0.1f), Fx.line("Contra-ataque", 0.5f, 0.3f, 0.1f))
+        assertTrue(Parsers.tacticCheck(ok, plan, "Médio").isEmpty())
+    }
 }

@@ -2400,6 +2400,26 @@ private fun LegendDot(color: Color, label: String) {
 @Composable
 private fun SlotTactic(slot: Int, d: SlotData) {
     val ctx = LocalContext.current
+    // Checklist: o que ainda falta ler e em qual tela do OSM (a tática sai melhor com tudo lido).
+    val human = fv(d, K.RIVAL_HUMAN) == "Sim"
+    val checks = listOfNotNull(
+        Pair("Força do rival", "Pré-jogo (círculo do rival)").takeIf { known(d.fields, K.RIVAL_STRENGTH) == null },
+        Pair("Setores do rival (GOL/DEF/MEI/ATA)", "Plantel do rival").takeIf { known(d.fields, K.RIVAL_DEF) == null || known(d.fields, K.RIVAL_ATK) == null },
+        Pair("Formação do rival", "Análise do rival").takeIf { known(d.fields, K.RIVAL_FORMATION) == null },
+        Pair("Estilo do rival", "Análise do rival").takeIf { known(d.fields, K.RIVAL_PLAN) == null },
+        Pair("Árbitro", "Pré-jogo (termômetro)").takeIf { known(d.fields, K.REFEREE) == null },
+        Pair("Nome do usuário rival", "Pré-jogo ou plantel do rival").takeIf { human && known(d.fields, K.RIVAL_NICK) == null },
+        Pair("Seu elenco", "Plantel do seu time (role até o fim)").takeIf { d.players.count { it.owner == "MY" && it.strength != null } < 14 }
+    )
+    if (checks.isNotEmpty()) {
+        Panel {
+            Text("Antes de gerar: falta ler ${checks.size} item(ns)", color = C.WARN, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            for ((what, where) in checks) Text("• $what → abra: $where", fontSize = 12.sp, modifier = Modifier.padding(top = 3.dp))
+            Text("Dá para gerar assim mesmo, mas a tática fica menos precisa.", fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
+        }
+    } else {
+        Text("✔ Tudo lido para este jogo.", color = C.OK, fontSize = 12.sp, modifier = Modifier.padding(bottom = 6.dp))
+    }
     GenPanel("tactic", slot, "⚡ Gerar tática para o próximo jogo") { startGeneration(ctx, "tactic", slot) }
     val plan = d.tactic
     if (plan == null) {
@@ -2455,6 +2475,16 @@ private fun SlotTactic(slot: Int, d: SlotData) {
             Box(Modifier.fillMaxWidth().padding(top = 12.dp).height(1.dp).background(Color(0x22FFFFFF)))
             Spacer(Modifier.height(10.dp))
             WinCard(d.win)
+        }
+    }
+    val pbL = j.optString("planBLose")
+    val pbW = j.optString("planBWin")
+    if (pbL.isNotBlank() || pbW.isNotBlank()) {
+        Panel {
+            Text("🔁 Plano B no intervalo", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            if (pbL.isNotBlank()) Text("📉 $pbL", fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
+            if (pbW.isNotBlank()) Text("📈 $pbW", fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
+            Text("No jogo, use o botão 📋 Tática do painel flutuante para ver tudo sem sair do OSM.", fontSize = 10.sp, color = C.MUTED, modifier = Modifier.padding(top = 6.dp))
         }
     }
 
@@ -3161,6 +3191,31 @@ private fun SettingsTab() {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
         Text("Ajustes", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
         NotificationsPanel()
+        val exportScope = rememberCoroutineScope()
+        var exportMsg by remember { mutableStateOf("") }
+        Panel {
+            Text("Diagnóstico", fontWeight = FontWeight.Bold)
+            Text(
+                "Gera um arquivo com tudo o que o app leu nos 4 slots (sem chaves de IA nem imagens) para você enviar quando algo estiver errado.",
+                fontSize = 12.sp, color = C.MUTED
+            )
+            OutlinedButton(
+                onClick = {
+                    exportMsg = "Gerando…"
+                    exportScope.launch {
+                        try {
+                            val f = withContext(Dispatchers.IO) { DiagExport.build(ctx) }
+                            DiagExport.share(ctx, f)
+                            exportMsg = ""
+                        } catch (e: Exception) {
+                            exportMsg = "Não consegui gerar: " + (e.message ?: e.javaClass.simpleName)
+                        }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+            ) { Text("📤 Exportar diagnóstico") }
+            if (exportMsg.isNotBlank()) Text(exportMsg, fontSize = 12.sp, color = C.WARN)
+        }
         Panel {
             Text("Serviço de leitura", fontWeight = FontWeight.Bold)
             KV("Acessibilidade ativada", if (serviceEnabled(ctx)) "sim" else "NÃO")

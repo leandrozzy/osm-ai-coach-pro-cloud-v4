@@ -1,6 +1,7 @@
 package com.osmaicoach.collector
 
 import kotlin.math.abs
+import org.json.JSONObject
 
 /**
  * Parsers determinísticos baseados em posição (colunas/linhas) das caixas do OCR.
@@ -473,6 +474,38 @@ object Parsers {
      * Análise do rival. Esquerda: nota do analista (entradas, formação, estágio, nível do estádio) e o apelido.
      * Direita: ora o campo ("Formação: 4-3-3 A" + suplentes), ora a tática (estilo no topo, Marcação, Fora-de-jogo).
      */
+    /**
+     * Confere a tela de tática do OSM (a que você está montando) com a tática gerada. Conservador: só reclama
+     * de um item quando a tela mostra UM valor daquele tipo (lista aberta com todas as opções não conta).
+     */
+    fun tacticCheck(o: OcrResult, plan: JSONObject, referee: String?): List<String> {
+        val out = ArrayList<String>()
+        val texts = o.lines.map { it.text.trim() }
+        fun only(options: List<String>): String? {
+            val seen = options.filter { opt -> texts.any { Txt.norm(it) == Txt.norm(opt) } }
+            return seen.singleOrNull()
+        }
+        val forms = texts.mapNotNull { t -> RX_FORMATION.find(t)?.let { m ->
+            val v = m.groupValues[2].uppercase()
+            Formations.canonical(m.groupValues[1] + if (v.isNotEmpty()) " $v" else "")
+        } }.distinct()
+        val want = Formations.canonical(plan.optString("formation"))
+        if (forms.size == 1 && want != null && forms[0] != want) out.add("Formação ${forms[0]} — a gerada é $want")
+        val st = only(Osm.STYLES)
+        val wantSt = Osm.style(plan.optString("playStyle"))
+        if (st != null && wantSt != null && st != wantSt) out.add("Estilo $st — a gerada é $wantSt")
+        val tk = only(Osm.TACKLES)
+        val wantTk = Osm.tackle(plan.optString("tackle"))
+        if (tk != null) {
+            if (tk !in Osm.allowedTackles(referee)) out.add("Desarme $tk com árbitro ${referee ?: "não lido"}: risco de expulsão")
+            else if (wantTk != null && tk != wantTk) out.add("Desarme $tk — a gerada é $wantTk")
+        }
+        val mk = only(Osm.MARKING)
+        val wantMk = Osm.marking(plan.optString("marking"))
+        if (mk != null && wantMk != null && mk != wantMk) out.add("Marcação $mk — a gerada é $wantMk")
+        return out
+    }
+
     fun report(o: OcrResult): Extraction {
         val f = LinkedHashMap<String, Reading>()
         val left = o.lines.filter { it.xc < 0.47f }.sortedBy { it.yc }
