@@ -148,7 +148,13 @@ class Repo(private val ctx: Context) {
         val readings = if (ex.fields[K.RIVAL_HUMAN]?.value == "Não" && (ex.fields.containsKey(K.RIVAL_LOGIN_BONUS) || humanHints(slot))) {
             ex.fields - K.RIVAL_HUMAN
         } else ex.fields
-        val n = putTracked(slot, readings, source, "PREGAME", now)
+        var n = putTracked(slot, readings, source, "PREGAME", now)
+        // Meu apelido não foi lido: o apelido sob o time que é o rival guardado ainda conta.
+        if (!ex.fields.containsKey(K.RIVAL_NICK)) {
+            val rk = (ex.fields[K.RIVAL_TEAM]?.value ?: fieldMap(slot)[K.RIVAL_TEAM]?.value)?.let { Txt.key(it) }
+            val nk = if (rk != null && rk.length >= 3) ex.humans.entries.firstOrNull { SlotMatcher.nameSim(it.key, rk) >= 0.85 }?.value else null
+            if (nk != null && Evidence.plausibleNick(nk)) n += recordEvidence(slot, mapOf(K.RIVAL_NICK to nk.trim()), "PREGAME", now)
+        }
         return n + confirmHuman(slot, planJson(slot, "evidence"), now) + estimateMid(slot, "rival.", now) + estimateMid(slot, "my.", now)
     }
 
