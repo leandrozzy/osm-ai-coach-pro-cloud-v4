@@ -288,4 +288,12 @@ class IntelTest {
         val down = WinModel.predict(WinModel.Input(80, 80, calib = -0.15))!!
         assertTrue(down.win < base.win)
     }
+
+    @Test fun newCompetitionDoesNotJumpTheRound() {
+        val now = at(2026, 10, 10, 12, 0)
+        val old = (1..10).map { m(it, "R$it", result = "V") }
+        // batalha acabou (10 rodadas) e a liga nova começou: pré-jogo diz rodada 1
+        val c = Fixtures.clock(old, emptySet(), now, 1, now, null, null)
+        assertEquals(1, c.round)
+    }
 }

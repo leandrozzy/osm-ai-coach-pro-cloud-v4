@@ -99,7 +99,9 @@ object Fixtures {
         var r = round
         var at = matchAt
         if (at != null && at <= now && roundAt != null && roundAt > at + 60000L) at = null
-        if (done != null && (r == null || r <= done)) {
+        // rodada 1-3 com placares bem mais à frente = competição nova (o Repo arquiva a antiga): não "pula" para done+1
+        val newSeason = r != null && done != null && r <= 3 && done >= r + 5
+        if (done != null && !newSeason && (r == null || r <= done)) {
             r = done + 1
             if (at != null && at <= now) at = null
         }

@@ -82,6 +82,7 @@ class FramePipeline private constructor(private val ctx: Context) {
     private var lastProcessed: LongArray? = null
     private val lastOwners = HashMap<ScreenType, Triple<Int, String, Long>>()
     private val noSlot = ArrayList<Pair<Extraction, Long>>()
+    private var lastType: ScreenType? = null
     private var lastCheck = ""
     private var lastCheckAt = 0L
 
@@ -239,7 +240,9 @@ class FramePipeline private constructor(private val ctx: Context) {
             val nowGate = System.currentTimeMillis()
             val lp = lastProcessed
             val dist = if (lp == null) Int.MAX_VALUE else FrameHash.distance(lp, h)
-            val need = if (nowGate - lastProcessedAt < 2500L) 60 else 24
+            // Pré-jogo alterna sozinho força <-> bônus nos círculos (mudança pequena na imagem): relê a cada 3 s.
+            val need = if (lastType == ScreenType.PREGAME && nowGate - lastProcessedAt >= 3000L) 1
+            else if (nowGate - lastProcessedAt < 2500L) 60 else 24
             if (dist < need) {
                 if (!dupCounted) {
                     Diag.dedup.incrementAndGet()
@@ -268,6 +271,12 @@ class FramePipeline private constructor(private val ctx: Context) {
             Diag.ocr.incrementAndGet()
             val type = ScreenClassifier.classify(ocr, topBar)
             Diag.currentType = type.name
+            lastType = type
+            if (type == ScreenType.PREGAME || type == ScreenType.REPORT || type == ScreenType.SQUAD) {
+                Diag.trace("OCR ${type.name}: " + ocr.lines.filter { type != ScreenType.SQUAD || it.yc < 0.45f }.joinToString(" | ") {
+                    it.text.trim() + "@" + "%.2f,%.2f".format(java.util.Locale.US, it.xc, it.yc)
+                }.take(1500))
+            }
             lastProcessed = h
             if (type == ScreenType.NOISE || type == ScreenType.NON_OSM) {
                 Diag.discarded.incrementAndGet()

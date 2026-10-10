@@ -128,6 +128,9 @@ interface CoachDao {
     @Query("SELECT * FROM plans WHERE slotId = :slot AND substr(kind, 1, 3) = 'mr_'")
     suspend fun matchReports(slot: Int): List<PlanEntity>
 
+    @Query("DELETE FROM matches WHERE slotId = :slot")
+    suspend fun deleteMatches(slot: Int)
+
     @Query("DELETE FROM matches WHERE slotId = :slot AND substr(mkey, 1, 2) = 'C:'")
     suspend fun deleteCupCards(slot: Int)
 

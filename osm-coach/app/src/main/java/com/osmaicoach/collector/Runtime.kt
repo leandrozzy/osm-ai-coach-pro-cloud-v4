@@ -51,7 +51,21 @@ object Diag {
         if (recent.isNotEmpty() && recent[0].substring(10) == msg) return
         recent.add(0, line)
         while (recent.size > 14) recent.removeAt(recent.size - 1)
+        history.add(line)
+        while (history.size > 400) history.removeAt(0)
     }
+
+    /** Histórico longo (para o diagnóstico exportado): eventos e o texto lido nas telas importantes. */
+    private val history = ArrayList<String>()
+
+    @Synchronized
+    fun trace(msg: String) {
+        history.add(SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date()) + "  " + msg)
+        while (history.size > 400) history.removeAt(0)
+    }
+
+    @Synchronized
+    fun historyLines(): List<String> = ArrayList(history)
 
     @Synchronized
     fun recentEvents(): List<String> = ArrayList(recent)

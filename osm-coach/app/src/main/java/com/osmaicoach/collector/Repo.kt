@@ -151,7 +151,34 @@ class Repo(private val ctx: Context) {
         return changed
     }
 
+    /**
+     * Competição nova no slot (temporada seguinte ou batalha nova): o pré-jogo mostra rodada 1-3 enquanto o
+     * histórico já tinha placar em rodadas bem maiores. Arquiva o calendário e os relatórios antigos (o aprendizado
+     * das táticas fica) para a rodada não "pular" para a 35 e nada da temporada passada contar como jogado.
+     */
+    private suspend fun newSeasonIfNeeded(slot: Int, roundRead: Int?, now: Long): Boolean {
+        val r = roundRead ?: return false
+        val done = Fixtures.lastDone(dao.matchesOf(slot), scoredRounds(slot)) ?: return false
+        if (r > 3 || done < r + 5) return false
+        val tag = "X" + (now / 1000)
+        dao.deleteMatches(slot)
+        for (p in dao.matchReports(slot)) {
+            dao.putPlan(PlanEntity(slot, "old_" + tag + "_" + p.kind, p.json, p.at))
+            dao.deletePlan(slot, p.kind)
+        }
+        for (p in dao.tacticLogs(slot)) {
+            if (!p.kind.startsWith("tlog_R")) continue
+            dao.putPlan(PlanEntity(slot, "tlog_" + tag + "_" + p.kind.removePrefix("tlog_"), p.json, p.at))
+            dao.deletePlan(slot, p.kind)
+        }
+        dao.deletePlan(slot, "tactic")
+        for (k in listOf(K.ROUND, K.ROUND_DONE, K.MATCH_AT)) dao.deleteField(slot, k)
+        learn(slot, "temporada", "Competição nova (rodada $r depois da $done): calendário e relatórios antigos arquivados; o aprendizado das táticas continua.", now)
+        return true
+    }
+
     private suspend fun applyPregame(slot: Int, ex: Extraction, source: String, now: Long): Int {
+        newSeasonIfNeeded(slot, ex.roundRead ?: ex.fields[K.ROUND]?.value?.toIntOrNull(), now)
         val newRival = ex.fields[K.RIVAL_TEAM]
         if (newRival != null && newRival.conf >= 0.8) {
             val old = dao.fieldsOf(slot).firstOrNull { it.fkey == K.RIVAL_TEAM }
