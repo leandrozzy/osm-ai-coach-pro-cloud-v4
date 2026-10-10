@@ -554,7 +554,11 @@ data class SlotData(
     val fitness: Map<String, Pair<Int, Int>> = emptyMap(),
     val rivalProfile: PlanEntity? = null,
     val win: WinModel.Prob? = null,
-    val evidence: JSONObject? = null
+    val evidence: JSONObject? = null,
+    /** Leituras que não batem entre telas (para conferir). */
+    val conflicts: List<String> = emptyList(),
+    /** Jogadores marcados fora do próximo jogo. */
+    val unavailable: Set<String> = emptySet()
 )
 
 data class SessionRow(val s: SessionEntity, val counts: String, val unassigned: Int)
@@ -594,7 +598,9 @@ private suspend fun loadSlot(ctx: Context, slot: Int): SlotData {
         fitness = repo.fitness(slot),
         rivalProfile = repo.rivalProfile(slot),
         win = tplan?.takeIf { tacticCurrent(it, f) }?.let { Director.winProb(repo, slot, it) },
-        evidence = repo.evidence(slot)
+        evidence = repo.evidence(slot),
+        conflicts = repo.conflicts(slot),
+        unavailable = repo.unavailable(slot)
     )
 }
 
@@ -1637,6 +1643,8 @@ private fun TrainingDialog(slot: Int, p: PlayerEntity, onDone: () -> Unit) {
 @Composable
 private fun SlotSquad(slot: Int, d: SlotData) {
     var trainEdit by remember { mutableStateOf<PlayerEntity?>(null) }
+    val sqCtx = LocalContext.current
+    val sqScope = rememberCoroutineScope()
     val mine = d.players.filter { it.owner == "MY" }
     val counts = HashMap<String, Int>()
     for (p in mine) p.cat?.let { counts[it] = (counts[it] ?: 0) + 1 }
@@ -1655,6 +1663,7 @@ private fun SlotSquad(slot: Int, d: SlotData) {
         Spacer(Modifier.height(8.dp))
         KV("Treinando (camisa laranja)", "${mine.count { it.training == true }} de 5")
         Text("São no máximo 5 treinos por vez (4 treinadores de posição + 1 universal). Toque num jogador para corrigir o treino ou remover quem não existe no elenco.", fontSize = 11.sp, color = C.MUTED)
+        Text("⛔ = suspenso/lesionado no próximo jogo: toque no ícone à direita e ele sai da escalação da tática (só nesta rodada).", fontSize = 11.sp, color = C.MUTED)
         KV("Força geral / GOL / DEF / MEI / ATA", listOf(K.MY_STRENGTH, K.MY_GOL, K.MY_DEF, K.MY_MID, K.MY_ATK).joinToString(" / ") { fv(d, it) })
     }
     if (mine.isEmpty()) {
@@ -1681,6 +1690,16 @@ private fun SlotSquad(slot: Int, d: SlotData) {
                         }
                     }
                     if (p.training == true) Pill("🟠 Treinando")
+                    val out = p.nameKey in d.unavailable
+                    Box(
+                        Modifier.padding(start = 6.dp).clip(RoundedCornerShape(50)).background(if (out) C.LOSS else C.SURFACE2)
+                            .clickable {
+                                sqScope.launch {
+                                    withContext(Dispatchers.IO) { Repo(sqCtx).setUnavailable(slot, p.nameKey, !out) }
+                                    UiBus.version++
+                                }
+                            }.padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) { Text(if (out) "⛔ fora" else "✓", fontSize = 12.sp, fontWeight = FontWeight.Bold) }
                 }
             }
         }
@@ -2411,6 +2430,16 @@ private fun SlotTactic(slot: Int, d: SlotData) {
         Pair("Nome do usuário rival", "Pré-jogo ou plantel do rival").takeIf { human && known(d.fields, K.RIVAL_NICK) == null },
         Pair("Seu elenco", "Plantel do seu time (role até o fim)").takeIf { d.players.count { it.owner == "MY" && it.strength != null } < 14 }
     )
+    if (d.conflicts.isNotEmpty()) {
+        Panel {
+            Text("⚠ Leituras que não batem — confira no jogo", color = C.WARN, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            for (c in d.conflicts) Text("• $c", fontSize = 12.sp, modifier = Modifier.padding(top = 3.dp))
+            Text("Abra a tela de novo (a leitura repetida confirma) ou corrija o valor no Pré-jogo.", fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
+        }
+    }
+    if (d.unavailable.isNotEmpty()) {
+        Text("⛔ ${d.unavailable.size} jogador(es) fora deste jogo (marcados no Elenco): já saem da escalação.", fontSize = 12.sp, color = C.WARN, modifier = Modifier.padding(bottom = 6.dp))
+    }
     if (checks.isNotEmpty()) {
         Panel {
             Text("Antes de gerar: falta ler ${checks.size} item(ns)", color = C.WARN, fontWeight = FontWeight.Bold, fontSize = 14.sp)
@@ -2940,6 +2969,9 @@ private fun SlotLearning(slot: Int, d: SlotData) {
     )
     val nextRival = known(d.fields, K.RIVAL_TEAM)
     val lessons = Coach.lessons(games, nextRival)
+    val logsJ = d.logs.mapNotNull { runCatching { JSONObject(it.json) }.getOrNull() }
+    val (hit, graded) = Calib.accuracy(logsJ)
+    val calib = Calib.offset(logsJ)
     Panel {
         Text("🧠 Treinador: o que vou fazer no próximo jogo", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
         if (games.isEmpty()) {
@@ -2951,6 +2983,13 @@ private fun SlotLearning(slot: Int, d: SlotData) {
             if (nextRival != null) Text("Próximo: vs $nextRival", fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 2.dp))
             for (line in lessons.plan) Text("➜ $line", fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
             Text("Esses ajustes já entram no “Gerar tática”.", fontSize = 10.sp, color = C.MUTED, modifier = Modifier.padding(top = 8.dp))
+        }
+        if (graded > 0) {
+            Text(
+                "🎯 Previsões: acertei o resultado mais provável em $hit de $graded jogo(s) (${hit * 100 / graded}%)." +
+                    (if (calib > 0.01) " O time vem rendendo acima do previsto: já ajustei para cima." else if (calib < -0.01) " O time vem rendendo abaixo do previsto: já ajustei para baixo." else ""),
+                fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 8.dp)
+            )
         }
     }
     val reviews = games.take(5).map { Coach.review(it) }.filter { it.wrong.isNotEmpty() || it.right.isNotEmpty() }

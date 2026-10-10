@@ -723,3 +723,37 @@ object CounterBook {
         return fOk && stOk
     }
 }
+
+/**
+ * Calibração das previsões com os resultados reais de cada slot: se o modelo vem prometendo mais pontos do que
+ * o time faz (ou menos), corrige; e mede quantas vezes o resultado mais provável foi o que aconteceu.
+ */
+object Calib {
+    private fun pts(r: String): Int = when (r) { "V" -> 3; "E" -> 1; else -> 0 }
+
+    private fun graded(logs: List<JSONObject>): List<JSONObject> = logs.filter {
+        !it.isNull("result") && it.optString("result") in setOf("V", "E", "D") && it.has("predPts")
+    }.sortedByDescending { it.optInt("round") }.take(8)
+
+    /** Ajuste no log dos meus gols esperados (entre -0.15 e +0.15); 0 com menos de 3 jogos previstos. */
+    fun offset(logs: List<JSONObject>): Double {
+        val g = graded(logs)
+        if (g.size < 3) return 0.0
+        val err = g.map { pts(it.optString("result")) - it.optDouble("predPts") }.average()
+        return (err * 0.12).coerceIn(-0.15, 0.15)
+    }
+
+    /** (acertos, jogos): o resultado mais provável previsto foi o que aconteceu. */
+    fun accuracy(logs: List<JSONObject>): Pair<Int, Int> {
+        val g = graded(logs).filter { it.has("predW") }
+        var hit = 0
+        for (x in g) {
+            val w = x.optInt("predW")
+            val e = x.optInt("predE")
+            val d = x.optInt("predD")
+            val fav = if (w >= e && w >= d) "V" else if (d >= e) "D" else "E"
+            if (fav == x.optString("result")) hit++
+        }
+        return Pair(hit, g.size)
+    }
+}

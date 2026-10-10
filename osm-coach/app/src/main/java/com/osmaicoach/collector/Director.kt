@@ -238,7 +238,8 @@ object Director {
 
     suspend fun tacticInput(repo: Repo, slot: Int): TacticEngine.Input {
         val f = repo.fieldMap(slot)
-        val players = repo.dao.playersOf(slot).filter { it.owner == "MY" }
+        val out = repo.unavailable(slot)
+        val players = repo.dao.playersOf(slot).filter { it.owner == "MY" && it.nameKey !in out }
         return TacticEngine.Input(
             players = players,
             myStrength = f[K.MY_STRENGTH]?.value?.toIntOrNull(),
@@ -324,7 +325,8 @@ object Director {
             referee = str(K.REFEREE),
             myBonus = bonus(K.MY_BONUS), rivalBonus = bonus(K.RIVAL_LOGIN_BONUS),
             recent = played.filter { !Fixtures.isCup(it) }.mapNotNull { it.result }.take(5),
-            headToHead = h2h
+            headToHead = h2h,
+            calib = Calib.offset(repo.dao.tacticLogs(slot).mapNotNull { runCatching { JSONObject(it.json) }.getOrNull() })
         )
     }
 
@@ -565,12 +567,22 @@ object Director {
         return sb.toString()
     }
 
-    private fun logJson(t: Tactic, round: Int?, rival: String?, inp: TacticEngine.Input): JSONObject =
-        JSONObject().put("round", round ?: -1).put("rival", rival ?: NI).put("formation", t.formation)
+    private fun logJson(
+        t: Tactic, round: Int?, rival: String?, inp: TacticEngine.Input,
+        prob: WinModel.Prob? = null, base: WinModel.Input? = null, nick: String? = null
+    ): JSONObject {
+        val j = JSONObject().put("round", round ?: -1).put("rival", rival ?: NI).put("formation", t.formation)
             .put("playStyle", t.playStyle).put("pressure", t.pressure).put("mentality", t.mentality).put("tempo", t.tempo)
             .put("myStrength", inp.myStrength ?: JSONObject.NULL).put("rivalStrength", inp.rivalStrength ?: JSONObject.NULL)
             .put("human", inp.rivalHuman ?: JSONObject.NULL).put("home", inp.home ?: JSONObject.NULL)
             .put("result", JSONObject.NULL)
+        // previsão feita na hora (para calibrar com o resultado) e o que foi lido do rival (para ver se ele trocou)
+        if (prob != null) j.put("predW", prob.win).put("predE", prob.draw).put("predD", prob.loss).put("predPts", prob.points)
+        base?.rivalFormation?.let { j.put("rivalFormationRead", it) }
+        base?.rivalStyle?.let { j.put("rivalStyleRead", it) }
+        if (nick != null && FieldMerge.known(nick)) j.put("rivalNick", nick)
+        return j
+    }
 
     /** Tática calculada por regras e números: instantânea, não depende de IA nem de internet. */
     suspend fun generateTacticLocal(repo: Repo, slot: Int): Outcome {
@@ -592,9 +604,18 @@ object Director {
         val hist = history(repo, slot)
         val lost = lostAgainst(repo, slot)
         val draftPts = score(rules.tactic, rules.rows, scen, hist, lost)
-        val best = candidates(rules, inp, scen, hist, lost).firstOrNull()
+        val cands = candidates(rules, inp, scen, hist, lost)
+        val top = cands.firstOrNull()
+        // Exploração: com duas opções praticamente empatadas, testa a menos usada (assim o app aprende qual é melhor).
+        fun used(c: Cand): Int = hist.count { Formations.base(it.formation) == Formations.base(c.tactic.formation) && it.playStyle == c.tactic.playStyle }
+        val alt = top?.let { t -> cands.firstOrNull { it.tactic.formation != t.tactic.formation || it.tactic.playStyle != t.tactic.playStyle } }
+        val explore = top != null && alt != null && top.points - alt.points < 0.02 && used(alt) < used(top) && hist.size >= 3
+        val best = if (explore) alt else top
         val res = if (best != null && draftPts != null && best.points > draftPts + 0.03) {
             val why = ArrayList<String>()
+            if (explore && top != null) {
+                why.add("Testando ${best.tactic.formation} • ${best.tactic.playStyle}: empata com ${top.tactic.formation} • ${top.tactic.playStyle} na simulação e foi menos usada — o resultado ensina qual é melhor.")
+            }
             why.add(
                 "Simulação: ${best.tactic.formation} • ${best.tactic.playStyle} rende ${"%.2f".format(best.points)} pontos esperados " +
                     "contra ${"%.2f".format(draftPts)} da regra."
@@ -609,17 +630,24 @@ object Director {
             if (base.rivalFormation == null) "formação" else null,
             if (base.rivalStyle == null) "estilo" else null
         )
-        val res2 = if (base.rivalHuman == true && miss.isNotEmpty()) res.copy(
+        val (sw, chk) = repo.rivalSwitches(slot)
+        val swNote = if (base.rivalHuman == true && sw > 0) listOf(
+            "⚠ Este usuário já trocou a tática na última hora ($sw de $chk jogos conferidos): releia a análise dele 20 min antes e gere de novo."
+        ) else emptyList()
+        val res1 = if (swNote.isNotEmpty()) res.copy(tactic = res.tactic.copy(notes = swNote + res.tactic.notes)) else res
+        val res2 = if (base.rivalHuman == true && miss.isNotEmpty()) res1.copy(
             tactic = res.tactic.copy(
                 notes = listOf(
                     "⚠ Rival humano sem ${miss.joinToString(", ")} lidos: tática feita para aguentar as táticas mais usadas por humanos. " +
                         "Abra o pré-jogo, a análise e o plantel do rival e gere de novo para ficar sob medida."
-                ) + res.tactic.notes
+                ) + res1.tactic.notes
             )
-        ) else res
+        ) else res1
         val json = tacticPlanJson(res2, round, rival, false, f[K.MATCH_AT]?.value?.toLongOrNull())
         repo.dao.putPlan(PlanEntity(slot, "tactic", json.toString(), now))
-        repo.dao.putPlan(PlanEntity(slot, "tlog_R${round ?: 0}", logJson(res2.tactic, round, rival, inp).toString(), now))
+        val sp = simPlan(res2.tactic, res2.rows)
+        val pp = WinModel.predict(base.copy(plan = sp, tacticRecord = record(hist, sp)))
+        repo.dao.putPlan(PlanEntity(slot, "tlog_R${round ?: 0}", logJson(res2.tactic, round, rival, inp, pp, base, f[K.RIVAL_NICK]?.value).toString(), now))
         return Outcome(true, json.toString(), null)
     }
 
@@ -888,7 +916,7 @@ object Director {
         val out = tacticPlanJson(merged, round, rival, true, f[K.MATCH_AT]?.value?.toLongOrNull())
         val now = System.currentTimeMillis()
         repo.dao.putPlan(PlanEntity(slot, "tactic", out.toString(), now))
-        repo.dao.putPlan(PlanEntity(slot, "tlog_R${round ?: 0}", logJson(pick.tactic, round, rival, inp).toString(), now))
+        repo.dao.putPlan(PlanEntity(slot, "tlog_R${round ?: 0}", logJson(pick.tactic, round, rival, inp, pickProb, base, f[K.RIVAL_NICK]?.value).toString(), now))
         AiStatus.set("")
         return Outcome(true, out.toString(), null)
     }
@@ -899,8 +927,16 @@ object Director {
         val f = repo.fieldMap(slot)
         val mine = repo.playersOf(slot).filter { it.owner == "MY" }
         if (mine.none { it.strength != null }) return null
+        // setor a reforçar: o que o treinador apontou nos últimos jogos; senão o titular mais fraco
+        val l = Coach.lessons(coachGames(repo, slot), null)
+        val focus = when {
+            l.defNeed >= maxOf(l.midNeed, l.atkNeed) && l.defNeed > 0 -> "DEF"
+            l.midNeed >= l.atkNeed && l.midNeed > 0 -> "MEI"
+            l.atkNeed > 0 -> "ATA"
+            else -> null
+        }
         return MarketEngine.plan(
-            mine, repo.dao.listingsOf(slot), Money.parse(f[K.CASH]?.value), MarketPlanner.sellSlotsLeft(f[K.SELLING]?.value)
+            mine, repo.dao.listingsOf(slot), Money.parse(f[K.CASH]?.value), MarketPlanner.sellSlotsLeft(f[K.SELLING]?.value), focus
         )
     }
 
