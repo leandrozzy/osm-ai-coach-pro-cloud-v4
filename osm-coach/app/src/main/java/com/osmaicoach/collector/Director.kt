@@ -609,6 +609,8 @@ object Director {
         val past = entries.takeLast(5)
         val readNow = base.rivalFormation != null || base.rivalStyle != null
         val out = ArrayList<Pair<WinModel.Input, Double>>()
+        // Humano pode entrar mais forte do que o lido (bônus de login, treino, troca de escalação).
+        base.rivalStrength?.let { out.add(Pair(base.copy(rivalStrength = it + 3), 0.15)) }
         if (past.isEmpty()) {
             // Humano sem histórico: ele escolhe a tática a dedo e pode trocar antes do jogo. A nossa precisa
             // render contra o que foi lido agora E contra as táticas típicas de humanos.
@@ -657,14 +659,20 @@ object Director {
         val sp = simPlan(t, rows)
         var sum = 0.0
         var wsum = 0.0
+        var worst = Double.MAX_VALUE
         for ((inp, w) in scen) {
             val ep = WinModel.expectedPoints(inp.copy(plan = sp, tacticRecord = record(hist, sp))) ?: return null
             sum += ep * w
             wsum += w
+            if (ep < worst) worst = ep
         }
         if (wsum <= 0.0) return null
         val penalty = 0.25 * (lost[Formations.base(t.formation) + "|" + (Osm.style(t.playStyle) ?: "")] ?: 0)
-        return sum / wsum - penalty
+        // Contra humano vale a tática que não quebra em nenhum cenário (ele troca a dele na última hora):
+        // média e pior caso pesam juntos. Contra CPU só há o cenário lido.
+        val mean = sum / wsum
+        val robust = if (scen.size > 1) 0.6 * mean + 0.4 * worst else mean
+        return robust - penalty
     }
 
     /** As 3 melhores das regras e, contra rival bem mais fraco, sempre as formações de 3 atacantes. */
