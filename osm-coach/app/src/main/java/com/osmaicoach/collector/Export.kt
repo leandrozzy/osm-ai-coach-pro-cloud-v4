@@ -57,6 +57,7 @@ object DiagExport {
             slots.put(s)
         }
         root.put("slots", slots)
+        root.put("pipeline", JSONArray(Diag.historyLines()))
         val dir = File(ctx.cacheDir, "diag").apply { mkdirs() }
         dir.listFiles()?.forEach { it.delete() }
         val f = File(dir, "osm-coach-diagnostico-${System.currentTimeMillis() / 1000}.json")

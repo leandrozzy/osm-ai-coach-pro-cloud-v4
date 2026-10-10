@@ -532,7 +532,9 @@ data class SlotSummary(
     val needsResult: Boolean = false,
     val win: WinModel.Prob? = null,
     /** Campos do próximo jogo ainda não lidos (mesmo critério para todos os slots). */
-    val missingNames: List<String> = emptyList()
+    val missingNames: List<String> = emptyList(),
+    /** Todas as rodadas da competição jogadas e nenhum jogo marcado: aguardando a próxima competição. */
+    val ended: Boolean = false
 )
 
 data class TodayData(val active: Boolean = false, val slots: List<SlotSummary> = emptyList())
@@ -659,6 +661,12 @@ private suspend fun loadToday(ctx: Context): TodayData {
                 roundDone = known(f, K.ROUND_DONE), roundTotal = known(f, K.ROUND_TOTAL),
                 rival = known(f, K.RIVAL_TEAM), human = known(f, K.RIVAL_HUMAN),
                 pct = c.percent, updated = f.values.maxOfOrNull { it.updatedAt } ?: 0L,
+                ended = run {
+                    val rd = known(f, K.ROUND_DONE)?.toIntOrNull()
+                    val rt = known(f, K.ROUND_TOTAL)?.toIntOrNull()
+                    val at = clk?.at
+                    rd != null && rt != null && rd >= rt && (at == null || at < now - 3L * 3600000L)
+                },
                 missing = gameMissing.size,
                 missingNames = gameMissing.map { it.label },
                 nextAt = known(f, K.MATCH_AT)?.toLongOrNull(),
@@ -942,7 +950,9 @@ private fun SlotCard(s: SlotSummary, onClick: () -> Unit, onTactic: () -> Unit, 
                     if (s.rival != null) Pill("vs ${s.rival}")
                     if (s.human != null) Pill(if (s.human == "Sim") "Humano" else "CPU", s.human == "Sim")
                 }
-                if (s.nextAt != null) {
+                if (s.ended) {
+                    Box(Modifier.padding(top = 4.dp)) { Pill("🏁 Competição encerrada — aguardando a próxima", true) }
+                } else if (s.nextAt != null) {
                     FlowRow(Modifier.padding(top = 2.dp)) {
                         Pill("⏱ " + fmtTime(s.nextAt) + " • " + countdown(s.nextAt))
                         ActionPill(s, onTactic, onResult)
@@ -957,7 +967,7 @@ private fun SlotCard(s: SlotSummary, onClick: () -> Unit, onTactic: () -> Unit, 
                         Column { WinCard(w, compact = true) }
                     }
                 }
-                if (s.missing > 0) {
+                if (s.missing > 0 && !s.ended) {
                     Column(Modifier.clickable { onClick() }.padding(top = 4.dp)) {
                         Pill("faltam ${s.missing} do próximo jogo — toque para preencher")
                         Text(
@@ -1242,6 +1252,7 @@ private suspend fun loadDirector(ctx: Context): List<DirSlot> {
         }
         val plan = Director.marketPlan(repo, s.slot)
         val alerts = ArrayList<String>()
+        if (s.ended) alerts.add("🏁 S${s.slot}: competição encerrada. Quando a nova começar, abra o pré-jogo: o app arquiva a antiga e recomeça o calendário.")
         val nextIn = s.nextAt?.let { it - System.currentTimeMillis() }
         if (!s.tacticReady && nextIn != null && nextIn in 0L..10800000L) alerts.add("⚠ S${s.slot}: jogo em ${countdown(s.nextAt ?: 0L)} e a tática ainda não foi gerada.")
         if (plan != null) {
@@ -1249,7 +1260,7 @@ private suspend fun loadDirector(ctx: Context): List<DirSlot> {
             if (free > 0 && plan.train.isNotEmpty()) alerts.add("🔵 S${s.slot}: $free treino(s) livre(s) — ${plan.train.joinToString(", ") { it.name }}.")
             if (plan.sell.isNotEmpty()) alerts.add("🔴 S${s.slot}: ${plan.sell.size} venda(s) sugerida(s) para liberar caixa.")
         }
-        if (s.missing > 0) alerts.add("📋 S${s.slot}: faltam ${s.missing} campos de leitura (toque no slot para preencher).")
+        if (s.missing > 0 && !s.ended) alerts.add("📋 S${s.slot}: faltam ${s.missing} campos de leitura (toque no slot para preencher).")
         if (s.needsResult) alerts.add("📊 S${s.slot}: o jogo do calendário já aconteceu — registre o resultado (ou abra a análise do jogo no OSM).")
         if (w != null && w.win < 35 && !s.needsResult) alerts.add("⚠ S${s.slot}: jogo difícil (vitória ${w.win}%) — confira a tática e os treinos antes.")
         alerts.addAll(Director.priceDrops(repo, s.slot))
