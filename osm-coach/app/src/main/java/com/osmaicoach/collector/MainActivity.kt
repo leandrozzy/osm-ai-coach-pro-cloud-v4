@@ -2517,16 +2517,6 @@ private fun SlotTactic(slot: Int, d: SlotData) {
             WinCard(d.win)
         }
     }
-    val pbL = j.optString("planBLose")
-    val pbW = j.optString("planBWin")
-    if (pbL.isNotBlank() || pbW.isNotBlank()) {
-        Panel {
-            Text("🔁 Plano B no intervalo", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-            if (pbL.isNotBlank()) Text("📉 $pbL", fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
-            if (pbW.isNotBlank()) Text("📈 $pbW", fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
-            Text("No jogo, use o botão 📋 Tática do painel flutuante para ver tudo sem sair do OSM.", fontSize = 10.sp, color = C.MUTED, modifier = Modifier.padding(top = 6.dp))
-        }
-    }
 
     Spacer(Modifier.height(10.dp))
     LineupPitch(j)

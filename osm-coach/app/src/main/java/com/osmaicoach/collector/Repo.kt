@@ -711,7 +711,16 @@ class Repo(private val ctx: Context) {
     }
 
     /** Jogadores do slot com o que o usuário marcou à mão sobre treino (vale mais que a leitura da camisa laranja). */
+    /** Jogadores "inventados" pela leitura do botão flutuante colado no nome (ex. "Encerraroden"): saem. */
+    suspend fun purgeOverlayNames(slot: Int) {
+        for (p in dao.playersOf(slot)) {
+            val n = Txt.norm(p.name).replace(Regex("[^a-z ]"), "")
+            if (Overlay.glued(p.name) || n.split(" ").any { it.startsWith("encerrar") }) dao.deletePlayer(slot, p.owner, p.nameKey)
+        }
+    }
+
     suspend fun playersOf(slot: Int): List<PlayerEntity> {
+        purgeOverlayNames(slot)
         val ov = trainingOverrides(slot)
         return dao.playersOf(slot).map { p ->
             val o = if (p.owner == "MY") ov[p.nameKey] else null

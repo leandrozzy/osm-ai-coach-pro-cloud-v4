@@ -174,6 +174,12 @@ object Overlay {
     @Volatile
     var bounds: FloatArray? = null
 
+    /** Palavra que começa com o texto de um botão colado em outra ("Encerraroden", "Taticabarnes"). */
+    fun glued(text: String): Boolean {
+        val n = Txt.norm(text).replace(Regex("[^a-z]"), "")
+        return n.length > 8 && (n.startsWith("encerrar") || n.startsWith("tatica") && n.length > 10)
+    }
+
     fun covers(xc: Float, yc: Float): Boolean {
         val b = bounds ?: return false
         return xc >= b[0] - 0.01f && xc <= b[2] + 0.01f && yc >= b[1] - 0.01f && yc <= b[3] + 0.01f
