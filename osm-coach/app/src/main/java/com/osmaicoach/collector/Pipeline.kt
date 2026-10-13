@@ -28,12 +28,25 @@ object OcrEngine {
                 val r = ln.boundingBox ?: continue
                 if (Overlay.isChip(ln.text)) continue
                 if (Overlay.covers((r.left + r.right) / 2f / w, (r.top + r.bottom) / 2f / h)) continue
+                // Palavra a palavra: o OCR pode juntar o botão flutuante ("Encerrar") com o nome que está atrás
+                // dele ("Encerraroden"). Tira as palavras que caem sobre os botões e refaz a linha sem elas.
                 val toks = ArrayList<OcrToken>()
+                var dropped = false
                 for (e in ln.elements) {
                     val b = e.boundingBox ?: continue
-                    toks.add(OcrToken(e.text, b.left / w, b.top / h, b.right / w, b.bottom / h))
+                    val t = OcrToken(e.text, b.left / w, b.top / h, b.right / w, b.bottom / h)
+                    if (Overlay.isChip(e.text) || Overlay.covers(t.xc, t.yc) || Overlay.glued(e.text)) {
+                        dropped = true
+                        continue
+                    }
+                    toks.add(t)
                 }
-                lines.add(OcrLine(ln.text, r.left / w, r.top / h, r.right / w, r.bottom / h, toks))
+                if (dropped) {
+                    if (toks.isEmpty()) continue
+                    lines.add(OcrLine(toks.joinToString(" ") { it.text }, toks.minOf { it.l }, toks.minOf { it.t }, toks.maxOf { it.r }, toks.maxOf { it.b }, toks))
+                } else {
+                    lines.add(OcrLine(ln.text, r.left / w, r.top / h, r.right / w, r.bottom / h, toks))
+                }
                 tokens.addAll(toks)
             }
         }

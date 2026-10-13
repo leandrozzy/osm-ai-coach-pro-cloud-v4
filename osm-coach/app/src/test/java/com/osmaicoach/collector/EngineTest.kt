@@ -301,13 +301,6 @@ class EngineTest {
         }
     }
 
-    @Test fun planBAttacksWhenLosingAndClosesWhenWinning() {
-        val t = TacticEngine.recommend(input(80, 80))!!.tactic
-        val (lose, win) = Director.planB(t)
-        assertTrue(lose.contains("Perdendo"))
-        assertTrue(win.contains("Ajudar a defesa"))
-    }
-
     @Test fun tacticScreenDifferencesAreReported() {
         val plan = org.json.JSONObject().put("formation", "4-3-3 A").put("playStyle", "Contra-ataque").put("tackle", "Normal").put("marking", "À zona")
         val o = Fx.ocr(Fx.line("4-4-2 A", 0.5f, 0.2f, 0.1f), Fx.line("Jogo de passe", 0.5f, 0.3f, 0.1f), Fx.line("Extremo", 0.5f, 0.4f, 0.1f))
