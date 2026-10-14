@@ -479,6 +479,44 @@ class Repo(private val ctx: Context) {
         return changed
     }
 
+    // ------------------------------------------------------------------ fim de temporada e diretoria
+
+    /**
+     * Telas do fim da competição (classificação final, "a época acabou", mensagens da diretoria, objetivos, prêmios,
+     * demissão): não são de adversário. O texto vira aprendizado do slot (vai para o prompt da IA) e "a época acabou"
+     * encerra a competição do slot (nada de tática para um jogo que não existe).
+     */
+    suspend fun recordSeasonScreen(slot: Int, lines: List<String>, now: Long): Int {
+        val text = lines.map { it.trim() }.filter { Txt.letters(it) >= 3 && !Overlay.polluted(it) }.joinToString(" | ").take(600)
+        if (text.isBlank()) return 0
+        val j = planJson(slot, "board")
+        val arr = j.optJSONArray("items") ?: JSONArray()
+        val key = Txt.key(text).take(120)
+        for (i in 0 until arr.length()) if (Txt.key(arr.optJSONObject(i)?.optString("text") ?: "").take(120) == key) return 0
+        arr.put(JSONObject().put("at", now).put("text", text))
+        val keep = JSONArray()
+        for (i in maxOf(0, arr.length() - 20) until arr.length()) keep.put(arr.get(i))
+        dao.putPlan(PlanEntity(slot, "board", j.put("items", keep).toString(), now))
+        learn(slot, "diretoria", text.take(280), now)
+        var n = 1
+        if (SeasonScreens.seasonOver(text)) {
+            val f = fieldMap(slot)
+            val total = f[K.ROUND_TOTAL]?.value?.toIntOrNull()
+            if (total != null && (f[K.ROUND_DONE]?.value?.toIntOrNull() ?: 0) < total) {
+                dao.putField(FieldEntity(slot, K.ROUND_DONE, total.toString(), 0.9, now, "fim"))
+                n++
+            }
+            if (f[K.MATCH_AT] != null) dao.deleteField(slot, K.MATCH_AT)
+        }
+        return n
+    }
+
+    /** Mensagens da diretoria / fim de temporada guardadas (mais nova primeiro). */
+    suspend fun boardMessages(slot: Int): List<String> {
+        val arr = planJson(slot, "board").optJSONArray("items") ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.optString("text") }.reversed()
+    }
+
     /** Valor digitado pelo usuário: confiança acima de qualquer leitura (nada da leitura automática sobrescreve). */
     suspend fun setManual(slot: Int, key: String, value: String) {
         dao.putField(FieldEntity(slot, key, value.trim(), 2.0, System.currentTimeMillis(), "manual"))
@@ -563,7 +601,9 @@ class Repo(private val ctx: Context) {
 
     /** Perfil do usuário rival pelo apelido, juntando os 4 slots (o mesmo humano pode estar em mais de uma liga). */
     suspend fun rivalProfile(slot: Int): PlanEntity? {
-        val nick = fieldMap(slot)[K.RIVAL_NICK]?.value ?: return null
+        val fm = fieldMap(slot)
+        if (fm[K.RIVAL_HUMAN]?.value == "Não") return null
+        val nick = fm[K.RIVAL_NICK]?.value ?: return null
         if (!FieldMerge.known(nick)) return null
         return profileOf(nick, slot)
     }
@@ -722,9 +762,27 @@ class Repo(private val ctx: Context) {
     /** Jogadores do slot com o que o usuário marcou à mão sobre treino (vale mais que a leitura da camisa laranja). */
     /** Jogadores "inventados" pela leitura do botão flutuante colado no nome (ex. "Encerraroden"): saem. */
     suspend fun purgeOverlayNames(slot: Int) {
-        for (p in dao.playersOf(slot)) {
+        val all = dao.playersOf(slot)
+        val removed = ArrayList<String>()
+        for (p in all) {
             val n = Txt.norm(p.name).replace(Regex("[^a-z ]"), "")
-            if (Overlay.glued(p.name) || n.split(" ").any { it.startsWith("encerrar") }) dao.deletePlayer(slot, p.owner, p.nameKey)
+            if (Overlay.glued(p.name) || n.split(" ").any { it.startsWith("encerrar") }) {
+                dao.deletePlayer(slot, p.owner, p.nameKey)
+                continue
+            }
+            // Nome com texto de botão do OSM ("Atribuir número", "MAIS EM BREVE", "Ata") ou lixo de OCR ("MdLK"):
+            // se o nome limpo já existe, era fantasma desse jogador; se não sobra nome, não era jogador.
+            val clean = PlayerName.clean(p.name)
+            if (clean == p.name) continue
+            val key = clean?.let { Txt.key(it) }
+            val twin = key?.let { k -> all.firstOrNull { it !== p && it.owner == p.owner && (it.nameKey == k || Txt.sim(it.nameKey, k) >= 0.9) } }
+            dao.deletePlayer(slot, p.owner, p.nameKey)
+            if (clean != null && key != null && twin == null && key.length >= 3) {
+                dao.putPlayer(p.copy(nameKey = key, name = clean))
+            } else removed.add(p.name)
+        }
+        if (removed.isNotEmpty()) {
+            learn(slot, "elenco", "Leituras falsas removidas do elenco (texto de botão ou lixo do OCR): ${removed.joinToString(", ")}.")
         }
     }
 
@@ -911,6 +969,14 @@ class Repo(private val ctx: Context) {
      */
     suspend fun cleanPollution(slot: Int) {
         val now = System.currentTimeMillis()
+        // Rival CPU não tem apelido (nem "perfil de humano"); apelido que é lixo de OCR também sai. O digitado fica.
+        run {
+            val rows = dao.fieldsOf(slot).associateBy { it.fkey }
+            val nick = rows[K.RIVAL_NICK]
+            if (nick != null && nick.source != "manual" && (rows[K.RIVAL_HUMAN]?.fvalue == "Não" || !Evidence.plausibleNick(nick.fvalue))) {
+                dao.deleteField(slot, K.RIVAL_NICK)
+            }
+        }
         // Bônus de outro jogo (lido ou digitado há mais de 30 h): sai, para a tela pedir o de hoje em vez de mostrar o velho.
         for (row in dao.fieldsOf(slot)) {
             if (row.fkey in FieldMerge.PER_GAME && !FieldMerge.fresh(row.fkey, StoredField(row.fvalue, row.conf, row.updatedAt), now)) {

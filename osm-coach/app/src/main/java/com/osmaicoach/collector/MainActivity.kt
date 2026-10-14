@@ -594,8 +594,16 @@ private suspend fun loadSlot(ctx: Context, slot: Int): SlotData {
         sections = dao.lastBySection(slot).associate { it.type to it.c },
         completeness = comp,
         marketPlan = Director.marketPlan(repo, slot),
-        marketNote = dao.plan(slot, "market")?.json?.let { js ->
-            try { JSONObject(js).optString("aiNote").ifBlank { null } } catch (e: Exception) { null }
+        marketNote = dao.plan(slot, "market")?.let { mp ->
+            // comentário de outro elenco (jogadores já vendidos ou que nem existem) não aparece: peça de novo
+            try {
+                val j = JSONObject(mp.json)
+                val then = j.optJSONArray("squad")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() }
+                val now = repo.playersOf(slot).filter { it.owner == "MY" }.map { it.nameKey }.toSet()
+                val fresh = if (then == null) System.currentTimeMillis() - mp.at < 24L * 3600000L
+                else (then - now).size <= 2 && (now - then).size <= 2 && System.currentTimeMillis() - mp.at < 3L * 86400000L
+                if (fresh) j.optString("aiNote").ifBlank { null } else null
+            } catch (e: Exception) { null }
         },
         logs = dao.tacticLogs(slot),
         reports = dao.matchReports(slot),
@@ -642,6 +650,7 @@ private suspend fun loadToday(ctx: Context): TodayData {
         try {
             repo.relinkResults(slot)
             repo.validateHuman(slot)
+            repo.purgeOverlayNames(slot)
         } catch (e: Exception) { }
         val clk = try { repo.syncRound(slot, now) } catch (e: Exception) { null }
         val f = repo.fieldMap(slot)
@@ -663,18 +672,13 @@ private suspend fun loadToday(ctx: Context): TodayData {
                 roundDone = known(f, K.ROUND_DONE), roundTotal = known(f, K.ROUND_TOTAL),
                 rival = known(f, K.RIVAL_TEAM), human = known(f, K.RIVAL_HUMAN),
                 pct = c.percent, updated = f.values.maxOfOrNull { it.updatedAt } ?: 0L,
-                ended = run {
-                    val rd = known(f, K.ROUND_DONE)?.toIntOrNull()
-                    val rt = known(f, K.ROUND_TOTAL)?.toIntOrNull()
-                    val at = clk?.at
-                    rd != null && rt != null && rd >= rt && (at == null || at < now - 3L * 3600000L)
-                },
+                ended = Fixtures.seasonEnded(f, all, now),
                 missing = gameMissing.size,
                 missingNames = gameMissing.map { it.label },
                 nextAt = known(f, K.MATCH_AT)?.toLongOrNull(),
                 tacticReady = tacticFor(repo, slot, known(f, K.ROUND)?.toIntOrNull()),
                 needsResult = awaiting != null,
-                win = tplan?.takeIf { tacticCurrent(it, f) }?.let { Director.winProb(repo, slot, it) }
+                win = tplan?.takeIf { tacticCurrent(it, f) && !Fixtures.seasonEnded(f, all, now) }?.let { Director.winProb(repo, slot, it) }
             )
         )
     }
@@ -1248,7 +1252,7 @@ private suspend fun loadDirector(ctx: Context): List<DirSlot> {
         val ready = inp.players.count { it.strength != null } >= 8
         val res = if (ready) TacticEngine.recommend(inp) else null
         val w = s.win
-        val forecast = if (res == null) "faltam dados do elenco (leia o Plantel do seu time)" else {
+        val forecast = if (s.ended) "competição encerrada — sem próximo jogo" else if (res == null) "faltam dados do elenco (leia o Plantel do seu time)" else {
             res.tactic.formation + " • " + res.tactic.playStyle +
                 (if (w != null) " • V ${w.win}% / E ${w.draw}% / D ${w.loss}%" else "")
         }
@@ -1319,7 +1323,7 @@ private fun DirectorTab(onOpen: (Int, Int) -> Unit) {
                 for (a in alertLines) Text(a, fontSize = 12.sp, modifier = Modifier.padding(vertical = 3.dp))
             }
         }
-        val upcoming = list.filter { it.s.nextAt != null && it.s.nextAt > now - 7200000L }.sortedBy { it.s.nextAt }
+        val upcoming = list.filter { !it.s.ended && it.s.nextAt != null && it.s.nextAt > now - 7200000L }.sortedBy { it.s.nextAt }
         if (upcoming.isNotEmpty()) {
             Title("Agenda")
             Panel {
@@ -1420,7 +1424,17 @@ private fun SlotSummaryTab(slot: Int, d: SlotData) {
     var missingEdit by remember { mutableStateOf<Completeness.Item?>(null) }
     val c = d.completeness
     val at = fv(d, K.MATCH_AT).toLongOrNull()
-    Panel {
+    if (Fixtures.seasonEnded(d.fields, d.matches, System.currentTimeMillis())) {
+        Panel {
+            Text("🏁 Competição encerrada", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Text(
+                "Não há próximo jogo neste slot. O app não gera tática nem pede dados de adversário até a nova " +
+                    "temporada/batalha começar (abra o pré-jogo no OSM quando ela começar). Classificação final, valor do elenco " +
+                    "e mensagens da diretoria lidas agora entram no aprendizado (aba Aprendizado).",
+                fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp)
+            )
+        }
+    } else Panel {
         Text("Próximo jogo", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
         val rival = fv(d, K.RIVAL_TEAM)
         Text(if (rival == NI) "Adversário ainda não lido" else "vs $rival", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.padding(top = 4.dp))
@@ -1486,7 +1500,8 @@ private fun SlotSummaryTab(slot: Int, d: SlotData) {
             Spacer(Modifier.height(8.dp))
             Text("Conhecidos: " + c.known.joinToString(", ").ifBlank { "nenhum" }, fontSize = 12.sp)
         }
-        Panel {
+        // competição encerrada: não há próximo jogo, então não há o que "faltar" para ele
+        if (!Fixtures.seasonEnded(d.fields, d.matches, System.currentTimeMillis())) Panel {
             Text("Faltando — toque para preencher à mão", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
             if (c.missing.isEmpty()) Text("Nada faltando ✔", color = C.OK, modifier = Modifier.padding(top = 4.dp))
             for (mi in c.missingItems) {
@@ -2432,6 +2447,13 @@ private fun LegendDot(color: Color, label: String) {
 @Composable
 private fun SlotTactic(slot: Int, d: SlotData) {
     val ctx = LocalContext.current
+    if (Fixtures.seasonEnded(d.fields, d.matches, System.currentTimeMillis())) {
+        Panel {
+            Text("🏁 Competição encerrada", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Text(Director.ENDED_MSG, fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
+        }
+        return
+    }
     // Checklist: o que ainda falta ler e em qual tela do OSM (a tática sai melhor com tudo lido).
     val human = fv(d, K.RIVAL_HUMAN) == "Sim"
     val checks = listOfNotNull(
@@ -3025,6 +3047,15 @@ private fun SlotLearning(slot: Int, d: SlotData) {
             Text("Análise dos jogos (estatísticas lidas)", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
             for (p in d.reports.sortedByDescending { it.at }.take(6)) {
                 val j = try { JSONObject(p.json) } catch (e: Exception) { null } ?: continue
+                val rnd = j.optInt("round", -1).takeIf { it > 0 } ?: p.kind.removePrefix("mr_R").toIntOrNull() ?: continue
+                j.put("round", rnd)
+                // sem placar lido na análise: usa o do calendário; sem nenhum dos dois, não inventa "0-0 vs adversário"
+                if (!j.has("sh") || !j.has("sa")) {
+                    val cm = d.matches.firstOrNull { it.round == rnd && it.scoreMine != null && it.scoreOpp != null } ?: continue
+                    val mh = cm.home ?: j.optBoolean("mineHome", true)
+                    j.put("mineHome", mh).put("sh", if (mh) cm.scoreMine else cm.scoreOpp).put("sa", if (mh) cm.scoreOpp else cm.scoreMine)
+                    Fixtures.opponent(cm)?.let { if (mh) j.put("awayTeam", it) else j.put("homeTeam", it) }
+                }
                 val mineHome = j.optBoolean("mineHome", true)
                 val st = j.optJSONObject("stats")
                 fun fixPct(label: String, v: String): String =
@@ -3033,7 +3064,9 @@ private fun SlotLearning(slot: Int, d: SlotData) {
                 fun opp(label: String): String = st?.optJSONArray(label)?.optString(if (mineHome) 1 else 0)?.let { fixPct(label, it) } ?: NI
                 val myGoals = if (mineHome) j.optInt("sh") else j.optInt("sa")
                 val oppGoals = if (mineHome) j.optInt("sa") else j.optInt("sh")
-                val oppName = (if (mineHome) j.optString("awayTeam") else j.optString("homeTeam")).ifBlank { "adversário" }
+                val oppName = (if (mineHome) j.optString("awayTeam") else j.optString("homeTeam")).ifBlank {
+                    d.matches.firstOrNull { it.round == rnd }?.let { Fixtures.opponent(it) } ?: "adversário"
+                }
                 val ratings = j.optJSONArray(if (mineHome) "rh" else "ra")
                 var sum = 0
                 var cnt = 0
