@@ -959,8 +959,7 @@ object AiMapper {
         val out = ArrayList<PlayerRead>()
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
-            val name = o.optString("name").trim()
-            if (Txt.letters(name) < 2) continue
+            val name = PlayerName.clean(o.optString("name")) ?: continue
             val age = o.optInt("age", -1).takeIf { it in 15..45 }
             val pos = o.optString("pos").trim().uppercase().takeIf { it.length in 1..4 && it.all { ch -> ch.isLetter() } }
             val strength = o.optInt("strength", -1).takeIf { it in 30..120 }

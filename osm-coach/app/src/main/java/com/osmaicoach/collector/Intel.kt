@@ -38,6 +38,25 @@ object Fixtures {
         return isCup(m) && m.result == null && (m.round ?: Int.MAX_VALUE) > out
     }
 
+    /**
+     * Competição encerrada: todas as rodadas jogadas (central "10/10"), rodada "seguinte" além do total, ou o
+     * calendário inteiro com placar e nenhum jogo por vir. Aí não existe próximo jogo: nada de tática, previsão,
+     * pedido de leitura do rival nem alarme — só o aprendizado do que passou. Um jogo marcado ainda no futuro
+     * (ex.: final de copa) mantém a competição aberta.
+     */
+    fun seasonEnded(f: Map<String, StoredField>, ms: List<MatchEntity>, now: Long): Boolean {
+        val total = f[K.ROUND_TOTAL]?.value?.toIntOrNull() ?: return false
+        if (total <= 0) return false
+        val futureGame = ms.any { m -> m.result == null && !void(m, ms) && (m.round ?: 0) <= total && !started(m, now) && kickoff(m) != null }
+        val at = f[K.MATCH_AT]?.value?.toLongOrNull()
+        if (futureGame || (at != null && at > now - 3L * 3600000L)) return false
+        val done = f[K.ROUND_DONE]?.value?.toIntOrNull()
+        val next = f[K.ROUND]?.value?.toIntOrNull()
+        val league = ms.filter { !isCup(it) && it.round != null && it.round <= total }
+        val allPlayed = league.isNotEmpty() && (1..total).all { r -> league.any { it.round == r && it.result != null } }
+        return (done != null && done >= total) || (next != null && next > total) || allPlayed
+    }
+
     /** Início do jogo pelo card (data + hora; só hora = relativo a quando o card foi lido). */
     fun kickoff(m: MatchEntity): Long? {
         val t = m.time ?: return null
@@ -189,6 +208,9 @@ object Evidence {
         if (words.any { w -> w in JUNK_WORDS || JUNK_PREFIX.any { w.startsWith(it) } }) return false
         val n = Txt.norm(t)
         if (Regex("^\\d+\\s").containsMatchIn(n)) return false
+        // lixo de OCR: vírgula/ponto-e-vírgula no meio ou palavra "quebrada" (minúscula seguida de várias maiúsculas: "sARY")
+        if (t.contains(',') || t.contains(';')) return false
+        if (t.split(' ').any { w -> Regex("^[a-z][A-Z]{2,}").containsMatchIn(w) }) return false
         return true
     }
 

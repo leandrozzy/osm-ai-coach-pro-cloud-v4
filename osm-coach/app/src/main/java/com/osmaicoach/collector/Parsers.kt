@@ -297,9 +297,9 @@ object Parsers {
         val ageToks = o.tokens.filter { (intTok(it) ?: 0) in 15..45 && abs(it.xc - ageX) <= 0.035f && it.yc > 0.05f }
         for (a in ageToks) {
             val band = o.tokens.filter { abs(it.yc - a.yc) <= 0.04f }
-            val name = band.filter { it.xc in 0.04f..0.34f && Txt.letters(it.text) >= 1 && intTok(it) == null }
+            val rawName = band.filter { it.xc in 0.04f..0.34f && Txt.letters(it.text) >= 1 && intTok(it) == null }
                 .sortedBy { it.l }.joinToString(" ") { it.text.trim() }.trim()
-            if (Txt.letters(name) < 2) continue
+            val name = PlayerName.clean(rawName) ?: continue
             val posTok = band.firstOrNull { abs(it.xc - posX) <= 0.035f && it.text.trim().length in 1..4 && it.text.trim().all { c -> c.isLetter() } }
             fun col(x: Float): Int? = band.mapNotNull { if (abs(it.xc - x) <= 0.03f) intTok(it) else null }.firstOrNull { it in 1..130 }
             val sectionCat = sections.filter { it.first <= a.yc }.maxByOrNull { it.first }?.second

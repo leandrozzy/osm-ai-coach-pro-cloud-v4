@@ -605,9 +605,16 @@ object Director {
     }
 
     /** Tática calculada por regras e números: instantânea, não depende de IA nem de internet. */
+    suspend fun seasonEnded(repo: Repo, slot: Int): Boolean =
+        Fixtures.seasonEnded(repo.fieldMap(slot), repo.dao.matchesOf(slot), System.currentTimeMillis())
+
+    const val ENDED_MSG = "Competição encerrada: não há próximo jogo para gerar tática. Quando a nova temporada/batalha começar, " +
+        "abra o pré-jogo no OSM e o app recomeça. As telas finais (classificação, valor do elenco, mensagens da diretoria) entram no aprendizado."
+
     suspend fun generateTacticLocal(repo: Repo, slot: Int): Outcome {
         resolveTacticLogs(repo, slot)
         repo.syncRound(slot)
+        if (seasonEnded(repo, slot)) return Outcome(false, null, ENDED_MSG)
         val f = repo.fieldMap(slot)
         val inp = tacticInput(repo, slot)
         val squad = inp.players.count { it.strength != null }
@@ -892,6 +899,7 @@ object Director {
             if (rv.wrong.isNotEmpty()) statLines.add("J${g.round} vs ${g.rival} (${g.result}): erros — ${rv.wrong.joinToString("; ")}")
         }
         inp.lessons?.plan?.forEach { statLines.add("LIÇÃO OBRIGATÓRIA do treinador: $it") }
+        for (b in repo.boardMessages(slot).take(3)) statLines.add("mensagem da diretoria / fim de temporada: $b")
         val stats = statLines.joinToString("\n").ifBlank { "sem jogos registrados ainda" }
         val allowed = candidateFormations(res, inp)
         val allowedNames = allowed.flatMap { Formations.variants(it).ifEmpty { listOf(it) } }
@@ -911,6 +919,7 @@ object Director {
      */
     suspend fun chatPrompt(repo: Repo, slot: Int): String? {
         repo.syncRound(slot)
+        if (seasonEnded(repo, slot)) return null
         val pp = prep(repo, slot) ?: return null
         return "Sou técnico no jogo Online Soccer Manager (OSM). Pense com calma, como um especialista do jogo, use o que você sabe " +
             "dos fóruns e da comunidade do OSM, e no FINAL responda com um bloco JSON.\n\n" + pp.prompt
@@ -918,6 +927,7 @@ object Director {
 
     suspend fun refineTactic(ctx: Context, repo: Repo, slot: Int, chatAnswer: String? = null): Outcome {
         repo.syncRound(slot)
+        if (seasonEnded(repo, slot)) return Outcome(false, null, ENDED_MSG)
         val curPlan = repo.dao.plan(slot, "tactic")
         val curRound = repo.fieldMap(slot)[K.ROUND]?.value?.toIntOrNull()
         val current = curPlan != null && curRound != null &&
@@ -1022,7 +1032,9 @@ object Director {
         if (!reply.ok || json == null) return Outcome(false, null, reply.error ?: "IA devolveu JSON inválido.")
         val text = json.optString("commentary").trim().take(700)
         if (text.isBlank()) return Outcome(false, null, "IA não devolveu comentário.")
-        repo.dao.putPlan(PlanEntity(slot, "market", JSONObject().put("aiNote", text).toString(), System.currentTimeMillis()))
+        // guarda o elenco da época do comentário: se o elenco mudar (vendas/compras), o comentário antigo some
+        val squad = org.json.JSONArray(repo.playersOf(slot).filter { it.owner == "MY" }.map { it.nameKey })
+        repo.dao.putPlan(PlanEntity(slot, "market", JSONObject().put("aiNote", text).put("squad", squad).toString(), System.currentTimeMillis()))
         return Outcome(true, text, null)
     }
 

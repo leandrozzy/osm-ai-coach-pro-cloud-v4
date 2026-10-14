@@ -380,7 +380,18 @@ class FramePipeline private constructor(private val ctx: Context) {
                 Diag.log("${noSlot.size} tela(s) lidas antes de reconhecer o slot → S$asgSlot (+$late campos)")
                 noSlot.clear()
             }
-            val changed = repo.apply(asg.slot, ex, "ocr", now)
+            var changed = repo.apply(asg.slot, ex, "ocr", now)
+            // Fim da competição / diretoria: não é tela de adversário. Vai para o aprendizado do slot (reconhecido pela
+            // navegação ou pelo nome do meu time na classificação) e "a época acabou" encerra a competição do slot.
+            if (type == ScreenType.OTHER_OSM && SeasonScreens.isSeasonScreen(ocr.fullText)) {
+                val full = Txt.key(ocr.fullText)
+                val byName = known.filter { id -> id.names.any { it.length >= 5 && full.contains(it) } }.map { it.slot }.distinct()
+                val ss = asgSlot ?: byName.singleOrNull()
+                if (ss != null) {
+                    changed += repo.recordSeasonScreen(ss, ocr.lines.map { it.text }, now)
+                    Diag.log("Fim de temporada/diretoria → S$ss (aprendizado)")
+                }
+            }
             if (type == ScreenType.TACTIC && asgSlot != null) {
                 try { checkTactic(asgSlot, ocr, now) } catch (e: Exception) { Diag.lastError = "Conferir tática: " + (e.message ?: "") }
             }

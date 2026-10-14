@@ -484,3 +484,70 @@ object SquadDedupe {
         return out
     }
 }
+
+/**
+ * Nome de jogador lido pelo OCR: tira textos de botões/rótulos do OSM que grudam no nome ("Atribuir número",
+ * "MAIS EM BREVE", "JOGO RÁPIDO", "Ata", "189GOL") e recusa lixo ("MdLK", "AUUIKIIUIKUy", "ohl", "RAbdikhoikov").
+ */
+object PlayerName {
+    private val PHRASES = listOf(
+        Regex("atribuir\\s+n[uú]mero", RegexOption.IGNORE_CASE), Regex("mais\\s+em\\s+breve", RegexOption.IGNORE_CASE),
+        Regex("jogo\\s+r[aá]pido", RegexOption.IGNORE_CASE), Regex("em\\s+breve", RegexOption.IGNORE_CASE)
+    )
+    private val LABELS = setOf("ata", "def", "med", "mei", "gr", "gol", "idade", "pos", "valor", "nota", "treinando", "fora", "condicao", "moral")
+
+    private fun garbled(w: String): Boolean {
+        val letters = w.filter { it.isLetter() }
+        if (letters.length < 2) return false
+        // maiúsculas depois de uma minúscula ("MdLK", "sARY") ou várias maiúsculas no meio ("AUUIKIIUIKUy")
+        if (Regex("[a-z][A-Z]").findAll(letters).count() >= 1 && letters.drop(1).count { it.isUpperCase() } >= 2) return true
+        if (letters.length >= 5 && letters.count { it.isUpperCase() } >= 3 && letters.any { it.isLowerCase() }) return true
+        // duas maiúsculas e depois minúsculas, colado ("RAbdikhoikov")
+        if (Regex("^[A-Z]{2}[a-z]{3,}").containsMatchIn(letters)) return true
+        return false
+    }
+
+    /** Nome limpo, ou null se o que sobrou não é um nome de jogador. */
+    fun clean(raw: String): String? {
+        var t = raw.trim()
+        for (p in PHRASES) t = p.replace(t, " ")
+        val out = ArrayList<String>()
+        for (w0 in t.split(Regex("\\s+")).filter { it.isNotBlank() }) {
+            // "189GOLAubameyang": número e rótulo em maiúsculas colados na frente do nome
+            val w = Regex("^\\d+[A-Z]{2,}(?=[A-Z][a-z])").replace(w0, "")
+            if (w.any { it.isDigit() }) continue
+            val letters = w.filter { it.isLetter() }
+            if (letters.isEmpty()) continue
+            if (Txt.norm(w) in LABELS) continue
+            // palavra inteira em maiúsculas (BREVE, JOGO, RAPIDO): é texto de botão, não sobrenome
+            if (letters.length >= 3 && letters.all { it.isUpperCase() }) continue
+            out.add(w)
+        }
+        if (out.isEmpty()) return null
+        if (out.any { garbled(it) }) return null
+        val name = out.joinToString(" ")
+        // todo nome do OSM tem pelo menos uma maiúscula ("de Paula" inclusive); "ohl" é pedaço de leitura
+        if (Txt.letters(name) < 3 || name.none { it.isUpperCase() }) return null
+        return name
+    }
+}
+
+/** Telas do fim da competição e da diretoria (classificação final, objetivos, prêmios, demissão). */
+object SeasonScreens {
+    private val WORDS = listOf(
+        "a epoca acabou", "epoca acabou", "fim da epoca", "fim de epoca", "final da epoca", "classificacao final", "direcao",
+        "diretoria", "administracao", "conselho", "presidente", "demiss", "despedid", "objetivo da epoca", "objetivo",
+        "premio", "orcamento", "lista de treinadores", "campeao", "campeoes", "promovid", "despromovid", "a gozar"
+    )
+
+    fun isSeasonScreen(fullText: String): Boolean {
+        val t = Txt.norm(fullText)
+        return WORDS.any { t.contains(it) }
+    }
+
+    fun seasonOver(text: String): Boolean {
+        val t = Txt.norm(text)
+        return t.contains("epoca acabou") || t.contains("fim da epoca") || t.contains("classificacao final") ||
+            (t.contains("a gozar") && t.contains("ferias"))
+    }
+}

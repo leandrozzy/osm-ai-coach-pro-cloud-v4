@@ -168,7 +168,9 @@ object Notifier {
             e.apply()
         }
         for (slot in 1..4) {
-            val nextAt = try { repo.syncRound(slot, now).at } catch (e: Exception) { repo.fieldMap(slot)[K.MATCH_AT]?.value?.toLongOrNull() }
+            val nextAt = (try { repo.syncRound(slot, now).at } catch (e: Exception) { repo.fieldMap(slot)[K.MATCH_AT]?.value?.toLongOrNull() })
+                // competição encerrada: não há jogo para avisar
+                ?.takeIf { !Fixtures.seasonEnded(repo.fieldMap(slot), repo.dao.matchesOf(slot), now) }
             val wanted = if (nextAt == null) emptyList() else alarms(nextAt, now)
             for (kind in listOf("tactic", "pre", "result")) {
                 val key = "alarm_${slot}_$kind"
