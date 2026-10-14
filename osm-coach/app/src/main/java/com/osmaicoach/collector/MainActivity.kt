@@ -596,6 +596,23 @@ private fun Ring(pct: Int, size: Dp, color: Color, center: String, sub: String? 
     }
 }
 
+/** Previsão compacta: vitória em destaque e a barra vitória/empate/derrota com os três números. */
+@Composable
+private fun WinMini(p: WinModel.Prob) {
+    Column(Modifier.width(116.dp), horizontalAlignment = Alignment.End) {
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text("${p.win}%", fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = winColor(p.win))
+            Text(" vitória", fontSize = 10.sp, color = C.MUTED, modifier = Modifier.padding(bottom = 2.dp))
+        }
+        Box(Modifier.padding(top = 3.dp)) { WinBar(p, 7.dp) }
+        Row(Modifier.fillMaxWidth().padding(top = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("V${p.win}", fontSize = 9.sp, color = C.WIN, fontWeight = FontWeight.Bold)
+            Text("E${p.draw}", fontSize = 9.sp, color = C.DRAW, fontWeight = FontWeight.Bold)
+            Text("D${p.loss}", fontSize = 9.sp, color = C.LOSS, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
 private val SHIELD_COLORS = listOf(
     Color(0xFFE5484D), Color(0xFF9B6BFF), Color(0xFF2EA043), Color(0xFFFF8A3D), Color(0xFF00B4D8),
     Color(0xFFD6409F), Color(0xFF8D6E63), Color(0xFF607D8B)
@@ -1036,6 +1053,7 @@ private suspend fun loadSlot(ctx: Context, slot: Int): SlotData {
         repo.relinkResults(slot)
         repo.validateHuman(slot)
         repo.syncRound(slot)
+        repo.syncTraining(slot)
     } catch (e: kotlinx.coroutines.CancellationException) {
         // saiu da tela antes de terminar: não é erro
         throw e
@@ -1417,7 +1435,15 @@ private fun SlotCard(s: SlotSummary, onClick: () -> Unit, onTactic: () -> Unit, 
                     ).joinToString(" • ")
                     if (sub.isNotBlank()) Text(sub, color = C.MUTED, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                Ring(s.pct, 44.dp, if (s.pct >= 80) C.OK else if (s.pct >= 50) C.GOLD else C.WARN, "${s.pct}%")
+                // quanto já foi lido (não é previsão): ícone de prancheta para não confundir com a chance de vitória
+                val pc = if (s.pct >= 80) C.OK else if (s.pct >= 50) C.GOLD else C.WARN
+                Column(
+                    Modifier.clip(RoundedCornerShape(12.dp)).background(pc.copy(alpha = 0.14f)).padding(horizontal = 8.dp, vertical = 4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("📋 ${s.pct}%", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = pc)
+                    Text("dados lidos", fontSize = 9.sp, color = C.MUTED)
+                }
             }
             if (s.ended) {
                 Row(
@@ -1448,7 +1474,7 @@ private fun SlotCard(s: SlotSummary, onClick: () -> Unit, onTactic: () -> Unit, 
                         if (meta.isNotBlank()) Text(meta, fontSize = 11.sp, color = C.MUTED, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     val w = s.win
-                    if (w != null) Ring(w.win, 54.dp, winColor(w.win), "${w.win}%", "vitória")
+                    if (w != null) WinMini(w)
                 }
                 Steps(s)
                 FlowRow(Modifier.padding(top = 6.dp)) {
@@ -2140,7 +2166,7 @@ private fun catColor(cat: String): Color = when (cat) {
 }
 
 @Composable
-private fun TrainingDialog(slot: Int, p: PlayerEntity, onDone: () -> Unit) {
+private fun TrainingDialog(slot: Int, p: PlayerEntity, out: Boolean, onDone: () -> Unit) {
     val ctx = LocalContext.current
     fun set(v: Boolean?) {
         AppScope.scope.launch(Dispatchers.IO) {
@@ -2155,11 +2181,24 @@ private fun TrainingDialog(slot: Int, p: PlayerEntity, onDone: () -> Unit) {
         title = { Text(p.name, fontWeight = FontWeight.Bold) },
         text = {
             Column {
-                Text("Este jogador está em treino? O app lê isso da tela de Treinamento do OSM. Cada slot tem até 5 treinos: 1 por treinador de posição (GOL, DEF, MEI, ATA) + 1 universal (qualquer posição).", fontSize = 12.sp, color = C.MUTED)
-                OutlinedButton(onClick = { set(true) }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("🟠 Está treinando") }
+                Text("⛔ Próximo jogo", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                OutlinedButton(
+                    onClick = {
+                        AppScope.scope.launch(Dispatchers.IO) {
+                            Repo(ctx).setUnavailable(slot, p.nameKey, !out)
+                            UiBus.version++
+                        }
+                        onDone()
+                    },
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = if (out) C.OK else C.WARN)
+                ) { Text(if (out) "✓ Volta a jogar (tirar o ⛔)" else "⛔ Fora do próximo jogo (lesão/suspensão)") }
+                Text("🏋 Treino", fontSize = 13.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp))
+                Hint("O app lê os treinos da tela de Treinamento do OSM. Cada slot tem até 5: 1 por treinador de posição (GOL, DEF, MEI, ATA) + 1 universal. Corrija aqui só se a leitura errou.")
+                OutlinedButton(onClick = { set(true) }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("🏋 Está treinando") }
                 OutlinedButton(onClick = { set(false) }, modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) { Text("Não está treinando") }
                 OutlinedButton(onClick = { set(null) }, modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) { Text("Voltar ao automático") }
-                Text("Este jogador não existe no seu elenco (erro de leitura) ou já saiu?", fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 12.dp))
+                Text("Não existe no seu elenco (erro de leitura) ou já saiu?", fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 12.dp))
                 OutlinedButton(
                     onClick = {
                         AppScope.scope.launch(Dispatchers.IO) {
@@ -2181,8 +2220,6 @@ private fun TrainingDialog(slot: Int, p: PlayerEntity, onDone: () -> Unit) {
 @Composable
 private fun SlotSquad(slot: Int, d: SlotData) {
     var trainEdit by remember { mutableStateOf<PlayerEntity?>(null) }
-    val sqCtx = LocalContext.current
-    val sqScope = rememberCoroutineScope()
     val mine = d.players.filter { it.owner == "MY" }
     val counts = HashMap<String, Int>()
     for (p in mine) p.cat?.let { counts[it] = (counts[it] ?: 0) + 1 }
@@ -2214,7 +2251,7 @@ private fun SlotSquad(slot: Int, d: SlotData) {
     Panel {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("🏋 Treinamento", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp, modifier = Modifier.weight(1f))
-            Pill("${seats.count { it.state == "active" }} de 5 treinando", if (seats.count { it.state == "active" } >= 4) true else null)
+            Pill("${seats.count { it.state == "active" && it.fresh }} de 5 treinando", if (seats.count { it.state == "active" && it.fresh } >= 4) true else null)
         }
         Spacer(Modifier.height(8.dp))
         TrainingBoardView(seats)
@@ -2227,7 +2264,7 @@ private fun SlotSquad(slot: Int, d: SlotData) {
         Hint(
             "O OSM tem 5 treinadores: Goleiros, Defesas, Médios e Avançados (um jogador da posição cada) e o Universal (qualquer posição). " +
                 "O app lê quem está em cada um na tela de Treinamento — a camisa no plantel não conta. Lugar livre (＋) é treino desperdiçado. " +
-                "Toque num jogador abaixo para corrigir à mão ou remover quem não existe no elenco. ⛔ = fora do próximo jogo (lesão/suspensão): sai da escalação só nesta rodada."
+                "Toque num jogador abaixo para marcar ⛔ fora do próximo jogo (lesão/suspensão, só nesta rodada), corrigir o treino ou remover quem não existe no elenco."
         )
     }
     if (mine.isEmpty()) {
@@ -2262,23 +2299,22 @@ private fun SlotSquad(slot: Int, d: SlotData) {
                             }
                         }
                     }
-                    if (p.training == true) Pill("🏋")
-                    val out = p.nameKey in d.unavailable
-                    Box(
-                        Modifier.padding(start = 6.dp).clip(RoundedCornerShape(50)).background(if (out) C.LOSS else C.SURFACE2)
-                            .clickable {
-                                sqScope.launch {
-                                    withContext(Dispatchers.IO) { Repo(sqCtx).setUnavailable(slot, p.nameKey, !out) }
-                                    UiBus.version++
-                                }
-                            }.padding(horizontal = 8.dp, vertical = 4.dp)
-                    ) { Text(if (out) "⛔ fora" else "✓", fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+                    val seat = seats.firstOrNull { it.key == p.nameKey && it.state != "unknown" }
+                    if (seat != null && seat.state == "active" && seat.fresh) Pill("🏋 " + (if (seat.role == "UNI") "UNI" else seat.role))
+                    else if (seat != null && seat.state == "done") Pill("✅ pegar")
+                    else if (d.trainScreen == null && p.training == true) Pill("🏋")
+                    // só aparece quando marcado (marca e desmarca no toque do jogador, para não marcar sem querer)
+                    if (p.nameKey in d.unavailable) {
+                        Box(Modifier.padding(start = 6.dp).clip(RoundedCornerShape(50)).background(C.LOSS).padding(horizontal = 8.dp, vertical = 4.dp)) {
+                            Text("⛔ fora", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
                 }
             }
         }
     }
     val te = trainEdit
-    if (te != null) TrainingDialog(slot, te) { trainEdit = null }
+    if (te != null) TrainingDialog(slot, te, te.nameKey in d.unavailable) { trainEdit = null }
 }
 
 @Composable
@@ -3016,7 +3052,23 @@ private fun SlotTactic(slot: Int, d: SlotData) {
         }
     }
     if (d.unavailable.isNotEmpty()) {
-        Text("⛔ ${d.unavailable.size} fora deste jogo (já saem da escalação)", fontSize = 12.sp, color = C.WARN, modifier = Modifier.padding(bottom = 6.dp))
+        Panel {
+            Text("⛔ ${d.unavailable.size} fora deste jogo (não entram na escalação)", fontSize = 13.sp, color = C.WARN, fontWeight = FontWeight.Bold)
+            FlowRow(Modifier.padding(top = 6.dp)) {
+                for (k in d.unavailable) Pill(d.players.firstOrNull { it.nameKey == k }?.name ?: k, false)
+            }
+            OutlinedButton(
+                onClick = {
+                    AppScope.scope.launch(Dispatchers.IO) {
+                        val r = Repo(ctx)
+                        for (k in d.unavailable) r.setUnavailable(slot, k, false)
+                        UiBus.version++
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+            ) { Text("✓ Liberar todos") }
+            Hint("Marque quem está lesionado ou suspenso tocando no jogador na aba Elenco. Vale só para esta rodada.", "como marcar")
+        }
     }
     if (checks.isNotEmpty()) {
         Panel {

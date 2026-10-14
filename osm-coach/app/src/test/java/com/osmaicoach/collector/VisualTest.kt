@@ -16,9 +16,9 @@ class VisualTest {
     @Test fun trainingBoardShowsTheFiveTrainers() {
         val now = 10L * 86400000L
         val screen = JSONObject()
-            .put("GOL", JSONObject().put("name", "Alisson").put("state", "active").put("at", now))
+            .put("GOL", JSONObject().put("name", "ALISSON").put("state", "active").put("at", now))
             .put("DEF", JSONObject().put("name", JSONObject.NULL).put("state", "empty").put("at", now))
-            .put("ATA", JSONObject().put("name", "Haaland").put("state", "done").put("at", now - 3L * 86400000L))
+            .put("ATA", JSONObject().put("name", "ERLING HAALAND").put("state", "done").put("at", now - 3L * 86400000L))
         val seats = TrainBoard.seats(screen, emptyList(), now)
         assertEquals(listOf("GOL", "DEF", "MEI", "ATA", "UNI"), seats.map { it.role })
         assertEquals("active", seats[0].state)
@@ -29,6 +29,38 @@ class VisualTest {
         assertEquals("done", seats[3].state)
         assertFalse(seats[3].fresh)
         assertEquals("unknown", seats[4].state)
+    }
+
+    @Test fun trainingNamesMatchTheSquad() {
+        val now = 10L * 86400000L
+        val mine = listOf(p("F. López", "MEI"), p("Guéhi", "DEF"), p("Rui Silva", "GOL"), p("Mbeumo", "ATA"), p("Pau López", "GOL"))
+        val screen = JSONObject()
+            .put("GOL", JSONObject().put("name", "RUI SILVA").put("state", "active").put("at", now))
+            .put("DEF", JSONObject().put("name", "MARC GUEHI").put("state", "active").put("at", now))
+            .put("MEI", JSONObject().put("name", "FERMÍN LÓPEZ").put("state", "active").put("at", now))
+            .put("ATA", JSONObject().put("name", "BRYAN MBEUMO").put("state", "active").put("at", now))
+            // nome em letra normal no universal: veio de outra janela (o usuário só tem 4 treinando)
+            .put("UNI", JSONObject().put("name", "Guéhi").put("state", "active").put("at", now - 3600000L))
+        val seats = TrainBoard.seats(screen, mine, now)
+        assertEquals(Txt.key("Rui Silva"), seats.first { it.role == "GOL" }.key)
+        assertEquals(Txt.key("Guéhi"), seats.first { it.role == "DEF" }.key)
+        assertEquals(Txt.key("F. López"), seats.first { it.role == "MEI" }.key)
+        assertEquals(Txt.key("Mbeumo"), seats.first { it.role == "ATA" }.key)
+        assertEquals("unknown", seats.first { it.role == "UNI" }.state)
+        assertEquals(4, TrainBoard.activeKeys(seats).size)
+        assertFalse(TrainBoard.plausible("Guéhi"))
+        assertTrue(TrainBoard.plausible("19 BUKAYO SAKA"))
+    }
+
+    @Test fun samePlayerInTwoTrainersKeepsTheNewestRead() {
+        val now = 10L * 86400000L
+        val mine = listOf(p("Guéhi", "DEF"))
+        val screen = JSONObject()
+            .put("UNI", JSONObject().put("name", "MARC GUEHI").put("state", "active").put("at", now - 7200000L))
+            .put("DEF", JSONObject().put("name", "MARC GUEHI").put("state", "active").put("at", now))
+        val seats = TrainBoard.seats(screen, mine, now)
+        assertEquals("active", seats.first { it.role == "DEF" }.state)
+        assertEquals("unknown", seats.first { it.role == "UNI" }.state)
     }
 
     @Test fun manualTrainingFillsUnreadSeats() {

@@ -813,7 +813,8 @@ object Parsers {
                     !t.contains("anniv") && !t.contains("nivers") &&
                     !t.startsWith("nivel") && !RX_TIMER.containsMatchIn(t)
             }.minByOrNull { it.yc }
-            val name = nameLn?.text?.trim()?.replace(Regex("^\\d+\\s*"), "")?.takeIf { Txt.letters(it) >= 3 }
+            // a tela escreve "19 BUKAYO SAKA" em maiúsculas; nome em letra normal é de outra janela por cima
+            val name = nameLn?.text?.trim()?.takeIf { TrainBoard.plausible(it) }?.replace(Regex("^\\d+\\s*"), "")?.takeIf { Txt.letters(it) >= 3 }
             val timer = texts.any { RX_TIMER.containsMatchIn(it) || it == "concluir" }
             val done = texts.any { it.contains("treino conclu") || it.contains("treino concu") }
             val empty = texts.any { it.startsWith("seleciona") }

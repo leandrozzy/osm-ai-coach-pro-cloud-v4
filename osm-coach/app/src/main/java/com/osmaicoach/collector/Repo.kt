@@ -488,19 +488,6 @@ class Repo(private val ctx: Context) {
 
     // ------------------------------------------------------------------ treinos (tela de Treinamento)
 
-    /** Jogador do meu elenco pelo nome que a tela de Treinamento mostra ("BUKAYO SAKA" -> Saka). */
-    private fun matchTrainee(mine: List<PlayerEntity>, name: String, role: String): PlayerEntity? {
-        val full = Txt.key(name)
-        val last = Txt.key(name.trim().split(Regex("\\s+")).last())
-        fun cat(p: PlayerEntity) = role == "UNI" || p.cat == null || p.cat == role
-        val hits = mine.filter { p ->
-            val k = p.nameKey
-            k.length >= 3 && (k == full || k == last || (k.length >= 4 && full.endsWith(k)) || Txt.sim(k, last) >= 0.85 ||
-                (full.length >= 6 && Txt.sim(k, full) >= 0.85))
-        }
-        return hits.firstOrNull { cat(it) } ?: hits.singleOrNull()
-    }
-
     /**
      * Treinos lidos da tela de Treinamento (a última leitura de cada treinador vale). Com os 4 treinadores de posição
      * lidos, quem não está em nenhum deixa de "treinar" no app; a camisa do plantel não conta mais.
@@ -512,32 +499,29 @@ class Repo(private val ctx: Context) {
             j.put(t.role, JSONObject().put("name", t.name ?: JSONObject.NULL).put("state", t.state).put("at", now))
         }
         dao.putPlan(PlanEntity(slot, "trainscreen", j.toString(), now))
+        // o que o usuário marcou à mão antes desta leitura deixa de valer (a tela do jogo é a fonte)
+        dao.plan(slot, "trainov")?.let { if (it.at < now) dao.deletePlan(slot, "trainov") }
+        return syncTraining(slot, now, log = true)
+    }
+
+    /**
+     * Marca no elenco quem está treinando segundo a última leitura de cada treinador (mesma regra do quadro da tela):
+     * nome que não é da tela de Treinamento não vale e o mesmo jogador em dois treinadores fica só na leitura mais nova.
+     */
+    suspend fun syncTraining(slot: Int, now: Long = System.currentTimeMillis(), log: Boolean = false): Int {
+        val j = dao.plan(slot, "trainscreen")?.json?.let { try { JSONObject(it) } catch (e: Exception) { null } } ?: return 0
         val mine = dao.playersOf(slot).filter { it.owner == "MY" }
         if (mine.isEmpty()) return 0
-        // treinando = cronômetro rodando, lido nas últimas 24 h
-        val active = HashSet<String>()
-        val labels = ArrayList<String>()
-        var rolesKnown = 0
-        for (role in listOf("UNI", "ATA", "MEI", "DEF", "GOL")) {
-            val o = j.optJSONObject(role) ?: continue
-            if (now - o.optLong("at") > 24L * 3600000L) continue
-            if (role != "UNI") rolesKnown++
-            val nm = if (o.isNull("name")) null else o.optString("name")
-            val p = nm?.let { matchTrainee(mine, it, role) }
-            when (o.optString("state")) {
-                "active" -> {
-                    if (p != null) active.add(p.nameKey)
-                    labels.add(role + " " + (p?.name ?: nm ?: "?"))
-                }
-                "done" -> labels.add(role + " " + (p?.name ?: nm ?: "?") + " (concluído, falta reclamar)")
-            }
-        }
+        val seats = TrainBoard.seats(j, mine, now)
+        val active = TrainBoard.activeKeys(seats)
+        val full = seats.count { it.role != "UNI" && it.state != "unknown" && it.fresh } >= 4
         var changed = 0
-        val full = rolesKnown >= 4
         for (p in mine) {
             val want = when {
                 p.nameKey in active -> true
                 full -> false
+                // treinando pela leitura antiga e já fora de qualquer treinador lido
+                p.training == true && seats.none { it.key == p.nameKey } && seats.any { it.role == p.cat && it.fresh && it.state != "unknown" } -> false
                 else -> continue
             }
             if (p.training != want) {
@@ -545,9 +529,9 @@ class Repo(private val ctx: Context) {
                 changed++
             }
         }
-        // o que o usuário marcou à mão antes desta leitura deixa de valer (a tela do jogo é a fonte)
-        dao.plan(slot, "trainov")?.let { if (it.at < now) dao.deletePlan(slot, "trainov") }
-        if (changed > 0) {
+        if (log && changed > 0) {
+            val labels = seats.filter { it.state == "active" || it.state == "done" }
+                .map { it.role + " " + (it.name ?: "?") + (if (it.state == "done") " (concluído, falta reclamar)" else "") }
             learn(slot, "treino", "Treinos (tela de Treinamento): " + labels.joinToString(", ").ifBlank { "nenhum treinando" } + ".", now)
         }
         return changed
