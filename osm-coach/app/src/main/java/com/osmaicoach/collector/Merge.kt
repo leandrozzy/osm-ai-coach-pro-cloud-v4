@@ -6,8 +6,16 @@ object FieldMerge {
     private val VOLATILE = setOf(
         K.MY_STRENGTH, K.RIVAL_STRENGTH, K.MY_VALUE, K.RIVAL_VALUE, K.CASH, K.ROUND, K.MATCH_AT,
         K.LEAGUE_POS, K.POINTS, K.SELLING, K.ROUND_DONE, K.HOME, K.MY_GOL, K.MY_DEF, K.MY_MID, K.MY_ATK,
-        K.RIVAL_GOL, K.RIVAL_DEF, K.RIVAL_MID, K.RIVAL_ATK, K.REFEREE
+        K.RIVAL_GOL, K.RIVAL_DEF, K.RIVAL_MID, K.RIVAL_ATK, K.REFEREE, K.MY_BONUS, K.RIVAL_LOGIN_BONUS
     )
+
+    /** Valem só para o jogo em que foram lidos (o bônus muda a cada dia/jogo): leitura antiga não segura a nova. */
+    val PER_GAME = setOf(K.MY_BONUS, K.RIVAL_LOGIN_BONUS)
+    const val PER_GAME_MS = 12L * 3600000L
+
+    /** Bônus lido (ou digitado) há mais de 30 h é de outro jogo (os jogos são diários): não entra na tática nem na previsão. */
+    fun fresh(key: String, f: StoredField?, now: Long): Boolean =
+        f != null && known(f.value) && (key !in PER_GAME || now - f.updatedAt <= 30L * 3600000L)
 
     fun known(v: String?): Boolean {
         if (v == null) return false
@@ -25,6 +33,10 @@ object FieldMerge {
         if (!known(incoming.value)) return null
         val v = incoming.value.trim()
         if (old == null || !known(old.value)) return StoredField(v, incoming.conf, now)
+        if (key in PER_GAME && now - old.updatedAt > PER_GAME_MS && incoming.conf >= 0.7) {
+            // bônus de outro jogo (até o digitado à mão): a leitura de agora vale (e renova a data da leitura)
+            return StoredField(v, incoming.conf, now)
+        }
         if (old.value == v) return if (incoming.conf > old.conf) StoredField(v, incoming.conf, now) else null
         if (key == K.MATCH_AT) {
             // O horário do calendário (confiança alta) é o do jogo. A contagem do pré-jogo só vale se

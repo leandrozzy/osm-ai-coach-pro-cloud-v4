@@ -33,6 +33,10 @@ object Diag {
     @Volatile var currentSlot = 0
     @Volatile var lastUpdateAt = 0L
     @Volatile var lastError: String? = null
+        set(v) {
+            field = v
+            if (v != null) trace("ERRO: $v")
+        }
     val valid = AtomicInteger()
     val discarded = AtomicInteger()
     val dedup = AtomicInteger()
@@ -44,6 +48,35 @@ object Diag {
 
     private val recent = ArrayList<String>()
 
+    /** Registro em arquivo (sobrevive ao app fechar): é ele que vai inteiro no diagnóstico exportado. */
+    @Volatile private var logFile: java.io.File? = null
+    private const val LOG_MAX = 8L * 1024 * 1024
+
+    fun init(ctx: Context) {
+        if (logFile != null) return
+        logFile = java.io.File(ctx.applicationContext.filesDir, "diag/trace.log").also { it.parentFile?.mkdirs() }
+    }
+
+    /** Arquivos do registro (o atual e o anterior), do mais antigo para o mais novo. */
+    fun logFiles(): List<java.io.File> {
+        val f = logFile ?: return emptyList()
+        return listOf(java.io.File(f.parentFile, "trace.1.log"), f).filter { it.exists() }
+    }
+
+    private fun persist(line: String) {
+        val f = logFile ?: return
+        try {
+            if (f.length() > LOG_MAX) {
+                val old = java.io.File(f.parentFile, "trace.1.log")
+                old.delete()
+                f.renameTo(old)
+            }
+            f.appendText(SimpleDateFormat("dd/MM ", Locale.getDefault()).format(Date()) + line + "\n")
+        } catch (e: Exception) {
+            // registro é só diagnóstico: nunca derruba a leitura
+        }
+    }
+
     /** Últimos eventos do pipeline (mais novo primeiro), sem repetir a mesma mensagem em sequência. */
     @Synchronized
     fun log(msg: String) {
@@ -53,6 +86,7 @@ object Diag {
         while (recent.size > 14) recent.removeAt(recent.size - 1)
         history.add(line)
         while (history.size > 400) history.removeAt(0)
+        persist(line)
     }
 
     /** Histórico longo (para o diagnóstico exportado): eventos e o texto lido nas telas importantes. */
@@ -60,8 +94,10 @@ object Diag {
 
     @Synchronized
     fun trace(msg: String) {
-        history.add(SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date()) + "  " + msg)
+        val line = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date()) + "  " + msg
+        history.add(line)
         while (history.size > 400) history.removeAt(0)
+        persist(line)
     }
 
     @Synchronized

@@ -303,7 +303,7 @@ object Parsers {
             val posTok = band.firstOrNull { abs(it.xc - posX) <= 0.035f && it.text.trim().length in 1..4 && it.text.trim().all { c -> c.isLetter() } }
             fun col(x: Float): Int? = band.mapNotNull { if (abs(it.xc - x) <= 0.03f) intTok(it) else null }.firstOrNull { it in 1..130 }
             val sectionCat = sections.filter { it.first <= a.yc }.maxByOrNull { it.first }?.second
-            val cat = Pos.cat(posTok?.text) ?: sectionCat
+            val cat = Pos.resolve(Pos.cat(posTok?.text), sectionCat, Pos.catFromStats(col(ataX), col(defX), col(medX)))
             val strength = when (cat) {
                 "ATA" -> col(ataX)
                 "MEI" -> col(medX)

@@ -815,11 +815,14 @@ object Meta {
         val o = rules.optJSONObject(k) ?: rules.optJSONObject(k.substringBefore('|') + "|?") ?: return null
         val f = Formations.canonical(o.optString("formation")) ?: return null
         val st = Osm.style(o.optString("style")) ?: return null
-        fun sl(n: String, d: Int) = o.optInt(n, d).coerceIn(0, 100)
+        // controle que a pesquisa não trouxe: o do modelo embutido para a mesma situação (senão o meio da escala)
+        val t0 = template(edge, null, rivalFormation)
+        fun sl(n: String, d: Int) = (if (o.has(n)) o.optInt(n, d) else d).coerceIn(0, 100)
         val away = home == false
         return Template(
             "comunidade (internet, ${o.optString("source").take(40).ifBlank { "fóruns" }})", f, st,
-            sl("pressure", 50) - (if (away) 5 else 0), sl("mentality", 50) - (if (away) 8 else 0), sl("tempo", 60),
+            sl("pressure", t0?.pressure ?: 50) - (if (away) 5 else 0), sl("mentality", t0?.mentality ?: 50) - (if (away) 8 else 0),
+            sl("tempo", t0?.tempo ?: 60),
             Osm.attack(o.optString("attack")) ?: "Atacar apenas", Osm.midfield(o.optString("mid")) ?: "Manter posições",
             Osm.defense(o.optString("def")) ?: "Defender atrás", Osm.marking(o.optString("marking")) ?: "À zona",
             if (o.optString("offside") == "Sim") "Sim" else "Não"

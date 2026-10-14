@@ -282,14 +282,52 @@ object Pos {
         if (c in def) return "DEF"
         if (c in mei) return "MEI"
         if (c in ata) return "ATA"
+        // código desconhecido: só a primeira letra quando o código tem cara de posição (2-3 letras)
+        if (c.length !in 2..3 || !c.all { it in 'A'..'Z' }) return null
         return when (c[0]) {
             'G' -> "GOL"
-            'D' -> "DEF"
+            'D', 'L', 'Z' -> "DEF"
             'M' -> "MEI"
-            'P', 'E', 'S', 'A' -> "ATA"
+            'P', 'E', 'A' -> "ATA"
             else -> null
         }
     }
+
+    /**
+     * Setor pela "forma" dos três números da linha (Ata, Def, Méd): só quando é inequívoca. Atacante tem Ata bem acima
+     * de Def; defensor/goleiro, Def bem acima de Ata; meia, Méd acima dos dois. Casos equilibrados ficam null.
+     */
+    fun catFromStats(ata: Int?, def: Int?, med: Int?): String? {
+        if (ata == null || def == null || med == null) return null
+        return when {
+            ata >= def + 20 && ata >= med + 8 -> "ATA"
+            def >= ata + 20 && def >= med + 8 -> "DEF"
+            med >= ata + 8 && med >= def + 8 -> "MEI"
+            else -> null
+        }
+    }
+
+    /**
+     * Setor final do jogador: o cabeçalho da seção do jogo ("Avançados", "Médios"...) é o mais confiável; depois o
+     * código da posição lido; os números da linha desempatam e corrigem um código mal lido (ex.: meia lido como "ED").
+     * Goleiro e defensor têm a mesma forma: o código/seção decide entre os dois.
+     */
+    fun resolve(code: String?, section: String?, stats: String?): String? {
+        fun same(a: String, b: String) = a == b || (a in BACK && b in BACK)
+        if (section != null) {
+            // goleiro x defensor (mesma família): o código lido decide
+            if (code != null && section in BACK && code in BACK) return code
+            if (stats == null || same(stats, section)) return section
+            // seção e código concordam contra os números: dois sinais contra um
+            if (code != null && same(code, section)) return section
+            // código e números concordam contra a seção: vale o código (que distingue goleiro de defensor)
+            return if (code != null && same(code, stats)) code else stats
+        }
+        if (code != null) return if (stats == null || same(stats, code)) code else stats
+        return stats
+    }
+
+    private val BACK = setOf("DEF", "GOL")
 
     fun catFromSection(normalizedText: String): String? = when {
         normalizedText.startsWith("avancad") -> "ATA"
@@ -323,10 +361,10 @@ object Osm {
     fun style(s: String?): String? {
         val n = Txt.norm(s ?: "")
         return when {
-            n.contains("alas") -> "Jogar pelas alas"
-            n.contains("passe") -> "Jogo de passe"
-            n.contains("contra") -> "Contra-ataque"
-            n.contains("remate") -> "Remate à vista"
+            n.contains("alas") || n.contains("wing") -> "Jogar pelas alas"
+            n.contains("passe") || n.contains("passing") || n.contains("pass game") -> "Jogo de passe"
+            n.contains("contra") || n.contains("counter") -> "Contra-ataque"
+            n.contains("remate") || n.contains("shoot") -> "Remate à vista"
             n.contains("bola") || n.contains("long") -> "Bola longa"
             else -> null
         }
@@ -336,7 +374,7 @@ object Osm {
         val n = Txt.norm(s ?: "")
         return when {
             n.contains("zona") -> "À zona"
-            n.contains("individ") || n.contains("homem") -> "Homem-a-homem"
+            n.contains("individ") || n.contains("homem") || Regex("\\bman\\b").containsMatchIn(n) -> "Homem-a-homem"
             else -> null
         }
     }
@@ -358,9 +396,9 @@ object Osm {
     fun tackle(s: String?): String? {
         val n = Txt.norm(s ?: "")
         return when {
-            n.contains("cuidad") || n.contains("cautel") -> "Cuidadoso"
-            n.contains("extrem") || n.contains("imprud") -> "Extremo"
-            n.contains("agress") -> "Agressivo"
+            n.contains("cuidad") || n.contains("cautel") || n.contains("careful") -> "Cuidadoso"
+            n.contains("extrem") || n.contains("imprud") || n.contains("reckless") -> "Extremo"
+            n.contains("agress") || n.contains("aggress") -> "Agressivo"
             n.contains("normal") -> "Normal"
             else -> null
         }
@@ -369,9 +407,9 @@ object Osm {
     fun attack(s: String?): String? {
         val n = Txt.norm(s ?: "")
         return when {
-            n.contains("atacar") -> "Atacar apenas"
-            n.contains("meio") -> "Apoiar meio-campo"
-            n.contains("defe") -> "Ajudar a defender"
+            n.contains("atacar") || n.contains("attack only") || n.contains("stay forward") -> "Atacar apenas"
+            n.contains("meio") || n.contains("midfield") -> "Apoiar meio-campo"
+            n.contains("defe") || n.contains("help") -> "Ajudar a defender"
             else -> null
         }
     }
@@ -379,9 +417,9 @@ object Osm {
     fun midfield(s: String?): String? {
         val n = Txt.norm(s ?: "")
         return when {
-            n.contains("pression") -> "Pressionar na frente"
-            n.contains("manter") -> "Manter posições"
-            n.contains("ajudar") || n.contains("defesa") -> "Ajudar a defesa"
+            n.contains("pression") || n.contains("press") -> "Pressionar na frente"
+            n.contains("manter") || n.contains("position") || n.contains("hold") -> "Manter posições"
+            n.contains("ajudar") || n.contains("defesa") || n.contains("protect") || n.contains("defen") -> "Ajudar a defesa"
             else -> null
         }
     }
@@ -389,10 +427,60 @@ object Osm {
     fun defense(s: String?): String? {
         val n = Txt.norm(s ?: "")
         return when {
-            n.contains("atacante") || n.contains("lateral") -> "Defesas atacantes"
-            n.contains("apoiar") || n.contains("meio") -> "Apoiar meio-campo"
-            n.contains("defender") || n.contains("atras") -> "Defender atrás"
+            n.contains("atacante") || n.contains("lateral") || n.contains("attacking") || n.contains("full") || n.contains("wing back") -> "Defesas atacantes"
+            n.contains("apoiar") || n.contains("meio") || n.contains("midfield") -> "Apoiar meio-campo"
+            n.contains("defender") || n.contains("atras") || n.contains("deep") || n.contains("defend") || n.contains("stay back") -> "Defender atrás"
             else -> null
         }
+    }
+}
+
+/** Mesmo jogador lido com nomes diferentes pelo OCR (para não virar dois jogadores no elenco). */
+object SquadDedupe {
+    data class P(val key: String, val name: String, val age: Int?, val strength: Int?, val cat: String?, val value: String?, val seen: Long)
+
+    private fun garbled(name: String) = Regex("^[a-z][A-Z]").containsMatchIn(name) || Txt.letters(name) < 3
+
+    /** Iguais, quase iguais, ou um é o outro com a inicial na frente ("jtimber" x "timber"). */
+    fun similarNames(a: String, b: String): Boolean {
+        if (a == b) return true
+        if (a.length < 4 || b.length < 4) return false
+        val s = if (a.length <= b.length) a else b
+        val l = if (a.length <= b.length) b else a
+        if (l.length - s.length <= 2 && (l.endsWith(s) || l.startsWith(s))) return true
+        return Txt.sim(a, b) >= 0.8
+    }
+
+    /**
+     * Mesma idade e nome muito parecido (como antes), ou nome parecido + mesma força (diferença de até 2, por treino).
+     * Força bem diferente nunca é o mesmo jogador (gêmeos com o mesmo sobrenome continuam separados).
+     */
+    fun samePlayer(k1: String, age1: Int?, str1: Int?, k2: String, age2: Int?, str2: Int?): Boolean {
+        if (age1 == null || age2 == null || age1 != age2) return false
+        if (str1 != null && str2 != null && kotlin.math.abs(str1 - str2) > 2) return false
+        if (Txt.sim(k1, k2) >= 0.88) return true
+        return str1 != null && str2 != null && similarNames(k1, k2)
+    }
+
+    /** Pares (repetido, o que fica). Fica o nome legível; empate: o visto por último. */
+    fun duplicates(list: List<P>): List<Pair<String, String>> {
+        val out = ArrayList<Pair<String, String>>()
+        val dropped = HashSet<String>()
+        for (i in list.indices) for (j in i + 1 until list.size) {
+            val a = list[i]
+            val b = list[j]
+            if (a.key in dropped || b.key in dropped) continue
+            if (a.cat != null && b.cat != null && a.cat != b.cat) continue
+            if (!samePlayer(a.key, a.age, a.strength, b.key, b.age, b.strength)) continue
+            val keepA = when {
+                garbled(a.name) != garbled(b.name) -> !garbled(a.name)
+                a.seen != b.seen -> a.seen > b.seen
+                else -> a.name.length >= b.name.length
+            }
+            val (bad, keep) = if (keepA) Pair(b.key, a.key) else Pair(a.key, b.key)
+            dropped.add(bad)
+            out.add(Pair(bad, keep))
+        }
+        return out
     }
 }

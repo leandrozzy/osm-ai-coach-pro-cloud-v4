@@ -67,6 +67,19 @@ object ImageIo {
         return f.absolutePath
     }
 
+    /** Apaga imagens guardadas há mais de 30 dias (sem isso a pasta só crescia). */
+    fun prune(ctx: Context) {
+        val limit = System.currentTimeMillis() - 30L * 86400000L
+        try {
+            File(ctx.filesDir, "frames").listFiles()?.forEach { dir ->
+                dir.listFiles()?.forEach { if (it.lastModified() < limit) it.delete() }
+                if (dir.listFiles()?.isEmpty() == true) dir.delete()
+            }
+        } catch (e: Exception) {
+            Diag.lastError = "Limpeza de imagens: " + (e.message ?: e.javaClass.simpleName)
+        }
+    }
+
     fun toImg(bmp: Bitmap): PixelProbe.Img {
         val pw = 640
         val ph = (pw.toFloat() * bmp.height / bmp.width).toInt().coerceAtLeast(1)
@@ -117,6 +130,9 @@ class FramePipeline private constructor(private val ctx: Context) {
         CaptureService.instance?.notice(msg)
     }
     private var reportCandidates = 0
+    private var resultSaved = 0
+    private var pregameSaved = 0
+    private var squadSaved = 0
     private var tacticSaved = 0
     private var calendarSaved = 0
     private var lastOsmAcceptedAt = 0L
@@ -132,6 +148,11 @@ class FramePipeline private constructor(private val ctx: Context) {
         }
     }
 
+    init {
+        Diag.init(ctx)
+        ImageIo.prune(ctx)
+    }
+
     fun nextDelayMs(): Long = if (System.currentTimeMillis() - lastOsmAcceptedAt < 15000L) 600L else 1800L
 
     private fun ensureMachine(sessionId: String) {
@@ -145,6 +166,9 @@ class FramePipeline private constructor(private val ctx: Context) {
         reportCandidates = 0
         tacticSaved = 0
         calendarSaved = 0
+        resultSaved = 0
+        pregameSaved = 0
+        squadSaved = 0
         imagesThisSession = 0
         val p = ctx.getSharedPreferences("machine", Context.MODE_PRIVATE)
         if (p.getString("session", null) == sessionId) {
@@ -285,10 +309,12 @@ class FramePipeline private constructor(private val ctx: Context) {
             val type = ScreenClassifier.classify(ocr, topBar)
             Diag.currentType = type.name
             lastType = type
-            if (type == ScreenType.PREGAME || type == ScreenType.REPORT || type == ScreenType.SQUAD) {
-                Diag.trace("OCR ${type.name}: " + ocr.lines.filter { type != ScreenType.SQUAD || it.yc < 0.45f }.joinToString(" | ") {
+            if (type != ScreenType.NOISE && type != ScreenType.NON_OSM) {
+                // texto lido com a posição de cada linha: é o que permite conferir depois o que o app viu
+                // (telas do fim do jogo, plantel inteiro, pré-jogo com os bônus)
+                Diag.trace("OCR ${type.name} S${Diag.currentSlot}: " + ocr.lines.joinToString(" | ") {
                     it.text.trim() + "@" + "%.2f,%.2f".format(java.util.Locale.US, it.xc, it.yc)
-                }.take(1500))
+                }.take(4000))
             }
             lastProcessed = h
             if (type == ScreenType.NOISE || type == ScreenType.NON_OSM) {
@@ -400,10 +426,19 @@ class FramePipeline private constructor(private val ctx: Context) {
             // Diagnóstico: guarda poucas telas de tática e calendários "sem novidade" para eu ver o que o app viu.
             val diagTactic = type == ScreenType.TACTIC && asg.slot != null && tacticSaved < 6
             val diagCalendar = type == ScreenType.CALENDAR && changed == 0 && ex.matches.isNotEmpty() && calendarSaved < 4
+            // Fim do jogo (análise, estatísticas, notas), pré-jogo (bônus) e plantel: imagens para o diagnóstico exportado
+            val diagResult = type == ScreenType.RESULT && resultSaved < 16
+            val diagPregame = type == ScreenType.PREGAME && pregameSaved < 6
+            val diagSquad = type == ScreenType.SQUAD && squadSaved < 10
             var path: String? = null
-            if (((unassigned && dataType) || ex.needsAi || reportHint || diagTactic || diagCalendar) && imagesThisSession < 60) {
+            if (((unassigned && dataType) || ex.needsAi || reportHint || diagTactic || diagCalendar || diagResult || diagPregame || diagSquad) &&
+                imagesThisSession < 90
+            ) {
                 if (diagTactic) tacticSaved++
                 if (diagCalendar) calendarSaved++
+                if (diagResult) resultSaved++
+                if (diagPregame) pregameSaved++
+                if (diagSquad) squadSaved++
                 path = ImageIo.saveJpeg(ctx, bmp, sessionId, now)
                 imagesThisSession++
                 if (reportHint) reportCandidates++

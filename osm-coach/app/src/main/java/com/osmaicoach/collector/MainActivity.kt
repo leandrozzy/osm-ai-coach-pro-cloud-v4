@@ -157,6 +157,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Health.install(applicationContext)
+        Diag.init(applicationContext)
         Settings.migrate(applicationContext)
         AppScope.scope.launch { Repo(applicationContext).purgeLegacy() }
         Notifier.ensureChannels(applicationContext)
@@ -3254,25 +3255,33 @@ private fun SettingsTab() {
         Panel {
             Text("Diagnóstico", fontWeight = FontWeight.Bold)
             Text(
-                "Gera um arquivo com tudo o que o app leu nos 4 slots (sem chaves de IA nem imagens) para você enviar quando algo estiver errado.",
+                "Gera um arquivo com TUDO o que o app tem (campos, elenco, calendário, análises do fim do jogo, táticas, telas lidas, " +
+                    "registro de erros e as imagens guardadas; das chaves de IA vão só os 4 últimos caracteres). " +
+                    "Fica salvo no celular em Download/OSM Coach e você pode compartilhar depois.",
                 fontSize = 12.sp, color = C.MUTED
             )
+            var exported by remember { mutableStateOf<DiagExport.Result?>(null) }
             OutlinedButton(
                 onClick = {
-                    exportMsg = "Gerando…"
+                    exportMsg = "Gerando (pode levar alguns segundos com as imagens)…"
                     exportScope.launch {
                         try {
-                            val f = withContext(Dispatchers.IO) { DiagExport.build(ctx) }
-                            DiagExport.share(ctx, f)
-                            exportMsg = ""
+                            val r = withContext(Dispatchers.IO) { DiagExport.export(ctx) }
+                            exported = r
+                            exportMsg = DiagExport.summary(r)
                         } catch (e: Exception) {
                             exportMsg = "Não consegui gerar: " + (e.message ?: e.javaClass.simpleName)
                         }
                     }
                 },
                 modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
-            ) { Text("📤 Exportar diagnóstico") }
-            if (exportMsg.isNotBlank()) Text(exportMsg, fontSize = 12.sp, color = C.WARN)
+            ) { Text("📥 Exportar diagnóstico completo") }
+            if (exportMsg.isNotBlank()) Text(exportMsg, fontSize = 12.sp, color = if (exported?.zipUri != null) C.OK else C.WARN)
+            exported?.let { r ->
+                OutlinedButton(onClick = { DiagExport.share(ctx, r) }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
+                    Text("📤 Compartilhar o arquivo")
+                }
+            }
         }
         Panel {
             Text("Serviço de leitura", fontWeight = FontWeight.Bold)
@@ -3294,7 +3303,10 @@ private fun SettingsTab() {
         }
         Panel {
             Text("IA para tática, mercado e leitura do relatório", fontWeight = FontWeight.Bold)
-            Text("Gemini (gratuito) é o padrão. Claude e Groq/xAI são opcionais.", fontSize = 12.sp, color = C.MUTED)
+            Text(
+                "Gemini (plano gratuito, com limite diário) é o padrão. Groq também tem plano gratuito e lê imagem: vale ter as duas chaves. Claude é pago.",
+                fontSize = 12.sp, color = C.MUTED
+            )
             Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 for ((id, name) in listOf("gemini" to "Gemini", "claude" to "Claude", "compat" to "Groq/xAI")) {
                     val pick = { pref = id; Settings.put(ctx, Settings.PREFERRED, id) }
@@ -3309,7 +3321,14 @@ private fun SettingsTab() {
                     (if (prefKey.isBlank()) " ⚠ $prefName está sem chave: preencha abaixo e toque em Salvar." else ""),
                 fontSize = 11.sp, color = if (prefKey.isBlank()) C.WARN else C.MUTED, modifier = Modifier.padding(bottom = 6.dp)
             )
-            OutlinedTextField(gKey, { gKey = it }, label = { Text("Chave Google AI Studio (Gemini)") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(gKey, { gKey = it }, label = { Text("Chave(s) Google AI Studio (Gemini)") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+            Text(
+                "O plano gratuito do Gemini tem limite DIÁRIO por modelo e por projeto do Google. Pode colar várias chaves separadas por " +
+                    "vírgula (cada uma de um PROJETO diferente no AI Studio): quando a cota de uma acaba, o app usa a próxima e não " +
+                    "tenta de novo a que esgotou até a cota renovar.",
+                fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(bottom = 4.dp)
+            )
+            KV("Gemini agora", AiClient.geminiStatus(ctx))
             OutlinedTextField(gModel, { gModel = it }, label = { Text("Modelo Gemini (auto = detecta sozinho)") }, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(clKey, { clKey = it }, label = { Text("Chave Claude (Console da Anthropic)") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
             OutlinedTextField(clModel, { clModel = it }, label = { Text("Modelo Claude") }, modifier = Modifier.fillMaxWidth())
