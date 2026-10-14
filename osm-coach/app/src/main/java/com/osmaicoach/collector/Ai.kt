@@ -31,6 +31,14 @@ object Settings {
         put(ctx, "settings_v3", "1")
     }
 
+    /**
+     * Uma ou mais chaves do Gemini (separadas por vírgula, espaço ou linha). Cada chave de um PROJETO diferente do
+     * Google tem a sua própria cota gratuita diária: quando uma esgota, o app passa para a próxima.
+     */
+    fun geminiKeys(ctx: Context): List<String> = splitKeys(get(ctx, GEMINI_KEY, ""))
+
+    fun splitKeys(raw: String): List<String> = raw.split(Regex("[,;\\s]+")).map { it.trim() }.filter { it.length >= 20 }.distinct()
+
     const val GEMINI_KEY = "gemini_key"
     const val GEMINI_MODEL = "gemini_model"
     const val GEMINI_RESOLVED = "gemini_model_resolved"
@@ -96,13 +104,44 @@ object ModelPicker {
     }
 
     /** Modelo com visão (aceita imagem) entre os que o provedor lista; null se não houver. */
-    fun pickCompatVision(ids: List<String>): String? {
-        val prefs = listOf("llama-4-maverick", "llama-4-scout", "vision", "pixtral", "-vl")
-        for (p in prefs) {
-            val hit = ids.firstOrNull { it.contains(p, ignoreCase = true) && !it.contains("guard", ignoreCase = true) }
-            if (hit != null) return hit
+    fun pickCompatVision(ids: List<String>): String? = rankCompatVision(ids).firstOrNull()
+
+    /** Todos os modelos com visão que o provedor lista, do melhor para o pior. */
+    fun rankCompatVision(ids: List<String>): List<String> {
+        val prefs = listOf(
+            "llama-4-maverick", "llama-4-scout", "llama-4", "gpt-4.1", "gpt-4o", "gpt-5", "grok-4", "vision", "pixtral",
+            "-vl", "gemma-3", "llava"
+        )
+        val bad = listOf("guard", "embed", "tts", "whisper", "audio", "image-gen", "dall-e", "realtime", "transcribe")
+        val ok = ids.filter { id -> bad.none { id.contains(it, ignoreCase = true) } }
+        val out = ArrayList<String>()
+        for (p in prefs) for (id in ok) if (id.contains(p, ignoreCase = true) && id !in out) out.add(id)
+        return out
+    }
+
+    /**
+     * Modelos com visão conhecidos de cada provedor compatível, para quando a lista de modelos falha ou vem
+     * sem nenhum nome reconhecido (o app testa um a um e guarda o que responder).
+     */
+    fun knownVision(base: String): List<String> {
+        val b = base.lowercase()
+        return when {
+            b.contains("groq.com") -> listOf("meta-llama/llama-4-scout-17b-16e-instruct", "meta-llama/llama-4-maverick-17b-128e-instruct")
+            b.contains("x.ai") -> listOf("grok-4", "grok-2-vision-1212", "grok-2-vision-latest")
+            b.contains("openrouter") -> listOf("meta-llama/llama-4-scout:free", "google/gemma-3-27b-it:free", "qwen/qwen2.5-vl-72b-instruct:free")
+            b.contains("openai.com") -> listOf("gpt-4.1-mini", "gpt-4o-mini")
+            else -> emptyList()
         }
-        return null
+    }
+
+    /** Modelos do plano gratuito do Gemini (cada um com cota própria): entram como reserva dos descobertos. */
+    val GEMINI_FALLBACK = listOf("gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.0-flash-lite")
+
+    /** Descobertos (até 4 + 1 lite) seguidos das reservas do plano gratuito, sem repetir. */
+    fun geminiCandidates(discovered: List<String>): List<String> {
+        val ranked = rankGemini(discovered)
+        val top = ranked.filter { !it.contains("lite") }.take(4) + ranked.filter { it.contains("lite") }.take(1)
+        return (top + GEMINI_FALLBACK).distinct()
     }
 
     /** Escolhe um modelo de texto grande entre os que o provedor (Groq/xAI/OpenAI-compatível) lista. */
@@ -167,16 +206,67 @@ object AiClient {
         return (msg ?: s).replace("\n", " ").replace(Regex("\\s+"), " ").take(140)
     }
 
-    // ---------------------------------------------------------------- cotas do Gemini por modelo
+    // ---------------------------------------------------------------- cotas do Gemini por chave e modelo
 
     private fun blockPrefs(ctx: Context) = ctx.getSharedPreferences("ai_block", Context.MODE_PRIVATE)
 
-    /** Modelo com a cota DIÁRIA esgotada: não é tentado de novo até amanhã (economiza tempo e chamadas). */
-    private fun blockedToday(ctx: Context, model: String): Boolean = blockPrefs(ctx).getString(model, "") == today()
+    /** Rótulo curto e não secreto da chave (só os 4 últimos caracteres), para a tela e o diagnóstico. */
+    fun keyLabel(key: String): String = "…" + key.takeLast(4)
 
-    private fun blockForToday(ctx: Context, model: String) {
-        blockPrefs(ctx).edit().putString(model, today()).apply()
+    private fun keyHash(key: String): String = Integer.toHexString(key.hashCode())
+
+    private val PACIFIC: java.util.TimeZone = java.util.TimeZone.getTimeZone("America/Los_Angeles")
+
+    /** A cota gratuita do Gemini renova à meia-noite do horário do Pacífico (não à meia-noite daqui). */
+    fun quotaDay(now: Long = System.currentTimeMillis()): String {
+        val f = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US)
+        f.timeZone = PACIFIC
+        return f.format(java.util.Date(now))
     }
+
+    /** Próxima renovação da cota (meia-noite do Pacífico). */
+    fun quotaResetAt(now: Long = System.currentTimeMillis()): Long {
+        val c = java.util.Calendar.getInstance(PACIFIC)
+        c.timeInMillis = now
+        c.add(java.util.Calendar.DAY_OF_MONTH, 1)
+        c.set(java.util.Calendar.HOUR_OF_DAY, 0)
+        c.set(java.util.Calendar.MINUTE, 0)
+        c.set(java.util.Calendar.SECOND, 0)
+        c.set(java.util.Calendar.MILLISECOND, 0)
+        return c.timeInMillis
+    }
+
+    private fun resetText(): String =
+        java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(quotaResetAt()))
+
+    /** Chave+modelo com a cota DIÁRIA esgotada (ou chave recusada, ou modelo que não existe): não é tentado de novo. */
+    private fun blockedToday(ctx: Context, key: String, model: String): Boolean {
+        val p = blockPrefs(ctx)
+        val day = quotaDay()
+        if (p.getString(keyHash(key) + "|" + model, "") == day) return true
+        if (p.getString(keyHash(key) + "|*", "") == day) return true
+        return gone(ctx, model)
+    }
+
+    private fun gone(ctx: Context, model: String): Boolean =
+        (blockPrefs(ctx).getString("gone|$model", "")?.toLongOrNull() ?: 0L) > System.currentTimeMillis()
+
+    private fun blockForToday(ctx: Context, key: String, model: String) {
+        blockPrefs(ctx).edit().putString(keyHash(key) + "|" + model, quotaDay()).apply()
+    }
+
+    /** Chave recusada pelo Google (inválida, sem permissão, projeto sem a API): fora até a cota renovar. */
+    private fun blockKeyForToday(ctx: Context, key: String) {
+        blockPrefs(ctx).edit().putString(keyHash(key) + "|*", quotaDay()).apply()
+    }
+
+    /** Modelo que não existe mais (404): fora da lista por 7 dias. */
+    private fun markGone(ctx: Context, model: String) {
+        blockPrefs(ctx).edit().putString("gone|$model", (System.currentTimeMillis() + 7L * 86400000L).toString()).apply()
+    }
+
+    /** Modelo sobrecarregado (503) ou lento: vai para o fim da fila por alguns minutos. */
+    private val busyUntil = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     /** 429 por cota diária (ou plano sem cota) x limite por minuto (passa esperando alguns segundos). */
     private fun dailyQuota(body: String): Boolean {
@@ -196,18 +286,62 @@ object AiClient {
         return if (p.getString("day", "") == today()) p.getInt("count", 0) else 0
     }
 
-    /** Plano gratuito do Gemini: respeita intervalo mínimo e teto diário (só vale para o Gemini). */
-    private suspend fun throttleGemini(ctx: Context): String? = gate.withLock {
+    /** Plano gratuito do Gemini: respeita intervalo mínimo e teto diário (o teto vale por chave). */
+    private suspend fun throttleGemini(ctx: Context, keys: Int): String? = gate.withLock {
         val p = ctx.getSharedPreferences("ai_usage", Context.MODE_PRIVATE)
         val used = if (p.getString("day", "") == today()) p.getInt("count", 0) else 0
-        val cap = Settings.get(ctx, Settings.DAILY_CAP, "80").toIntOrNull() ?: 80
-        if (used >= cap) return@withLock "teto diário de $cap chamadas atingido"
+        val cap = (Settings.get(ctx, Settings.DAILY_CAP, "80").toIntOrNull() ?: 80) * keys.coerceAtLeast(1)
+        if (used >= cap) return@withLock "teto diário de $cap chamadas ao Gemini atingido (Ajustes → Teto diário)"
         val gap = if (System.currentTimeMillis() < slowUntil) 7000L else 1200L
         val wait = gap - (System.currentTimeMillis() - lastGeminiAt)
         if (wait > 0) delay(wait)
         lastGeminiAt = System.currentTimeMillis()
         p.edit().putString("day", today()).putInt("count", used + 1).apply()
         null
+    }
+
+    /** Modelos que serão tentados, sem consultar a rede (para saber se ainda há cota hoje). */
+    private fun cachedGeminiModels(ctx: Context): List<String> {
+        val setting = Settings.get(ctx, Settings.GEMINI_MODEL, Settings.DEFAULT_GEMINI_MODEL)
+        val fixed = if (setting.isNotBlank() && !setting.equals("auto", true)) listOf(setting) else emptyList()
+        val cached = Settings.get(ctx, Settings.GEMINI_RESOLVED, "").split(",").filter { it.isNotBlank() }
+        return (fixed + cached + ModelPicker.GEMINI_FALLBACK).distinct()
+    }
+
+    /** Ainda há alguma chave+modelo do Gemini com cota hoje? (sem gastar chamada) */
+    fun geminiAvailable(ctx: Context): Boolean {
+        val keys = Settings.geminiKeys(ctx)
+        if (keys.isEmpty()) return false
+        return cachedGeminiModels(ctx).any { m -> keys.any { k -> !blockedToday(ctx, k, m) } }
+    }
+
+    private fun exhaustedMsg(ctx: Context): String {
+        val n = Settings.geminiKeys(ctx).size
+        return "cota gratuita de hoje esgotada em todos os modelos d" + (if (n > 1) "as $n chaves" else "a chave") +
+            " (renova às ${resetText()}). Para continuar hoje, cole em Ajustes a chave de OUTRO projeto do Google AI Studio " +
+            "(separada por vírgula) ou uma chave do Groq."
+    }
+
+    /** Situação do Gemini para a tela de Ajustes. */
+    fun geminiStatus(ctx: Context): String {
+        val keys = Settings.geminiKeys(ctx)
+        if (keys.isEmpty()) return "sem chave"
+        val models = cachedGeminiModels(ctx)
+        val pairs = models.size * keys.size
+        val free = models.sumOf { m -> keys.count { k -> !blockedToday(ctx, k, m) } }
+        val busy = models.filter { (busyUntil[it] ?: 0L) > System.currentTimeMillis() }
+        return "${keys.size} chave(s) (${keys.joinToString { keyLabel(it) }}) • $free de $pairs combinações chave/modelo com cota hoje" +
+            (if (free < pairs) " • a cota renova às ${resetText()}" else "") +
+            (if (busy.isNotEmpty()) " • sobrecarregado agora: ${busy.joinToString()}" else "")
+    }
+
+    /** Linhas para o diagnóstico: bloqueios gravados (sem as chaves). */
+    fun blockDump(ctx: Context): JSONObject {
+        val out = JSONObject()
+        for ((k, v) in blockPrefs(ctx).all) out.put(k, v.toString())
+        out.put("quotaDay", quotaDay())
+        out.put("resetAt", quotaResetAt())
+        return out
     }
 
     // ---------------------------------------------------------------- descoberta de modelos
@@ -236,20 +370,25 @@ object AiClient {
         return out
     }
 
+    /** Modelo fixo dos Ajustes (se houver) + descobertos pela chave + reservas do plano gratuito. */
     private suspend fun geminiModels(ctx: Context, key: String, forceDiscover: Boolean): List<String> {
         val setting = Settings.get(ctx, Settings.GEMINI_MODEL, Settings.DEFAULT_GEMINI_MODEL)
-        if (setting.isNotBlank() && !setting.equals("auto", true)) return listOf(setting)
+        val fixed = if (setting.isNotBlank() && !setting.equals("auto", true)) listOf(setting) else emptyList()
         val cached = Settings.get(ctx, Settings.GEMINI_RESOLVED, "").split(",").filter { it.isNotBlank() }
-        if (cached.isNotEmpty() && !forceDiscover) return cached
-        val ranked = withContext(Dispatchers.IO) {
-            try { ModelPicker.rankGemini(listGemini(key)) } catch (e: Exception) { emptyList<String>() }
-        }.let { r ->
-            // os 4 melhores + um "lite" (cota separada) como reserva
-            val top = r.filter { !it.contains("lite") }.take(4)
-            top + r.filter { it.contains("lite") }.take(1)
-        }
-        if (ranked.isNotEmpty()) Settings.put(ctx, Settings.GEMINI_RESOLVED, ranked.joinToString(","))
-        return ranked.ifEmpty { cached.ifEmpty { listOf("gemini-2.5-flash") } }
+        val found = if (cached.isEmpty() || forceDiscover) {
+            val names = withContext(Dispatchers.IO) { try { listGemini(key) } catch (e: Exception) { emptyList<String>() } }
+            if (names.isNotEmpty()) ModelPicker.geminiCandidates(names).also { Settings.put(ctx, Settings.GEMINI_RESOLVED, it.joinToString(",")) }
+            else cached
+        } else cached
+        return (fixed + found + ModelPicker.GEMINI_FALLBACK).distinct()
+    }
+
+    /** Pares chave+modelo com cota: o melhor modelo em todas as chaves primeiro; sobrecarregados no fim. */
+    private fun geminiPairs(ctx: Context, keys: List<String>, models: List<String>): List<Pair<String, String>> {
+        val now = System.currentTimeMillis()
+        val pairs = ArrayList<Pair<String, String>>()
+        for (m in models) for (k in keys) if (!blockedToday(ctx, k, m)) pairs.add(Pair(k, m))
+        return pairs.filter { (busyUntil[it.second] ?: 0L) <= now } + pairs.filter { (busyUntil[it.second] ?: 0L) > now }
     }
 
     private suspend fun compatModel(ctx: Context, base: String, key: String, forceDiscover: Boolean): String {
@@ -266,22 +405,35 @@ object AiClient {
 
     // ---------------------------------------------------------------- provedores
 
-    private suspend fun gemini(ctx: Context, prompt: String, jpeg: ByteArray?): Reply = withContext(Dispatchers.IO) {
-        val key = Settings.get(ctx, Settings.GEMINI_KEY, "")
-        if (key.isBlank()) return@withContext Reply(false, null, "chave do Gemini não configurada")
-        var models = geminiModels(ctx, key, false).filter { !blockedToday(ctx, it) }
-        if (models.isEmpty()) return@withContext Reply(false, null, "cota diária do Gemini esgotada em todos os modelos (volta amanhã)")
+    private suspend fun gemini(ctx: Context, prompt: String, jpeg: ByteArray?, deadline: Long): Reply = withContext(Dispatchers.IO) {
+        val keys = Settings.geminiKeys(ctx)
+        if (keys.isEmpty()) return@withContext Reply(false, null, "chave do Gemini não configurada")
+        var models = geminiModels(ctx, keys.first(), false)
+        var pairs = geminiPairs(ctx, keys, models)
+        if (pairs.isEmpty()) return@withContext Reply(false, null, exhaustedMsg(ctx))
+        val capErr = throttleGemini(ctx, keys.size)
+        if (capErr != null) return@withContext Reply(false, null, capErr)
         var rediscovered = false
         var waited = false
         var withThinking = true
         var lastErr = "falha desconhecida"
         var idx = 0
-        val capErr = throttleGemini(ctx)
-        if (capErr != null) return@withContext Reply(false, null, capErr)
-        while (idx < models.size) {
-            val model = models[idx]
+        var attempts = 0
+        while (idx < pairs.size && attempts < 12) {
+            if (System.currentTimeMillis() > deadline) {
+                lastErr = "tempo total esgotado ($lastErr)"
+                break
+            }
+            val (key, model) = pairs[idx]
+            // a chave pode ter sido recusada numa tentativa anterior desta mesma chamada
+            if (blockedToday(ctx, key, model)) {
+                idx++
+                continue
+            }
+            attempts++
             Diag.aiCalls.incrementAndGet()
-            AiStatus.set("Gemini ($model) — modelo ${idx + 1} de ${models.size}")
+            val tag = if (keys.size > 1) "$model, chave ${keyLabel(key)}" else model
+            AiStatus.set("Gemini ($tag) — tentativa ${idx + 1} de ${pairs.size}")
             val parts = JSONArray().put(JSONObject().put("text", prompt))
             if (jpeg != null) {
                 parts.put(JSONObject().put("inline_data", JSONObject().put("mime_type", "image/jpeg").put("data", Base64.encodeToString(jpeg, Base64.NO_WRAP))))
@@ -294,46 +446,65 @@ object AiClient {
                 if (r.code in 200..299) {
                     val t = JSONObject(r.body).optJSONArray("candidates")?.optJSONObject(0)
                         ?.optJSONObject("content")?.optJSONArray("parts")?.optJSONObject(0)?.optString("text")
-                    if (t.isNullOrBlank()) return@withContext Reply(false, null, "resposta vazia")
-                    // Este modelo respondeu: na próxima chamada ele é o primeiro a ser tentado.
-                    if (idx > 0) Settings.put(ctx, Settings.GEMINI_RESOLVED, ModelPicker.learnedOrder(models, listOf(model)).joinToString(","))
-                    return@withContext Reply(true, t, null)
-                }
-                lastErr = "$model: HTTP ${r.code} " + short(r.body)
-                if (r.code == 429) {
-                    if (dailyQuota(r.body)) {
-                        blockForToday(ctx, model)
-                        lastErr = "$model: cota diária esgotada"
-                    } else {
-                        slowUntil = System.currentTimeMillis() + 600000L
-                        val wait = retryDelayMs(r.body)
-                        if (!waited && wait != null && wait <= 20000L) {
-                            waited = true
-                            AiStatus.set("Gemini ($model): limite por minuto, aguardando ${wait / 1000}s…")
-                            delay(wait + 500L)
+                    if (!t.isNullOrBlank()) {
+                        busyUntil.remove(model)
+                        // Este modelo respondeu: na próxima chamada ele é o primeiro a ser tentado.
+                        // (a ordem guarda todos os modelos, inclusive os sem cota hoje: amanhã eles voltam)
+                        if (models.firstOrNull() != model) Settings.put(ctx, Settings.GEMINI_RESOLVED, ModelPicker.learnedOrder(models, listOf(model)).joinToString(","))
+                        return@withContext Reply(true, t, null)
+                    }
+                    lastErr = "$tag: resposta vazia"
+                } else {
+                    lastErr = "$tag: HTTP ${r.code} " + short(r.body)
+                    val b = r.body.lowercase()
+                    when {
+                        r.code == 429 && dailyQuota(r.body) -> {
+                            blockForToday(ctx, key, model)
+                            lastErr = "$tag: cota diária esgotada"
+                        }
+                        r.code == 429 -> {
+                            slowUntil = System.currentTimeMillis() + 600000L
+                            val wait = retryDelayMs(r.body)
+                            if (!waited && wait != null && wait <= 20000L && System.currentTimeMillis() + wait < deadline) {
+                                waited = true
+                                AiStatus.set("Gemini ($tag): limite por minuto, aguardando ${wait / 1000}s…")
+                                delay(wait + 500L)
+                                continue
+                            }
+                        }
+                        r.code == 400 && withThinking && b.contains("thinking") -> {
+                            withThinking = false
                             continue
+                        }
+                        r.code == 401 || r.code == 403 || b.contains("api_key_invalid") || b.contains("api key not valid") -> {
+                            blockKeyForToday(ctx, key)
+                            lastErr = "chave ${keyLabel(key)} recusada pelo Google (inválida ou sem permissão)"
+                        }
+                        r.code == 404 || (r.code == 400 && b.contains("model") && (b.contains("not found") || b.contains("not supported"))) -> {
+                            markGone(ctx, model)
+                            if (!rediscovered) {
+                                rediscovered = true
+                                models = geminiModels(ctx, keys.first(), true)
+                                pairs = geminiPairs(ctx, keys, models)
+                                idx = 0
+                                continue
+                            }
+                        }
+                        r.code >= 500 -> {
+                            busyUntil[model] = System.currentTimeMillis() + 300000L
+                            lastErr = "$tag: sobrecarregado no Google (HTTP ${r.code})"
                         }
                     }
                 }
-                if (r.code == 400 && withThinking && r.body.contains("thinking", true)) {
-                    withThinking = false
-                    continue
-                }
-                if ((r.code == 404 || r.code == 400) && !rediscovered && r.body.contains("model", true)) {
-                    rediscovered = true
-                    models = geminiModels(ctx, key, true).filter { !blockedToday(ctx, it) }
-                    idx = 0
-                    continue
-                }
-                if (r.code != 429 && r.code != 503 && r.code != 500) break
             } catch (e: SocketTimeoutException) {
-                lastErr = "$model: tempo esgotado (${READ_MS / 1000}s)"
+                busyUntil[model] = System.currentTimeMillis() + 180000L
+                lastErr = "$tag: tempo esgotado (${READ_MS / 1000}s)"
             } catch (e: Exception) {
-                lastErr = "$model: " + (e.message ?: e.javaClass.simpleName)
+                lastErr = "$tag: " + (e.message ?: e.javaClass.simpleName)
             }
             idx++
         }
-        Reply(false, null, lastErr)
+        if (!geminiAvailable(ctx)) Reply(false, null, exhaustedMsg(ctx)) else Reply(false, null, lastErr)
     }
 
     private suspend fun claude(ctx: Context, prompt: String, jpeg: ByteArray?): Reply = withContext(Dispatchers.IO) {
@@ -367,62 +538,101 @@ object AiClient {
         }
     }
 
-    private suspend fun compatVisionModel(ctx: Context, base: String, key: String): String? {
-        val cached = Settings.get(ctx, Settings.COMPAT_VISION, "")
-        // "none@instante": sem modelo com visão na última consulta; tenta de novo depois de 12 h
-        if (cached.startsWith("none")) {
-            val at = cached.substringAfter("@", "0").toLongOrNull() ?: 0L
-            if (System.currentTimeMillis() - at < 12L * 3600000L) return null
-        } else if (cached.isNotBlank()) return cached
-        val picked = withContext(Dispatchers.IO) {
-            try { ModelPicker.pickCompatVision(listCompat(base, key)) } catch (e: Exception) { null }
-        }
-        Settings.put(ctx, Settings.COMPAT_VISION, picked ?: ("none@" + System.currentTimeMillis()))
-        return picked
+    /** Lista de modelos do provedor alternativo guardada por 12 h (evita uma consulta a cada imagem). */
+    @Volatile private var compatList: Pair<Long, List<String>>? = null
+
+    /**
+     * Modelos com visão a tentar: o que já respondeu antes, os que o provedor lista e os conhecidos do provedor.
+     * Uma lista que falhou NÃO vira "sem visão" (antes isso bloqueava a leitura de imagem por 12 h).
+     */
+    private suspend fun compatVisionModels(ctx: Context, base: String, key: String): List<String> {
+        val cached = Settings.get(ctx, Settings.COMPAT_VISION, "").takeIf { it.isNotBlank() && !it.startsWith("none") }
+        val now = System.currentTimeMillis()
+        val listed = compatList?.takeIf { now - it.first < 12L * 3600000L }?.second ?: withContext(Dispatchers.IO) {
+            try { listCompat(base, key) } catch (e: Exception) { emptyList<String>() }
+        }.also { if (it.isNotEmpty()) compatList = Pair(now, it) }
+        val known = ModelPicker.knownVision(base).filter { listed.isEmpty() || it in listed }
+        return (listOfNotNull(cached) + ModelPicker.rankCompatVision(listed) + known).distinct().take(4)
     }
 
-    private suspend fun compat(ctx: Context, prompt: String, jpeg: ByteArray?): Reply = withContext(Dispatchers.IO) {
+    private fun compatBody(model: String, prompt: String, jpeg: ByteArray?): String {
+        val messages = JSONArray()
+        if (jpeg != null) {
+            val content = JSONArray()
+            content.put(JSONObject().put("type", "text").put("text", prompt))
+            content.put(
+                JSONObject().put("type", "image_url").put(
+                    "image_url", JSONObject().put("url", "data:image/jpeg;base64," + Base64.encodeToString(jpeg, Base64.NO_WRAP))
+                )
+            )
+            messages.put(JSONObject().put("role", "user").put("content", content))
+        } else {
+            messages.put(JSONObject().put("role", "user").put("content", prompt))
+        }
+        val req = JSONObject().put("model", model).put("temperature", 0.2).put("messages", messages)
+        if (jpeg == null) req.put("response_format", JSONObject().put("type", "json_object"))
+        return req.toString()
+    }
+
+    private suspend fun compat(ctx: Context, prompt: String, jpeg: ByteArray?, deadline: Long): Reply = withContext(Dispatchers.IO) {
         val key = Settings.get(ctx, Settings.COMPAT_KEY, "")
         if (key.isBlank()) return@withContext Reply(false, null, "chave alternativa não configurada")
         val base = Settings.get(ctx, Settings.COMPAT_BASE, Settings.DEFAULT_COMPAT_BASE).trimEnd('/')
-        var model: String
         if (jpeg != null) {
-            model = compatVisionModel(ctx, base, key) ?: return@withContext Reply(false, null, "este provedor não lista modelo com visão")
-        } else {
-            model = compatModel(ctx, base, key, false)
+            val models = compatVisionModels(ctx, base, key)
+            if (models.isEmpty()) {
+                return@withContext Reply(false, null, "este provedor não tem modelo que leia imagem (Groq tem: use a URL https://api.groq.com/openai/v1)")
+            }
+            var lastErr = "falha desconhecida"
+            for (model in models) {
+                if (System.currentTimeMillis() > deadline) break
+                AiStatus.set("Provedor alternativo ($model) com imagem")
+                Diag.aiCalls.incrementAndGet()
+                try {
+                    val r = request("POST", "$base/chat/completions", mapOf("Authorization" to "Bearer $key"), compatBody(model, prompt, jpeg))
+                    if (r.code in 200..299) {
+                        val t = JSONObject(r.body).optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content")
+                        if (!t.isNullOrBlank()) {
+                            Settings.put(ctx, Settings.COMPAT_VISION, model)
+                            return@withContext Reply(true, t, null)
+                        }
+                        lastErr = "$model: resposta vazia"
+                    } else {
+                        lastErr = "$model: HTTP ${r.code} " + short(r.body)
+                        // modelo que não existe / não aceita imagem: esquece o guardado e tenta o próximo
+                        if ((r.code == 404 || r.code == 400) && Settings.get(ctx, Settings.COMPAT_VISION, "") == model) {
+                            Settings.put(ctx, Settings.COMPAT_VISION, "")
+                        }
+                        if (r.code == 401 || r.code == 403) break
+                    }
+                } catch (e: SocketTimeoutException) {
+                    lastErr = "$model: tempo esgotado (${READ_MS / 1000}s)"
+                } catch (e: Exception) {
+                    lastErr = "$model: " + (e.message ?: e.javaClass.simpleName)
+                }
+            }
+            return@withContext Reply(false, null, lastErr)
         }
+        var model = compatModel(ctx, base, key, false)
         var rediscovered = false
         var lastErr = "falha desconhecida"
         for (attempt in 1..2) {
-            AiStatus.set("Provedor alternativo ($model)" + (if (jpeg != null) " com imagem" else ""))
-            val messages = JSONArray()
-            if (jpeg != null) {
-                val content = JSONArray()
-                content.put(JSONObject().put("type", "text").put("text", prompt))
-                content.put(
-                    JSONObject().put("type", "image_url").put(
-                        "image_url", JSONObject().put("url", "data:image/jpeg;base64," + Base64.encodeToString(jpeg, Base64.NO_WRAP))
-                    )
-                )
-                messages.put(JSONObject().put("role", "user").put("content", content))
-            } else {
-                messages.put(JSONObject().put("role", "user").put("content", prompt))
-            }
-            val req = JSONObject().put("model", model).put("temperature", 0.2).put("messages", messages)
-            if (jpeg == null) req.put("response_format", JSONObject().put("type", "json_object"))
+            if (System.currentTimeMillis() > deadline) break
+            AiStatus.set("Provedor alternativo ($model)")
+            Diag.aiCalls.incrementAndGet()
             try {
-                val r = request("POST", "$base/chat/completions", mapOf("Authorization" to "Bearer $key"), req.toString())
+                val r = request("POST", "$base/chat/completions", mapOf("Authorization" to "Bearer $key"), compatBody(model, prompt, null))
                 if (r.code in 200..299) {
                     val t = JSONObject(r.body).optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content")
                     return@withContext if (t.isNullOrBlank()) Reply(false, null, "resposta vazia") else Reply(true, t, null)
                 }
-                lastErr = "HTTP ${r.code}: " + short(r.body)
-                if ((r.code == 404 || r.code == 400) && !rediscovered && jpeg == null) {
+                lastErr = "$model: HTTP ${r.code} " + short(r.body)
+                if ((r.code == 404 || r.code == 400) && !rediscovered) {
                     rediscovered = true
                     model = compatModel(ctx, base, key, true)
                     continue
                 }
-                if (r.code != 429 && r.code != 503) break
+                if (r.code != 429 && r.code < 500) break
             } catch (e: SocketTimeoutException) {
                 lastErr = "tempo esgotado (${READ_MS / 1000}s)"
             } catch (e: Exception) {
@@ -447,11 +657,11 @@ object AiClient {
 
     /**
      * Ordem: o último provedor que respondeu vem primeiro (aprendido), depois o preferido nos Ajustes e o resto.
-     * Só entram os que têm chave.
+     * Só entram os que têm chave. Gemini sem cota hoje em nenhuma chave vai para o fim (e nem é chamado).
      */
     fun providerOrder(ctx: Context, hasImage: Boolean): List<String> {
         val have = ArrayList<String>()
-        if (Settings.get(ctx, Settings.GEMINI_KEY, "").isNotBlank()) have.add("gemini")
+        if (Settings.geminiKeys(ctx).isNotEmpty()) have.add("gemini")
         if (Settings.get(ctx, Settings.CLAUDE_KEY, "").isNotBlank()) have.add("claude")
         if (Settings.get(ctx, Settings.COMPAT_KEY, "").isNotBlank()) have.add("compat")
         val pref = Settings.get(ctx, Settings.PREFERRED, "gemini")
@@ -459,14 +669,17 @@ object AiClient {
         val ordered = ModelPicker.learnedOrder(base, winners(ctx, hasImage))
         // quem acabou de falhar vai para o fim da fila (evita esperar de novo um provedor sobrecarregado)
         val now = System.currentTimeMillis()
-        return ordered.filter { (cooldownUntil[it] ?: 0L) <= now } + ordered.filter { (cooldownUntil[it] ?: 0L) > now }
+        val geminiOut = "gemini" in ordered && !geminiAvailable(ctx)
+        fun late(p: String) = (cooldownUntil[p] ?: 0L) > now || (p == "gemini" && geminiOut)
+        return ordered.filter { !late(it) } + ordered.filter { late(it) }
     }
 
-    suspend fun askProvider(ctx: Context, provider: String, prompt: String, jpeg: ByteArray?): Reply = when (provider) {
-        "gemini" -> gemini(ctx, prompt, jpeg)
-        "claude" -> claude(ctx, prompt, jpeg)
-        else -> compat(ctx, prompt, jpeg)
-    }
+    suspend fun askProvider(ctx: Context, provider: String, prompt: String, jpeg: ByteArray?, deadline: Long = System.currentTimeMillis() + 150000L): Reply =
+        when (provider) {
+            "gemini" -> gemini(ctx, prompt, jpeg, deadline)
+            "claude" -> claude(ctx, prompt, jpeg)
+            else -> compat(ctx, prompt, jpeg, deadline)
+        }
 
     private fun label(p: String): String = when (p) {
         "gemini" -> "Gemini"
@@ -474,10 +687,10 @@ object AiClient {
         else -> "Alternativo"
     }
 
-    /** Tenta cada provedor com chave, em ordem, com orçamento total de tempo. Nunca fica preso. */
     fun hasAnyKey(ctx: Context): Boolean =
         listOf(Settings.GEMINI_KEY, Settings.CLAUDE_KEY, Settings.COMPAT_KEY).any { Settings.get(ctx, it, "").isNotBlank() }
 
+    /** Tenta cada provedor com chave, em ordem, com orçamento total de tempo. Nunca fica preso. */
     suspend fun ask(ctx: Context, prompt: String, jpeg: ByteArray?, budgetMs: Long = 150000L): Reply {
         val deadline = System.currentTimeMillis() + budgetMs
         val order = providerOrder(ctx, jpeg != null)
@@ -488,8 +701,13 @@ object AiClient {
                 errors.add("tempo total esgotado")
                 break
             }
+            // Gemini sem cota em todas as chaves/modelos: não gasta chamada nem tempo, só avisa
+            if (p == "gemini" && !geminiAvailable(ctx)) {
+                errors.add("Gemini: " + exhaustedMsg(ctx))
+                continue
+            }
             val started = System.currentTimeMillis()
-            val r = askProvider(ctx, p, prompt, jpeg)
+            val r = askProvider(ctx, p, prompt, jpeg, deadline)
             if (r.ok) {
                 cooldownUntil.remove(p)
                 learn(ctx, jpeg != null, p, true)
@@ -501,7 +719,9 @@ object AiClient {
             errors.add(label(p) + " (" + ((System.currentTimeMillis() - started) / 1000) + "s): " + (r.error ?: "erro"))
         }
         AiStatus.set("")
-        return Reply(false, null, errors.joinToString(" | "))
+        val all = errors.joinToString(" | ")
+        Diag.trace("IA falhou: $all")
+        return Reply(false, null, all)
     }
 
     /** Teste rápido de cada provedor configurado: mostra se responde e quanto tempo leva. */
@@ -510,16 +730,21 @@ object AiClient {
         if (order.isEmpty()) return "Nenhuma chave configurada."
         val lines = ArrayList<String>()
         for (p in order) {
+            if (p == "gemini" && !geminiAvailable(ctx)) {
+                lines.add("✘ Gemini: " + exhaustedMsg(ctx))
+                continue
+            }
             val t0 = System.currentTimeMillis()
             val r = askProvider(ctx, p, "Responda somente com o JSON {\"ok\": true}", null)
             val secs = (System.currentTimeMillis() - t0) / 100 / 10.0
             val model = when (p) {
-                "gemini" -> Settings.get(ctx, Settings.GEMINI_RESOLVED, "").ifBlank { Settings.get(ctx, Settings.GEMINI_MODEL, "auto") }
+                "gemini" -> Settings.get(ctx, Settings.GEMINI_RESOLVED, "").substringBefore(",").ifBlank { Settings.get(ctx, Settings.GEMINI_MODEL, "auto") }
                 "claude" -> Settings.get(ctx, Settings.CLAUDE_MODEL, Settings.DEFAULT_CLAUDE_MODEL)
                 else -> Settings.get(ctx, Settings.COMPAT_RESOLVED, "").ifBlank { Settings.get(ctx, Settings.COMPAT_MODEL, "auto") }
             }
             lines.add(if (r.ok) "✔ ${label(p)} ($model): respondeu em ${secs}s" else "✘ ${label(p)} ($model): ${r.error}")
         }
+        if ("gemini" in order) lines.add("Gemini: " + geminiStatus(ctx))
         AiStatus.set("")
         return lines.joinToString("\n")
     }
@@ -527,11 +752,11 @@ object AiClient {
     /** Pergunta ao Gemini com busca no Google (fontes atuais da internet). Devolve o texto (com JSON no meio). */
     suspend fun askGrounded(ctx: Context, prompt: String): Reply = withContext(Dispatchers.IO) {
         val errs = ArrayList<String>()
-        val key = Settings.get(ctx, Settings.GEMINI_KEY, "")
-        if (key.isNotBlank()) {
-            val g = groundedGemini(key, prompt, (geminiModels(ctx, key, false).filter { !blockedToday(ctx, it) && !it.contains("lite") } +
-                // modelos com busca no Google no plano gratuito (cota própria)
-                listOf("gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite")).distinct())
+        val keys = Settings.geminiKeys(ctx)
+        if (keys.isNotEmpty()) {
+            // modelos com busca no Google no plano gratuito (a busca tem cota própria, separada da normal)
+            val models = (geminiModels(ctx, keys.first(), false).filter { !it.contains("lite") } + ModelPicker.GEMINI_FALLBACK).distinct()
+            val g = groundedGemini(ctx, keys, prompt, models)
             if (g.ok) return@withContext g
             errs.add("Gemini: " + g.error)
         }
@@ -539,8 +764,9 @@ object AiClient {
         val ck = Settings.get(ctx, Settings.COMPAT_KEY, "")
         val base = Settings.get(ctx, Settings.COMPAT_BASE, Settings.DEFAULT_COMPAT_BASE).trimEnd('/')
         if (ck.isNotBlank() && base.contains("groq.com")) {
-            for (model in listOf("groq/compound", "compound-beta")) {
+            for (model in listOf("groq/compound", "groq/compound-mini", "compound-beta")) {
                 AiStatus.set("Pesquisando a comunidade do OSM na internet (Groq $model)…")
+                Diag.aiCalls.incrementAndGet()
                 try {
                     val body = JSONObject().put("model", model).put("temperature", 0.2)
                         .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", prompt))).toString()
@@ -551,7 +777,8 @@ object AiClient {
                             AiStatus.set("")
                             return@withContext Reply(true, t, null)
                         }
-                    } else errs.add("Groq $model: HTTP ${r.code}")
+                        errs.add("Groq $model: resposta vazia")
+                    } else errs.add("Groq $model: HTTP ${r.code} " + short(r.body))
                 } catch (e: Exception) {
                     errs.add("Groq $model: " + (e.message ?: e.javaClass.simpleName))
                 }
@@ -561,11 +788,17 @@ object AiClient {
         Reply(false, null, errs.joinToString(" | ").ifBlank { "nenhuma IA com busca na internet configurada" })
     }
 
-    private fun groundedGemini(key: String, prompt: String, models: List<String>): Reply {
+    private fun groundedGemini(ctx: Context, keys: List<String>, prompt: String, models: List<String>): Reply {
         var lastErr = "falha desconhecida"
-        for (model in models.take(5)) {
+        var attempts = 0
+        for (model in models) for (key in keys) {
+            if (attempts >= 6) return Reply(false, null, lastErr)
+            // a busca tem cota diária própria: bloqueia só "busca" daquele modelo naquela chave
+            if (blockedToday(ctx, key, "search:$model") || gone(ctx, model)) continue
+            attempts++
             Diag.aiCalls.incrementAndGet()
-            AiStatus.set("Pesquisando a comunidade do OSM na internet ($model)…")
+            val tag = if (keys.size > 1) "$model, chave ${keyLabel(key)}" else model
+            AiStatus.set("Pesquisando a comunidade do OSM na internet ($tag)…")
             val body = JSONObject()
                 .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
                 .put("tools", JSONArray().put(JSONObject().put("google_search", JSONObject())))
@@ -581,12 +814,27 @@ object AiClient {
                         AiStatus.set("")
                         return Reply(true, sb.toString(), null)
                     }
-                    lastErr = "resposta vazia ($model)"
+                    lastErr = "resposta vazia ($tag)"
                 } else {
-                    lastErr = (if (r.code == 429) "cota da busca esgotada" else "HTTP ${r.code}") + " ($model)"
+                    val b = r.body.lowercase()
+                    lastErr = when {
+                        r.code == 429 -> {
+                            if (dailyQuota(r.body)) blockForToday(ctx, key, "search:$model")
+                            "cota da busca esgotada ($tag)"
+                        }
+                        r.code == 401 || r.code == 403 || b.contains("api key not valid") -> {
+                            blockKeyForToday(ctx, key)
+                            "chave ${keyLabel(key)} recusada"
+                        }
+                        r.code == 404 -> {
+                            markGone(ctx, model)
+                            "modelo não existe ($model)"
+                        }
+                        else -> "HTTP ${r.code} ($tag) " + short(r.body)
+                    }
                 }
             } catch (e: Exception) {
-                lastErr = (e.message ?: e.javaClass.simpleName) + " ($model)"
+                lastErr = (e.message ?: e.javaClass.simpleName) + " ($tag)"
             }
         }
         return Reply(false, null, lastErr)
@@ -598,7 +846,43 @@ object AiClient {
         val a = s.indexOf('{')
         val b = s.lastIndexOf('}')
         if (a < 0 || b <= a) return null
-        return try { JSONObject(s.substring(a, b + 1)) } catch (e: Exception) { null }
+        try { return JSONObject(s.substring(a, b + 1)) } catch (e: Exception) { }
+        // Texto com mais de um bloco (ex.: resposta da busca com explicação e citações): pega o maior objeto válido.
+        var best: JSONObject? = null
+        var bestLen = 0
+        var i = s.indexOf('{')
+        while (i >= 0) {
+            var depth = 0
+            var inStr = false
+            var esc = false
+            var end = -1
+            for (j in i until s.length) {
+                val c = s[j]
+                if (inStr) {
+                    if (esc) esc = false else if (c == '\\') esc = true else if (c == '"') inStr = false
+                    continue
+                }
+                if (c == '"') inStr = true
+                else if (c == '{') depth++
+                else if (c == '}') {
+                    depth--
+                    if (depth == 0) {
+                        end = j
+                        break
+                    }
+                }
+            }
+            if (end < 0) break
+            if (end - i + 1 > bestLen) {
+                val o = try { JSONObject(s.substring(i, end + 1)) } catch (e: Exception) { null }
+                if (o != null) {
+                    best = o
+                    bestLen = end - i + 1
+                }
+            }
+            i = s.indexOf('{', end + 1)
+        }
+        return best
     }
 }
 
@@ -695,6 +979,15 @@ object AiMapper {
 object Processor {
     data class ReadResult(val state: String, val changed: Int, val note: String)
 
+    private const val WAITING = "aguardando a IA voltar: "
+
+    /** Falha que passa sozinha (cota do dia, limite por minuto, servidor sobrecarregado, rede lenta). */
+    fun transient(err: String): Boolean {
+        val e = err.lowercase()
+        return listOf("cota", "teto diário", "http 429", "http 500", "http 502", "http 503", "http 504", "sobrecarregad", "tempo esgotado",
+            "overloaded", "unable to resolve host", "timeout", "failed to connect").any { e.contains(it) }
+    }
+
     private suspend fun readScreen(ctx: Context, repo: Repo, s: ScreenEntity): ReadResult {
         val hasVision = Settings.get(ctx, Settings.GEMINI_KEY, "").isNotBlank() || Settings.get(ctx, Settings.CLAUDE_KEY, "").isNotBlank() ||
             Settings.get(ctx, Settings.COMPAT_KEY, "").isNotBlank()
@@ -710,6 +1003,8 @@ object Processor {
         if (!reply.ok || json == null) {
             val err = reply.error ?: "IA devolveu JSON inválido"
             Diag.lastError = err
+            // Sem cota / sobrecarga / tempo: a tela continua na fila e é lida quando a IA voltar (não se perde).
+            if (!reply.ok && transient(err)) return ReadResult("pending", 0, WAITING + err.take(160))
             return ReadResult("failed", 0, err.take(200))
         }
         val now = System.currentTimeMillis()
@@ -741,10 +1036,17 @@ object Processor {
         var skipped = 0
         var noData = 0
         var lastFail = ""
+        var waiting = 0
         for ((i, s) in pending.withIndex()) {
             ProcessState.label("Lendo tela ${i + 1} de ${pending.size} com IA…")
             val r = readScreen(ctx, repo, s)
             dao.updateScreenAi(s.id, r.state, s.extracted + r.changed, r.note)
+            if (r.state == "pending" && r.note.startsWith(WAITING)) {
+                // IA indisponível agora: não insiste nas outras telas (ficam na fila para a próxima vez)
+                waiting = pending.size - i
+                lastFail = r.note.removePrefix(WAITING)
+                break
+            }
             when {
                 r.state == "failed" -> {
                     failed++
@@ -765,7 +1067,8 @@ object Processor {
                 "Telas reprocessadas: $fixed",
                 if (pending.isEmpty()) "IA: nada pendente" else "IA: $applied campos aplicados",
                 if (noData > 0) "$noData tela(s) sem relatório do rival" else null,
-                if (failed > 0) "$failed não lida(s) pela IA (${lastFail.take(60)})" else null,
+                if (failed > 0) "$failed não lida(s) pela IA (${lastFail.take(90)})" else null,
+                if (waiting > 0) "$waiting tela(s) guardada(s) para ler quando a IA voltar (${lastFail.take(90)})" else null,
                 if (skipped > 0) "$skipped ignorada(s)" else null
             ).joinToString(" • ") +
                 (if (gone > 0) " • $gone jogador(es) que não existem mais saíram do elenco" else "")
@@ -818,69 +1121,154 @@ object Processor {
  */
 object MetaRefresh {
     private const val KIND = "metaremote"
+    /** Última resposta da pesquisa (texto cru + o que foi aproveitado), para o diagnóstico exportado. */
+    private const val LAST = "metaremote_last"
     @Volatile var running = false
 
     suspend fun remote(repo: Repo): JSONObject? = repo.dao.plan(0, KIND)?.json?.let { runCatching { JSONObject(it) }.getOrNull() }
 
-    private fun prompt(): String =
+    private val BASES = listOf("4-3-3", "4-4-2", "4-2-3-1", "4-5-1", "5-4-1", "5-3-2", "3-4-3", "5-2-3", "3-5-2")
+
+    fun prompt(): String =
         "Pesquise na internet (fórum oficial do Online Soccer Manager, osmnextlevel.com, osmcoach.com, osmtacticsassistant.com, " +
-            "osmguide.com, vídeos do YouTube) as táticas que a comunidade recomenda HOJE no OSM (temporada atual) e responda com " +
-            "um JSON {\"rules\": {...}}. Chaves das regras: \"U|<formação base do rival>\" (meu time mais fraco), \"E|...\" (parelho), " +
-            "\"F|...\" (meu time mais forte), com formação base do rival em [4-3-3, 4-4-2, 4-2-3-1, 4-5-1, 5-4-1, 5-3-2, 3-4-3, 5-2-3, 3-5-2, ?] " +
-            "(? = desconhecida). Cada regra: formation (uma de ${Formations.OSM}), style (um de ${Osm.STYLES}), pressure, mentality " +
-            "(o controle Estilo), tempo (0 a 100, jogando em casa), attack (um de ${Osm.ATTACK}), mid (um de ${Osm.MIDFIELD}), " +
-            "def (um de ${Osm.DEFENSE}), marking (um de ${Osm.MARKING}), offside (Sim/Não), source (site). Use só o que achar nas fontes; " +
-            "se não houver dado para uma situação, omita a chave. Responda APENAS o JSON."
+            "osmguide.com, Reddit r/OnlineSoccerManager, vídeos do YouTube) as táticas que a comunidade recomenda HOJE no OSM " +
+            "(Online Soccer Manager) para cada situação. Situação = relação de força + formação do rival: \"U\" (meu time MAIS FRACO), " +
+            "\"E\" (forças parecidas) ou \"F\" (meu time MAIS FORTE), e a formação base do rival em $BASES. " +
+            "Responda SOMENTE com um JSON neste formato exato (valores em português como no jogo; os três controles são números de 0 a 100):\n" +
+            "{\"rules\": {\"F|4-4-2\": {\"formation\": \"4-3-3 A\", \"style\": \"Jogar pelas alas\", \"pressure\": 70, \"mentality\": 74, " +
+            "\"tempo\": 65, \"attack\": \"Atacar apenas\", \"mid\": \"Manter posições\", \"def\": \"Defender atrás\", \"marking\": \"À zona\", " +
+            "\"offside\": \"Não\", \"source\": \"osmnextlevel.com\"}, \"U|4-3-3\": {...}}}\n" +
+            "formation: uma de ${Formations.OSM}. style: um de ${Osm.STYLES}. attack: um de ${Osm.ATTACK}. mid: um de ${Osm.MIDFIELD}. " +
+            "def: um de ${Osm.DEFENSE}. marking: um de ${Osm.MARKING}. Use \"?\" no lugar da formação do rival para a regra geral " +
+            "daquela relação de força (ex.: \"U|?\"). Traga o máximo de situações que as fontes cobrirem (ideal: as 3 relações " +
+            "de força para cada formação). Nada de texto fora do JSON."
+
+    /** "U|4-3-3", "weaker | 4-3-3 A", "F:442" -> "U|4-3-3" / "F|4-4-2"; null se não der para entender. */
+    fun normKey(raw: String): String? {
+        val parts = raw.trim().split(Regex("\\s*[|:/]\\s*"), limit = 2)
+        if (parts.size != 2) return null
+        val r = Txt.norm(parts[0])
+        val rel = when {
+            r == "u" || r.startsWith("under") || r.contains("weak") || r.contains("fraco") || r.contains("azar") -> "U"
+            r == "e" || r.startsWith("even") || r.startsWith("equal") || r.contains("parelh") || r.contains("igual") || r.contains("equilib") -> "E"
+            r == "f" || r.startsWith("fav") || r.contains("strong") || r.contains("forte") -> "F"
+            else -> return null
+        }
+        val fp = parts[1].trim()
+        val n = Txt.norm(fp)
+        val base = if (fp == "?" || n.isEmpty() || n.contains("desconh") || n.contains("unknown") || n == "any" || n.contains("qualquer") || n.contains("geral")) "?"
+        else Formations.parse(fp)?.let { Formations.base(it) } ?: return null
+        return "$rel|$base"
+    }
+
+    private fun slider(o: JSONObject, vararg names: String): Int? {
+        for (n in names) {
+            if (!o.has(n) || o.isNull(n)) continue
+            val v = Regex("(\\d{1,3})").find(o.optString(n))?.groupValues?.get(1)?.toIntOrNull() ?: continue
+            if (v in 0..100) return v
+        }
+        return null
+    }
+
+    /** Uma regra limpa (só valores do jogo); null se faltar formação ou estilo reconhecíveis. */
+    fun cleanRule(o: JSONObject, source: String): JSONObject? {
+        val f = Formations.canonical(o.optString("formation")) ?: return null
+        val st = Osm.style(o.optString("style").ifBlank { o.optString("playStyle") }) ?: return null
+        val out = JSONObject().put("formation", f).put("style", st)
+        slider(o, "pressure", "pressing")?.let { out.put("pressure", it) }
+        slider(o, "mentality", "style_slider", "estilo")?.let { out.put("mentality", it) }
+        slider(o, "tempo")?.let { out.put("tempo", it) }
+        Osm.attack(o.optString("attack").ifBlank { o.optString("forwards") })?.let { out.put("attack", it) }
+        Osm.midfield(o.optString("mid").ifBlank { o.optString("midfielders") })?.let { out.put("mid", it) }
+        Osm.defense(o.optString("def").ifBlank { o.optString("defenders") })?.let { out.put("def", it) }
+        Osm.marking(o.optString("marking"))?.let { out.put("marking", it) }
+        val off = Txt.norm(o.optString("offside"))
+        out.put("offside", if (off == "sim" || off == "yes" || off == "true") "Sim" else "Não")
+        out.put("source", o.optString("source").take(50).ifBlank { "fóruns" } + source)
+        return out
+    }
+
+    /**
+     * Aceita os formatos que as IAs costumam devolver: {"rules": {"U|4-3-3": {...}}}, {"rules": [{"situation": "U|4-3-3", ...}]},
+     * {"rules": {"U": {"4-3-3": {...}}}} ou as regras soltas na raiz.
+     */
+    fun cleanRules(json: JSONObject, source: String): JSONObject {
+        val clean = JSONObject()
+        fun take(key: String?, o: JSONObject?) {
+            if (key == null || o == null) return
+            val k = normKey(key) ?: return
+            cleanRule(o, source)?.let { clean.put(k, it) }
+        }
+        val rules = json.opt("rules") ?: json
+        when (rules) {
+            is JSONObject -> for (k in rules.keys()) {
+                val v = rules.opt(k)
+                if (v !is JSONObject) continue
+                if (normKey(k) != null) take(k, v)
+                else for (k2 in v.keys()) take("$k|$k2", v.optJSONObject(k2))
+            }
+            is JSONArray -> for (i in 0 until rules.length()) {
+                val o = rules.optJSONObject(i) ?: continue
+                val key = o.optString("key").ifBlank { o.optString("situation") }.ifBlank {
+                    val rel = o.optString("strength").ifBlank { o.optString("relation") }
+                    val rf = o.optString("rivalFormation").ifBlank { o.optString("opponentFormation") }.ifBlank { "?" }
+                    if (rel.isBlank()) "" else "$rel|$rf"
+                }
+                take(key.ifBlank { null }, o)
+            }
+        }
+        return clean
+    }
 
     suspend fun refresh(ctx: Context): String {
         if (running) return "já está atualizando"
         running = true
+        val repo = Repo(ctx)
+        val now = System.currentTimeMillis()
+        Settings.put(ctx, "meta_try_at", now.toString())
+        val log = JSONObject().put("at", now)
         try {
             var reply = AiClient.askGrounded(ctx, prompt())
             var viaSearch = true
+            log.put("searchError", reply.error ?: "")
             if (!reply.ok) {
                 // sem busca disponível (cota): usa o que a IA já sabe dos fóruns, marcado como tal
-                val r2 = AiClient.ask(ctx, prompt() + " Se não puder pesquisar, use o que você sabe das fontes citadas.", null, 90000L)
+                val r2 = AiClient.ask(ctx, prompt() + " Se não puder pesquisar agora, use o que você sabe dessas fontes.", null, 90000L)
                 if (r2.ok) {
                     reply = r2
                     viaSearch = false
                 } else {
+                    log.put("error", r2.error ?: "")
                     return "não consegui pesquisar agora (${reply.error}); sem busca também falhou (${r2.error})"
                 }
             }
+            log.put("raw", (reply.text ?: "").take(20000))
             val json = AiClient.parseJson(reply.text) ?: return "a IA respondeu sem o JSON das regras; tente de novo mais tarde"
-            val rules = json.optJSONObject("rules") ?: return "a pesquisa não trouxe regras"
-            val clean = JSONObject()
-            for (k in rules.keys()) {
-                if (!Regex("^[UEF]\\|[0-9?][0-9-]*$").matches(k)) continue
-                val o = rules.optJSONObject(k) ?: continue
-                val f = Formations.canonical(o.optString("formation")) ?: continue
-                val st = Osm.style(o.optString("style")) ?: continue
-                fun n(x: String): Int? = o.optInt(x, -1).takeIf { it in 0..100 }
-                val p = n("pressure") ?: continue
-                val m = n("mentality") ?: continue
-                val t = n("tempo") ?: continue
-                clean.put(
-                    k, JSONObject().put("formation", f).put("style", st).put("pressure", p).put("mentality", m).put("tempo", t)
-                        .put("attack", Osm.attack(o.optString("attack")) ?: "").put("mid", Osm.midfield(o.optString("mid")) ?: "")
-                        .put("def", Osm.defense(o.optString("def")) ?: "").put("marking", Osm.marking(o.optString("marking")) ?: "")
-                        .put("offside", if (o.optString("offside") == "Sim") "Sim" else "Não")
-                        .put("source", (o.optString("source").take(50).ifBlank { "fóruns" }) + if (viaSearch) "" else " • sem busca")
-                )
+            val clean = cleanRules(json, if (viaSearch) "" else " • sem busca")
+            log.put("valid", clean.length())
+            if (clean.length() == 0) {
+                return "a pesquisa respondeu, mas nenhuma regra veio com formação e estilo do OSM; mantive o modelo atual " +
+                    "(a resposta ficou guardada no diagnóstico)"
             }
-            if (clean.length() < 3) return "a pesquisa trouxe poucas regras válidas (${clean.length()}); mantive o modelo atual"
-            val now = System.currentTimeMillis()
-            Repo(ctx).dao.putPlan(PlanEntity(0, KIND, JSONObject().put("at", now).put("rules", clean).toString(), now))
-            return "modelo da comunidade atualizado: ${clean.length()} situações" +
+            // junta com o que já havia: situações novas entram, as repetidas são atualizadas
+            val old = remote(repo)?.optJSONObject("rules")
+            val merged = JSONObject()
+            if (old != null) for (k in old.keys()) merged.put(k, old.get(k))
+            for (k in clean.keys()) merged.put(k, clean.get(k))
+            repo.dao.putPlan(PlanEntity(0, KIND, JSONObject().put("at", now).put("rules", merged).toString(), now))
+            return "modelo da comunidade atualizado: ${clean.length()} situação(ões) da pesquisa, ${merged.length()} no total" +
                 (if (viaSearch) " (pesquisa na internet)" else " (a busca estava sem cota: usei o conhecimento da IA; tento a busca de novo na semana)")
         } finally {
+            runCatching { repo.dao.putPlan(PlanEntity(0, LAST, log.toString(), now)) }
             running = false
         }
     }
 
-    /** Atualiza sozinho uma vez por semana (em segundo plano, se houver chave do Gemini). */
+    /** Atualiza sozinho uma vez por semana (em segundo plano); depois de uma tentativa, espera 24 h para tentar de novo. */
     fun refreshIfStale(ctx: Context) {
-        if (running || Settings.get(ctx, Settings.GEMINI_KEY, "").isBlank()) return
+        if (running || !AiClient.hasAnyKey(ctx)) return
+        val lastTry = Settings.get(ctx, "meta_try_at", "0").toLongOrNull() ?: 0L
+        if (System.currentTimeMillis() - lastTry < 24L * 3600000L) return
         AppScope.scope.launch(Dispatchers.IO) {
             val r = remote(Repo(ctx))
             if (r == null || System.currentTimeMillis() - r.optLong("at") > 7L * 86400000L) {

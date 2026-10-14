@@ -221,7 +221,7 @@ interface CoachDao {
     @Query("SELECT * FROM screens WHERE imagePath IS NOT NULL ORDER BY at DESC LIMIT :limit")
     suspend fun savedScreens(limit: Int): List<ScreenEntity>
 
-    @Query("SELECT * FROM screens WHERE slotId = :slot AND imagePath IS NOT NULL AND type != 'SQUAD' ORDER BY at DESC LIMIT :limit")
+    @Query("SELECT * FROM screens WHERE slotId = :slot AND imagePath IS NOT NULL AND type IN ('REPORT', 'OTHER_OSM') ORDER BY at DESC LIMIT :limit")
     suspend fun savedForSlot(slot: Int, limit: Int): List<ScreenEntity>
 
     @Query("SELECT type, COUNT(*) AS c FROM screens WHERE sessionId = :id GROUP BY type")
@@ -250,6 +250,35 @@ interface CoachDao {
 
     @Query("SELECT * FROM plans WHERE slotId = :slot AND kind = :kind LIMIT 1")
     suspend fun plan(slot: Int, kind: String): PlanEntity?
+
+    // ---- diagnóstico completo (exportação)
+
+    @Query("SELECT * FROM fields ORDER BY slotId, fkey")
+    suspend fun allFields(): List<FieldEntity>
+
+    @Query("SELECT * FROM players ORDER BY slotId, owner, cat, nameKey")
+    suspend fun allPlayers(): List<PlayerEntity>
+
+    @Query("SELECT * FROM matches ORDER BY slotId, round")
+    suspend fun allMatches(): List<MatchEntity>
+
+    @Query("SELECT * FROM listings ORDER BY slotId, seenAt DESC")
+    suspend fun allListings(): List<ListingEntity>
+
+    @Query("SELECT * FROM snapshots ORDER BY at DESC")
+    suspend fun allSnapshots(): List<SnapshotEntity>
+
+    @Query("SELECT * FROM sessions ORDER BY startedAt DESC")
+    suspend fun allSessions(): List<SessionEntity>
+
+    @Query("SELECT * FROM screens ORDER BY at DESC LIMIT :limit")
+    suspend fun allScreens(limit: Int): List<ScreenEntity>
+
+    @Query("SELECT * FROM learning ORDER BY at DESC LIMIT :limit")
+    suspend fun allLearning(limit: Int): List<LearningEntity>
+
+    @Query("SELECT * FROM plans ORDER BY slotId, kind")
+    suspend fun allPlans(): List<PlanEntity>
 }
 
 @Database(

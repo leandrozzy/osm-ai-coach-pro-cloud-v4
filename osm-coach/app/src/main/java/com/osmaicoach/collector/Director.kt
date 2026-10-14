@@ -312,7 +312,9 @@ object Director {
         val f = repo.fieldMap(slot)
         fun str(k: String) = f[k]?.value?.takeIf { FieldMerge.known(it) }
         fun int(k: String) = str(k)?.toIntOrNull()
-        fun bonus(k: String) = str(k)?.let { Regex("(\\d{1,3})").find(it)?.groupValues?.get(1)?.toIntOrNull() }
+        // bônus só vale para o jogo em que foi lido: antigo (de outra rodada) não entra
+        fun bonus(k: String) = f[k]?.takeIf { FieldMerge.fresh(k, it, System.currentTimeMillis()) }?.value
+            ?.let { Regex("(\\d{1,3})").find(it)?.groupValues?.get(1)?.toIntOrNull() }
         val matches = repo.dao.matchesOf(slot)
         val played = matches.filter { it.result != null && it.round != null }.sortedByDescending { it.round }
         val rival = str(K.RIVAL_TEAM)?.let { Txt.key(it) }
@@ -448,12 +450,17 @@ object Director {
         return if (lines.isEmpty()) null else lines.joinToString(" ")
     }
 
-    /** Resumo curto dos últimos jogos analisados (estatísticas reais) — alimenta o prompt da IA. */
+    /**
+     * Resumo dos últimos jogos analisados (telas do fim do jogo: placar, estatísticas, zonas de ação, notas dos
+     * jogadores e a dica/conselho que o próprio OSM mostra) — alimenta o prompt da IA.
+     */
     suspend fun recentReports(repo: Repo, slot: Int): List<String> {
         val out = ArrayList<String>()
-        for (p in repo.dao.matchReports(slot).sortedByDescending { it.at }.take(3)) {
+        val reps = repo.dao.matchReports(slot).mapNotNull { p ->
+            runCatching { JSONObject(p.json).also { j -> if (!j.has("round")) p.kind.removePrefix("mr_R").toIntOrNull()?.let { j.put("round", it) } } }.getOrNull()
+        }.filter { it.has("sh") && it.has("sa") }.sortedByDescending { it.optInt("round") }.take(5)
+        for (j in reps) {
             try {
-                val j = JSONObject(p.json)
                 val mineHome = j.optBoolean("mineHome", true)
                 val st = j.optJSONObject("stats")
                 fun mine(label: String): String {
@@ -464,10 +471,30 @@ object Director {
                     val a = st?.optJSONArray(label) ?: return NI
                     return a.optString(if (mineHome) 1 else 0)
                 }
-                out.add(
-                    "J${j.optInt("round")}: ${j.optInt("sh")}-${j.optInt("sa")} (${if (mineHome) "casa" else "fora"}); posse ${mine("posse de bola")} vs ${opp("posse de bola")}; " +
-                        "remates ${mine("remates")} vs ${opp("remates")}; faltas ${mine("faltas")} vs ${opp("faltas")}; formação rival ${opp("formacao")}; homem do jogo ${j.optString("mom")}"
-                )
+                val my = if (mineHome) j.optInt("sh") else j.optInt("sa")
+                val rv = if (mineHome) j.optInt("sa") else j.optInt("sh")
+                val res = if (my > rv) "V" else if (my == rv) "E" else "D"
+                val sb = StringBuilder()
+                sb.append("J${j.optInt("round")} ${if (mineHome) "casa" else "fora"} vs ${if (mineHome) j.optString("awayTeam") else j.optString("homeTeam")}: $res $my-$rv")
+                sb.append("; posse ${mine("posse de bola")} x ${opp("posse de bola")}; remates ${mine("remates")} x ${opp("remates")}")
+                if (st?.has("precisao") == true) sb.append(" (precisão ${mine("precisao")} x ${opp("precisao")})")
+                if (st?.has("cantos") == true) sb.append("; cantos ${mine("cantos")} x ${opp("cantos")}")
+                sb.append("; faltas ${mine("faltas")} x ${opp("faltas")}")
+                if (st?.has("cartoes") == true) sb.append("; cartões (amarelo,vermelho) ${mine("cartoes")} x ${opp("cartoes")}")
+                sb.append("; minha formação ${mine("formacao")}, a do rival ${opp("formacao")}")
+                j.optJSONArray("zones")?.takeIf { it.length() == 3 }?.let { z ->
+                    sb.append("; zonas de ação ${z.optInt(0)}%/${z.optInt(1)}%/${z.optInt(2)}%")
+                }
+                val ratings = j.optJSONArray(if (mineHome) "rh" else "ra")
+                if (ratings != null && ratings.length() >= 3) {
+                    val low = (0 until ratings.length()).mapNotNull { ratings.optJSONArray(it) }
+                        .filter { it.optInt(1) in 1..6 }.joinToString { it.optString(0) + " " + it.optInt(1) }
+                    if (low.isNotBlank()) sb.append("; notas baixas dos meus: $low")
+                }
+                j.optString("mom").takeIf { it.isNotBlank() }?.let { sb.append("; homem do jogo $it") }
+                j.optString("tip").takeIf { it.isNotBlank() }?.let { sb.append("; dica do OSM: \"${it.take(160)}\"") }
+                j.optString("advice").takeIf { it.isNotBlank() }?.let { sb.append("; conselho do OSM: \"${it.take(160)}\"") }
+                out.add(sb.toString())
             } catch (e: Exception) {
                 continue
             }

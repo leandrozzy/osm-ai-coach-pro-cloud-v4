@@ -86,6 +86,10 @@ class Repo(private val ctx: Context) {
         val old = cur?.fvalue?.toIntOrNull()
         if (c.round != null && c.round != old && (cur?.source != "manual" || (old != null && c.round > old))) {
             dao.putField(FieldEntity(slot, K.ROUND, c.round.toString(), 0.8, now, "sync"))
+            // rodada avançou: bônus lidos antes (de outro jogo) saem; o pré-jogo novo lê os de agora
+            if (old != null && c.round > old) {
+                for (row in rows) if (row.fkey in FieldMerge.PER_GAME && now - row.updatedAt > 2L * 3600000L) dao.deleteField(slot, row.fkey)
+            }
         }
         if (c.at == null && f.containsKey(K.MATCH_AT)) dao.deleteField(slot, K.MATCH_AT)
         return c
@@ -185,6 +189,8 @@ class Repo(private val ctx: Context) {
             if (old != null && Txt.sim(Txt.key(old.fvalue), Txt.key(newRival.value)) < 0.8) {
                 dao.deleteRivalFields(slot)
                 dao.deleteRivalPlayers(slot)
+                // jogo novo: o meu bônus também é outro (o do rival já saiu com os campos do rival)
+                if (!ex.fields.containsKey(K.MY_BONUS)) dao.deleteField(slot, K.MY_BONUS)
                 dao.deletePlan(slot, "evidence")
                 learn(slot, "rival", "Rival mudou de ${old.fvalue} para ${newRival.value}: dados do rival anterior foram descartados.", now)
             }
@@ -280,7 +286,7 @@ class Repo(private val ctx: Context) {
         for (p in ex.players) {
             var key = Txt.key(p.name)
             if (existing.none { it.nameKey == key }) {
-                val near = existing.firstOrNull { it.age == p.age && Txt.sim(it.nameKey, key) >= 0.88 }
+                val near = existing.firstOrNull { SquadDedupe.samePlayer(it.nameKey, it.age, it.strength, key, p.age, p.strength) }
                 // mesmo jogador lido com nome ilegível: mesma idade, força e posição, e algum dos nomes é lixo de OCR
                 val twin = existing.firstOrNull {
                     p.age != null && it.age == p.age && p.strength != null && it.strength == p.strength && it.cat == p.cat &&
@@ -296,13 +302,15 @@ class Repo(private val ctx: Context) {
             if (old == null && source == "ai") continue
             seen.add(key)
             if (p.cond != null && p.morale != null) cm[key] = Pair(p.cond, p.morale)
+            // a IA só completa: setor e força já lidos pelo OCR (com seção e números da linha) não são trocados por ela
+            val aiOnly = source == "ai" && old != null
             val n = PlayerEntity(
                 slotId = slot, owner = owner, nameKey = key,
                 name = chooseName(old?.name, p.name),
                 age = p.age ?: old?.age,
-                posCode = p.posCode ?: old?.posCode,
-                cat = p.cat ?: old?.cat,
-                strength = p.strength ?: old?.strength,
+                posCode = if (aiOnly) old?.posCode ?: p.posCode else p.posCode ?: old?.posCode,
+                cat = if (aiOnly) old?.cat ?: p.cat else p.cat ?: old?.cat,
+                strength = if (aiOnly) old?.strength ?: p.strength else p.strength ?: old?.strength,
                 valueText = p.valueText ?: old?.valueText,
                 training = p.training ?: old?.training,
                 forSale = p.forSale ?: old?.forSale,
@@ -314,6 +322,7 @@ class Repo(private val ctx: Context) {
             }
         }
         if (seen.isNotEmpty()) markSeen(slot, seen, now)
+        if (seen.isNotEmpty()) dedupeSlot(slot, now)
         if (cm.isNotEmpty()) {
             val cur = dao.plan(slot, "cm")?.json?.let { try { JSONObject(it) } catch (e: Exception) { null } } ?: JSONObject()
             var cmChanged = false
@@ -902,6 +911,12 @@ class Repo(private val ctx: Context) {
      */
     suspend fun cleanPollution(slot: Int) {
         val now = System.currentTimeMillis()
+        // Bônus de outro jogo (lido ou digitado há mais de 30 h): sai, para a tela pedir o de hoje em vez de mostrar o velho.
+        for (row in dao.fieldsOf(slot)) {
+            if (row.fkey in FieldMerge.PER_GAME && !FieldMerge.fresh(row.fkey, StoredField(row.fvalue, row.conf, row.updatedAt), now)) {
+                dao.deleteField(slot, row.fkey)
+            }
+        }
         for (p in dao.matchReports(slot)) {
             val j = try { org.json.JSONObject(p.json) } catch (e: Exception) { continue }
             var dirty = false
@@ -1119,13 +1134,18 @@ class Repo(private val ctx: Context) {
         var removed = 0
         val now = System.currentTimeMillis()
         for (slot in 1..4) {
+            dedupeSlot(slot, now)
             val mine = dao.playersOf(slot).filter { it.owner == "MY" }
             if (mine.isEmpty()) continue
             val seenAt = planJson(slot, "squadseen")
             val seenNow = mine.filter { seenAt.optLong(it.nameKey, 0L) >= since }
-            if (seenNow.size < 14 || seenNow.size < mine.size * 0.8) continue
+            // Passada completa: 14+ jogadores vistos E pelo menos um de cada setor (o fim da lista, com os goleiros,
+            // também foi visto). Fantasmas de OCR inflam o total guardado, então os 80% de antes nunca eram atingidos.
+            val cats = seenNow.mapNotNull { it.cat }.toSet()
+            val fullPass = seenNow.size >= 14 && cats.containsAll(listOf("ATA", "MEI", "DEF", "GOL"))
+            if (!fullPass || seenNow.size < mine.size * 0.5) continue
             val gone = mine.filter { seenAt.optLong(it.nameKey, 0L) < since }
-            if (gone.isEmpty() || gone.size > 8) continue
+            if (gone.isEmpty() || gone.size > 20) continue
             for (p in gone) {
                 dao.deletePlayer(slot, "MY", p.nameKey)
                 removed++
@@ -1154,8 +1174,25 @@ class Repo(private val ctx: Context) {
         return if (looksGarbled(old) && !looksGarbled(incoming)) incoming else old
     }
 
+    /**
+     * Junta jogadores repetidos do meu elenco (o mesmo jogador lido com o nome diferente: "Frimpong"/"Erimpong",
+     * "J. Timber"/"Timber"): mesma idade, mesma força e nome parecido. Fica o visto por último, com o melhor nome.
+     */
+    suspend fun dedupeSlot(slot: Int, now: Long = System.currentTimeMillis()): Int {
+        val mine = dao.playersOf(slot).filter { it.owner == "MY" }
+        if (mine.size < 2) return 0
+        val seenAt = planJson(slot, "squadseen")
+        val drop = SquadDedupe.duplicates(mine.map { SquadDedupe.P(it.nameKey, it.name, it.age, it.strength, it.cat, it.valueText, seenAt.optLong(it.nameKey, it.updatedAt)) })
+        for ((bad, keep) in drop) {
+            dao.deletePlayer(slot, "MY", bad)
+            learn(slot, "elenco", "Jogador repetido removido: \"${mine.first { it.nameKey == bad }.name}\" era o mesmo que \"${mine.first { it.nameKey == keep }.name}\".", now)
+        }
+        return drop.size
+    }
+
     /** Apaga jogadores "fantasma" (nome ilegível) que repetem outro jogador com mesma idade, força e posição. */
     private suspend fun dedupeSquads() {
+        for (slot in 1..4) dedupeSlot(slot)
         for (slot in 1..4) {
             val mine = dao.playersOf(slot).filter { it.owner == "MY" }
             for (bad in mine) {
