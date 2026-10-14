@@ -752,7 +752,7 @@ object Coach {
         if (l.midNeed > 0) plan.add("Reforçar o meio-campo: formação com mais meias e meias em \"Manter posições\" para não perder a posse de novo.")
         if (l.defNeed > 0) plan.add("Proteger a defesa: mentalidade mais baixa, sem linha de impedimento arriscada e atacantes ajudando quando o rival for forte.")
         if (l.atkNeed > 0) plan.add("Mais presença na área: um atacante a mais ou \"Remate à vista\" quando a defesa rival for fraca.")
-        if (l.discipline) plan.add("Disciplina: desarme Normal (as faltas recentes passaram de 16 por jogo).")
+        if (l.discipline) plan.add("Disciplina: as faltas passaram de 16 por jogo. O desarme segue o árbitro, mas cuidado com cartões.")
         for (k in avoid) plan.add("Não repetir ${k.replace("|", " • ")}" + (if (nextRival != null) " contra $nextRival" else "") + ": já perdeu com ela.")
         if (plan.isEmpty()) plan.add("Manter a linha que vem funcionando e ajustar só ao rival da vez.")
         return l.copy(plan = plan)

@@ -139,6 +139,7 @@ class FramePipeline private constructor(private val ctx: Context) {
     private var tacticSaved = 0
     private var calendarSaved = 0
     private var lastOsmAcceptedAt = 0L
+    private val pregameAiAt = HashMap<Int, Long>()
     private var imagesThisSession = 0
     private val mutex = Mutex()
 
@@ -459,8 +460,15 @@ class FramePipeline private constructor(private val ctx: Context) {
             val diagSquad = type == ScreenType.SQUAD && squadSaved < 10
             // fim de época / direção: guarda para dar para reprocessar e conferir depois
             val diagSeason = type == ScreenType.OTHER_OSM && seasonSaved < 12 && SeasonScreens.isSeasonScreen(ocr.fullText)
+            // pré-jogo em que o OCR não achou o rival ou as forças/bônus: a IA lê a imagem ao encerrar a captura
+            // (uma por slot a cada 2 min: o pré-jogo é relido a cada 3 s e não pode gastar a cota da IA)
+            val pregameGap = type == ScreenType.PREGAME && (
+                !ex.fields.containsKey(K.RIVAL_TEAM) ||
+                    (!ex.fields.containsKey(K.MY_STRENGTH) && !ex.fields.containsKey(K.MY_BONUS))
+                ) && now - (pregameAiAt[asg.slot ?: 0] ?: 0L) > 120000L
+            if (pregameGap) pregameAiAt[asg.slot ?: 0] = now
             var path: String? = null
-            if (((unassigned && dataType) || ex.needsAi || reportHint || diagTactic || diagCalendar || diagResult || diagPregame || diagSquad || diagSeason) &&
+            if (((unassigned && dataType) || ex.needsAi || reportHint || pregameGap || diagTactic || diagCalendar || diagResult || diagPregame || diagSquad || diagSeason) &&
                 imagesThisSession < 90
             ) {
                 if (diagTactic) tacticSaved++
@@ -478,7 +486,7 @@ class FramePipeline private constructor(private val ctx: Context) {
                     sessionId = sessionId, at = now, type = type.name, slotId = asg.slot ?: 0,
                     slotConf = asg.confidence, hash = FrameHash.toText(h), imagePath = path,
                     ocrChars = ocr.fullText.length, extracted = changed,
-                    aiState = if ((ex.needsAi || reportHint) && path != null) "pending" else "none", note = asg.reason
+                    aiState = if ((ex.needsAi || reportHint || pregameGap) && path != null) "pending" else "none", note = asg.reason
                 )
             )
         }

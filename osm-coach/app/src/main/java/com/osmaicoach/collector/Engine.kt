@@ -496,7 +496,8 @@ object MarketEngine {
             val list = byCat[c] ?: continue
             val extra = list.size - (MarketPlanner.TARGET[c] ?: 0)
             if (extra > 0) {
-                for (p in list.takeLast(extra)) {
+                // quem está treinando não sai (o treino em andamento se perde)
+                for (p in list.filter { it.training != true }.takeLast(extra)) {
                     if (sells.size >= sellSlots) break
                     sells.add(SellItem(p.name, c, p.strength, Money.parse(p.valueText), "excesso de $c (meta ${MarketPlanner.TARGET[c]}): é o mais fraco do setor"))
                     soldKeys.add(p.nameKey)
@@ -509,7 +510,7 @@ object MarketEngine {
             val core = CORE[c] ?: 3
             for (p in list.drop(core)) {
                 if (sells.size >= sellSlots) break
-                if ((p.age ?: 0) >= 31 && p.nameKey !in soldKeys && (Money.parse(p.valueText) ?: 0.0) > 0.0) {
+                if ((p.age ?: 0) >= 31 && p.training != true && p.nameKey !in soldKeys && (Money.parse(p.valueText) ?: 0.0) > 0.0) {
                     sells.add(SellItem(p.name, c, p.strength, Money.parse(p.valueText), "${p.age} anos e reserva: vender agora, antes de perder valor"))
                     soldKeys.add(p.nameKey)
                 }
@@ -546,7 +547,7 @@ object MarketEngine {
                     have[c] = (have[c] ?: 0) + 1
                 } else if (shortfall == null) shortfall = cd.price - budget
             } else {
-                val out = (byCat[c] ?: emptyList()).lastOrNull { it.nameKey !in soldKeys }
+                val out = (byCat[c] ?: emptyList()).lastOrNull { it.nameKey !in soldKeys && it.training != true }
                 if (out == null || sells.size >= sellSlots) continue
                 val vOut = Money.parse(out.valueText) ?: 0.0
                 val net = cd.price - vOut
