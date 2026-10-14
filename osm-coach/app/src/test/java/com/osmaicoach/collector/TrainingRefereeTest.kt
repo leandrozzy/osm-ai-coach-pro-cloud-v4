@@ -90,9 +90,9 @@ class TrainingRefereeTest {
         return PixelProbe.Img(w, h, px)
     }
 
-    @Test fun orangeThermometerIsMedium() {
-        assertEquals("Médio", PixelProbe.refereeSeverity(img("orange")))
-        assertEquals("Médio", PixelProbe.refereeSeverity(img("orange"), 0.505f, 0.47f))
+    @Test fun orangeThermometerIsStrict() {
+        assertEquals("Rigoroso", PixelProbe.refereeSeverity(img("orange")))
+        assertEquals("Rigoroso", PixelProbe.refereeSeverity(img("orange"), 0.505f, 0.47f))
     }
 
     @Test fun greenThermometerIsLenient() {
@@ -100,16 +100,24 @@ class TrainingRefereeTest {
     }
 
     @Test fun blueTransitionBackgroundIsNotARead() {
-        // quadro de transição com fundo azul e termômetro laranja: nunca "Brando"
+        // quadro de transição com fundo azul e termômetro laranja: nunca "Muito brando"
         val r = PixelProbe.refereeSeverity(img("bluebg"))
-        assertTrue(r == null || r == "Médio")
+        assertTrue(r == null || r == "Rigoroso")
     }
 
     @Test fun orangeOrRedRefereeMeansCarefulTackle() {
-        assertEquals(listOf("Cuidadoso"), Osm.allowedTackles("Médio"))
         assertEquals(listOf("Cuidadoso"), Osm.allowedTackles("Rigoroso"))
-        assertEquals("Cuidadoso", Osm.clampTackle("Normal", "Médio"))
+        assertEquals(listOf("Cuidadoso"), Osm.allowedTackles("Muito rigoroso"))
+        assertEquals("Cuidadoso", Osm.clampTackle("Normal", "Rigoroso"))
         assertEquals("Agressivo", Osm.clampTackle("Agressivo", "Brando"))
+        // a regra dos 5 árbitros
+        assertEquals("Extremo", Referee.tackle("Muito brando"))
+        assertEquals("Agressivo", Referee.tackle("Brando"))
+        assertEquals("Normal", Referee.tackle("Normal"))
+        assertEquals("Cuidadoso", Referee.tackle("Rigoroso"))
+        assertEquals("Cuidadoso", Referee.tackle("Muito rigoroso"))
+        assertNull(Referee.tackle("Médio"))
+        assertEquals("Muito brando", Referee.norm("azul"))
     }
 
     // ------------------------------------------------------------------ telas do próprio app

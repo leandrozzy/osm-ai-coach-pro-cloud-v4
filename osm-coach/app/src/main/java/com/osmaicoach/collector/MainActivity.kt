@@ -651,48 +651,45 @@ private fun RivalShield(name: String?, size: Dp) {
     }
 }
 
-private fun refLevel(v: String?): Int? = when (v) {
-    "Brando" -> 0
-    "Médio" -> 1
-    "Rigoroso" -> 2
-    else -> null
-}
+private val REF_COLORS = listOf(Color(0xFF2F8CFF), Color(0xFF3DDC84), Color(0xFFFFD43B), Color(0xFFFF9F1A), Color(0xFFE5484D))
 
-/** Termômetro do árbitro igual ao do jogo: verde, laranja e vermelho, com o ponteiro no nível lido. */
+/**
+ * Termômetro do árbitro igual ao do jogo, 5 cores (azul, verde, amarelo, laranja, vermelho), com o nível lido em
+ * destaque e o desarme que ele pede.
+ */
 @Composable
 private fun RefereeMeter(value: String?, compact: Boolean = false) {
-    val lvl = refLevel(value)
-    val cols = listOf(Color(0xFF3DDC84), Color(0xFFFFA726), Color(0xFFE5484D))
+    val lvl = Referee.level(value)
+    val name = Referee.norm(value)
     Column(Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("🟨", fontSize = if (compact) 13.sp else 16.sp)
-            Text(" Árbitro: ", fontSize = 12.sp, color = C.MUTED)
-            Text(value ?: "não lido", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = if (lvl == null) C.WARN else cols[lvl])
+            Text("🌡", fontSize = if (compact) 13.sp else 16.sp)
+            Text(" Árbitro ", fontSize = 12.sp, color = C.MUTED)
+            Text(name ?: "não lido", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = if (lvl == null) C.WARN else REF_COLORS[lvl])
             Spacer(Modifier.weight(1f))
-            if (lvl != null) Text(
-                "desarme " + (if (lvl == 0) "livre" else "Cuidadoso"), fontSize = 11.sp, color = C.MUTED
-            )
+            if (lvl != null) {
+                Box(Modifier.clip(RoundedCornerShape(50)).background(REF_COLORS[lvl].copy(alpha = 0.22f)).padding(horizontal = 8.dp, vertical = 2.dp)) {
+                    Text("desarme " + Referee.TACKLES[lvl], fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                }
+            }
         }
-        Canvas(Modifier.fillMaxWidth().height(if (compact) 16.dp else 22.dp).padding(top = 4.dp)) {
-            val w = size.width
-            val h = size.height
-            val seg = w / 3f
-            val r = h / 2f
-            for (i in 0..2) {
-                val a = if (lvl == null || lvl == i) 1f else 0.28f
-                drawRoundRect(
-                    cols[i].copy(alpha = a), topLeft = Offset(i * seg + (if (i == 0) 0f else 2f), 0f),
-                    size = Size(seg - 2f, h), cornerRadius = CornerRadius(r, r)
+        Row(Modifier.fillMaxWidth().padding(top = 5.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+            for (i in 0..4) {
+                val on = lvl == i
+                Box(
+                    Modifier.weight(1f).height(if (compact) 10.dp else 14.dp).clip(RoundedCornerShape(50))
+                        .background(REF_COLORS[i].copy(alpha = if (lvl == null || on) 1f else 0.22f))
+                        .then(if (on) Modifier.border(2.dp, Color.White, RoundedCornerShape(50)) else Modifier)
                 )
             }
-            if (lvl != null) {
-                val cx = lvl * seg + seg / 2f
-                drawCircle(Color.White, radius = r * 0.9f, center = Offset(cx, h / 2f))
-                drawCircle(cols[lvl], radius = r * 0.55f, center = Offset(cx, h / 2f))
-            }
         }
-        if (!compact) Row(Modifier.fillMaxWidth().padding(top = 2.dp)) {
-            for (t in listOf("Brando", "Médio", "Rigoroso")) Text(t, fontSize = 10.sp, color = C.MUTED, textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
+        if (!compact) Row(Modifier.fillMaxWidth().padding(top = 3.dp)) {
+            for ((i, t) in Referee.LEVELS.withIndex()) {
+                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(t.replace("Muito ", "Muito\n"), fontSize = 9.sp, color = if (lvl == i) Color.White else C.MUTED, textAlign = TextAlign.Center, fontWeight = if (lvl == i) FontWeight.Bold else FontWeight.Normal, lineHeight = 10.sp)
+                    Text(Referee.TACKLES[i], fontSize = 8.sp, color = if (lvl == i) REF_COLORS[i] else C.MUTED.copy(alpha = 0.7f), textAlign = TextAlign.Center)
+                }
+            }
         }
     }
 }

@@ -353,6 +353,47 @@ object Pos {
  * Valores reais das opções do OSM, conferidos no vídeo da tela "Define a tua tática" (OSM 26, português).
  * Tudo que vem da IA, do OCR ou de versões antigas passa por aqui para virar exatamente o texto do jogo.
  */
+/**
+ * Árbitro pelo termômetro do pré-jogo (5 níveis, do mais brando ao mais rigoroso) e o desarme que cada um pede:
+ * azul = Muito brando -> Extremo; verde = Brando -> Agressivo; amarelo = Normal -> Normal;
+ * laranja = Rigoroso e vermelho = Muito rigoroso -> Cuidadoso.
+ */
+object Referee {
+    val LEVELS = listOf("Muito brando", "Brando", "Normal", "Rigoroso", "Muito rigoroso")
+    val COLORS = listOf("azul", "verde", "amarelo", "laranja", "vermelho")
+    val TACKLES = listOf("Extremo", "Agressivo", "Normal", "Cuidadoso", "Cuidadoso")
+
+    /** Nome válido (aceita variações digitadas/lidas); "Médio" antigo é ambíguo (amarelo ou laranja): não vale. */
+    fun norm(s: String?): String? {
+        val n = Txt.norm(s ?: "")
+        return when {
+            n.isBlank() -> null
+            n.contains("muito") && n.contains("brand") -> "Muito brando"
+            n.contains("muito") && n.contains("rigor") -> "Muito rigoroso"
+            n.contains("brand") -> "Brando"
+            n.contains("rigor") -> "Rigoroso"
+            n == "normal" -> "Normal"
+            // a IA às vezes responde pela cor do termômetro
+            n.contains("azul") -> "Muito brando"
+            n.contains("verde") -> "Brando"
+            n.contains("amarel") -> "Normal"
+            n.contains("laranja") -> "Rigoroso"
+            n.contains("vermelh") -> "Muito rigoroso"
+            else -> null
+        }
+    }
+
+    fun level(s: String?): Int? = norm(s)?.let { LEVELS.indexOf(it) }?.takeIf { it >= 0 }
+
+    /** Desarme que o árbitro pede (null: árbitro não lido). */
+    fun tackle(s: String?): String? = level(s)?.let { TACKLES[it] }
+
+    fun color(s: String?): String? = level(s)?.let { COLORS[it] }
+
+    fun strict(s: String?): Boolean = (level(s) ?: -1) >= 3
+    fun lenient(s: String?): Boolean = (level(s) ?: 9) <= 1
+}
+
 object Osm {
     val STYLES = listOf("Jogar pelas alas", "Jogo de passe", "Contra-ataque", "Remate à vista", "Bola longa")
     val MARKING = listOf("À zona", "Homem-a-homem")
@@ -391,16 +432,13 @@ object Osm {
     }
 
     /**
-     * Desarme permitido pelo árbitro (termômetro do pré-jogo): Extremo nunca (expulsão quase certa);
-     * Termômetro verde (brando): até Agressivo; laranja (médio) ou vermelho (rigoroso): só Cuidadoso; não lido: até Normal.
+     * Desarme permitido pelo árbitro: do Cuidadoso até o que o termômetro pede (azul até Extremo, verde até Agressivo,
+     * amarelo até Normal, laranja/vermelho só Cuidadoso). Árbitro não lido: no máximo Normal.
      */
-    fun allowedTackles(referee: String?): List<String> = when (referee) {
-        // termômetro verde: dá para entrar forte
-        "Brando" -> listOf("Cuidadoso", "Normal", "Agressivo")
-        // laranja ou vermelho: cartão fácil, só Cuidadoso
-        "Médio", "Rigoroso" -> listOf("Cuidadoso")
-        // árbitro não lido: no máximo Normal
-        else -> listOf("Cuidadoso", "Normal")
+    fun allowedTackles(referee: String?): List<String> {
+        val max = Referee.tackle(referee) ?: "Normal"
+        val order = listOf("Cuidadoso", "Normal", "Agressivo", "Extremo")
+        return order.subList(0, order.indexOf(max) + 1)
     }
 
     /** Rebaixa o desarme para o máximo que o árbitro permite. */

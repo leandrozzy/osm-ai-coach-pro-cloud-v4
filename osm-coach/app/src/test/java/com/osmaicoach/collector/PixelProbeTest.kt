@@ -63,12 +63,17 @@ class PixelProbeTest {
             paint(i, 190, 210, 190, 200, c)
             return PixelProbe.refereeSeverity(i)
         }
-        // verde = brando; azul é o fundo da tela (nunca conta)
+        // 5 árbitros: azul, verde, amarelo, laranja, vermelho
+        assertEquals("Muito brando", sev(rgb(30, 150, 255)))
         assertEquals("Brando", sev(rgb(40, 200, 60)))
-        assertNull(sev(rgb(30, 150, 255)))
-        assertEquals("Médio", sev(rgb(255, 150, 0)))
-        assertEquals("Rigoroso", sev(rgb(230, 20, 20)))
+        assertEquals("Normal", sev(rgb(250, 220, 30)))
+        assertEquals("Rigoroso", sev(rgb(255, 130, 0)))
+        assertEquals("Muito rigoroso", sev(rgb(230, 20, 20)))
         assertNull(PixelProbe.refereeSeverity(img(400, 400)))
+        // bulbo azul num quadro todo azul (transição): não é leitura
+        val bg = img(400, 400)
+        paint(bg, 0, 400, 0, 400, rgb(20, 90, 200))
+        assertNull(PixelProbe.refereeSeverity(bg))
     }
 
     @Test fun frameHashTellsDuplicatesFromDifferentScreens() {

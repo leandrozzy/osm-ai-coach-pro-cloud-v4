@@ -497,18 +497,22 @@ object WinModel {
                 t.add(Term("Linha de impedimento", 0.0, opp))
             }
             // Desarme × árbitro: cartões (expulsão) custam muito mais do que a bola roubada a mais.
+            // nível do árbitro: 0 muito brando (azul) … 4 muito rigoroso (vermelho)
+            val rl = Referee.level(i.referee)
+            val refLabel = Referee.norm(i.referee)?.lowercase() ?: "não lido"
             when (Osm.tackle(p.tackle)) {
-                "Extremo" -> when (i.referee) {
-                    "Brando" -> t.add(Term("Desarme extremo (risco de expulsão)", 0.0, 0.08))
-                    "Rigoroso" -> t.add(Term("Desarme extremo × árbitro rigoroso", -0.10, 0.22))
-                    else -> t.add(Term("Desarme extremo × árbitro ${i.referee ?: "não lido"}", -0.06, 0.15))
+                "Extremo" -> when {
+                    rl == 0 -> t.add(Term("Desarme extremo × árbitro muito brando", 0.06, -0.03))
+                    rl == null || rl <= 1 -> t.add(Term("Desarme extremo × árbitro $refLabel", -0.04, 0.12))
+                    else -> t.add(Term("Desarme extremo × árbitro $refLabel (expulsão)", -0.10, 0.22))
                 }
-                "Agressivo" -> when (i.referee) {
-                    "Brando" -> t.add(Term("Desarme agressivo × árbitro brando", 0.05, -0.04))
-                    "Rigoroso" -> t.add(Term("Desarme agressivo × árbitro rigoroso", -0.05, 0.12))
-                    else -> t.add(Term("Desarme agressivo × árbitro ${i.referee ?: "não lido"}", -0.02, 0.06))
+                "Agressivo" -> when {
+                    rl != null && rl <= 1 -> t.add(Term("Desarme agressivo × árbitro $refLabel", 0.05, -0.04))
+                    rl == 2 -> t.add(Term("Desarme agressivo × árbitro normal", -0.02, 0.06))
+                    rl == null -> t.add(Term("Desarme agressivo × árbitro não lido", -0.02, 0.06))
+                    else -> t.add(Term("Desarme agressivo × árbitro $refLabel", -0.05, 0.12))
                 }
-                "Cuidadoso" -> t.add(Term("Desarme cuidadoso", 0.0, if (i.referee == "Rigoroso") -0.01 else 0.03))
+                "Cuidadoso" -> t.add(Term("Desarme cuidadoso", if (rl != null && rl <= 1) -0.03 else 0.0, if (Referee.strict(i.referee)) -0.02 else 0.03))
                 else -> {}
             }
             when {
@@ -520,7 +524,7 @@ object WinModel {
                 n(p.advMid).contains("ajudar") -> t.add(Term("Meias: ajudar a defesa", -0.03, -0.05))
             }
         }
-        if (n(i.rivalTackle).contains("agress") && i.referee == "Rigoroso") t.add(Term("Rival agressivo × árbitro rigoroso", 0.06, -0.02))
+        if ((n(i.rivalTackle).contains("agress") || n(i.rivalTackle).contains("extrem")) && Referee.strict(i.referee)) t.add(Term("Rival agressivo × árbitro rigoroso", 0.06, -0.02))
         if (i.rivalCamp == true) t.add(Term("Rival fez estágio", -0.03, 0.04))
         if (i.rivalSecret == true) t.add(Term("Treino secreto do rival", 0.0, 0.02, 0.06))
         when (i.rivalHuman) {

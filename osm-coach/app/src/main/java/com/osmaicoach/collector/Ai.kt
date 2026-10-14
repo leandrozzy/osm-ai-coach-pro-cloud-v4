@@ -924,7 +924,7 @@ object AiPrompts {
         "offside (\"Sim\" ou \"Não\"), tackle (desarme: ex. \"Normal\" ou \"Agressivo\"), " +
         "secretTraining (\"Sim\" SOMENTE se houver um cadeado visível no relatório; caso contrário \"NI\"), " +
         "trainingCamp (\"Sim\"/\"Não\"/\"NI\"), rivalStrength (número), rivalValue (ex.: \"21,1M\" — mantenha a vírgula), " +
-        "stadiumLevel (texto), stadiumBonus (texto), loginBonus (texto), referee (pela cor do termômetro ao lado de \"Árbitro\": verde = \"Brando\", laranja = \"Médio\", vermelho = \"Rigoroso\")."
+        "stadiumLevel (texto), stadiumBonus (texto), loginBonus (texto), referee (pela cor do termômetro ao lado de \"Árbitro\": azul = \"Muito brando\", verde = \"Brando\", amarelo = \"Normal\", laranja = \"Rigoroso\", vermelho = \"Muito rigoroso\")."
 
     fun squad(): String = HEAD +
         "É a lista de elenco. Chaves: team (nome do time no cabeçalho), players (lista). Cada jogador: " +
@@ -969,8 +969,7 @@ object AiMapper {
         clean(j.optString("stadiumLevel"))?.let { out[K.STADIUM] = Reading(it, c) }
         clean(j.optString("stadiumBonus"))?.let { out[K.STADIUM_BONUS] = Reading(it, c) }
         clean(j.optString("loginBonus"))?.let { out[K.RIVAL_LOGIN_BONUS] = Reading(it, c) }
-        clean(j.optString("referee"))?.takeIf { it in setOf("Brando", "Médio", "Rigoroso") }
-            ?.let { out[K.REFEREE] = Reading(it, 0.6) }
+        Referee.norm(clean(j.optString("referee")))?.let { out[K.REFEREE] = Reading(it, 0.6) }
         return out
     }
 
