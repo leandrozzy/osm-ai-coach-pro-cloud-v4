@@ -3301,6 +3301,13 @@ private fun SettingsTab() {
                     else OutlinedButton(onClick = pick, modifier = Modifier.weight(1f)) { Text(name, fontSize = 12.sp) }
                 }
             }
+            val prefName = when (pref) { "claude" -> "Claude"; "compat" -> "Groq/xAI"; else -> "Gemini" }
+            val prefKey = when (pref) { "claude" -> clKey; "compat" -> cKey; else -> gKey }
+            Text(
+                "Primeira IA a ser usada: $prefName. Se ela falhar ou estiver sem cota, o app tenta as outras que tiverem chave." +
+                    (if (prefKey.isBlank()) " ⚠ $prefName está sem chave: preencha abaixo e toque em Salvar." else ""),
+                fontSize = 11.sp, color = if (prefKey.isBlank()) C.WARN else C.MUTED, modifier = Modifier.padding(bottom = 6.dp)
+            )
             OutlinedTextField(gKey, { gKey = it }, label = { Text("Chave Google AI Studio (Gemini)") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
             OutlinedTextField(gModel, { gModel = it }, label = { Text("Modelo Gemini (auto = detecta sozinho)") }, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(clKey, { clKey = it }, label = { Text("Chave Claude (Console da Anthropic)") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
