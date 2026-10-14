@@ -486,21 +486,39 @@ class Repo(private val ctx: Context) {
      * demissão): não são de adversário. O texto vira aprendizado do slot (vai para o prompt da IA) e "a época acabou"
      * encerra a competição do slot (nada de tática para um jogo que não existe).
      */
-    suspend fun recordSeasonScreen(slot: Int, lines: List<String>, now: Long): Int {
-        val text = lines.map { it.trim() }.filter { Txt.letters(it) >= 3 && !Overlay.polluted(it) }.joinToString(" | ").take(600)
-        if (text.isBlank()) return 0
-        val j = planJson(slot, "board")
-        val arr = j.optJSONArray("items") ?: JSONArray()
-        val key = Txt.key(text).take(120)
-        for (i in 0 until arr.length()) if (Txt.key(arr.optJSONObject(i)?.optString("text") ?: "").take(120) == key) return 0
-        arr.put(JSONObject().put("at", now).put("text", text))
-        val keep = JSONArray()
-        for (i in maxOf(0, arr.length() - 20) until arr.length()) keep.put(arr.get(i))
-        dao.putPlan(PlanEntity(slot, "board", j.put("items", keep).toString(), now))
-        learn(slot, "diretoria", text.take(280), now)
-        var n = 1
-        if (SeasonScreens.seasonOver(text)) {
-            val f = fieldMap(slot)
+    suspend fun recordSeasonScreen(slot: Int, r: Parsers.SeasonRead, now: Long): Int {
+        val f = fieldMap(slot)
+        val team = f[K.TEAM]?.value ?: f[K.HUB_TITLE]?.value ?: "Meu time"
+        val items = ArrayList<String>()
+        if (r.rank != null) {
+            items.add(
+                "Fim da competição: $team terminou em ${r.rank}º" + (if (r.points != null) " com ${r.points} pts" else "") +
+                    (if (r.goals != null) " (gols ${r.goals})" else "") + "."
+            )
+        }
+        if (r.champion != null) items.add("Campeão da liga: ${r.champion}.")
+        if (r.squadValue != null) items.add("Valor do plantel no fim: ${r.squadValue}" + (if (r.valueRank != null) " (${r.valueRank}º da liga)" else "") + ".")
+        if (r.board != null) items.add("Direção: \"${r.board.take(220)}\"")
+        var n = 0
+        if (items.isNotEmpty()) {
+            val j = planJson(slot, "board")
+            val arr = j.optJSONArray("items") ?: JSONArray()
+            val seen = (0 until arr.length()).map { Txt.key(arr.optJSONObject(it)?.optString("text") ?: "") }.toHashSet()
+            for (t in items) {
+                if (!seen.add(Txt.key(t))) continue
+                arr.put(JSONObject().put("at", now).put("text", t))
+                learn(slot, "diretoria", t, now)
+                n++
+            }
+            val keep = JSONArray()
+            for (i in maxOf(0, arr.length() - 20) until arr.length()) keep.put(arr.get(i))
+            if (n > 0) dao.putPlan(PlanEntity(slot, "board", j.put("items", keep).toString(), now))
+        }
+        val pos = LinkedHashMap<String, Reading>()
+        r.rank?.let { pos[K.LEAGUE_POS] = Reading(it.toString(), 0.9) }
+        r.points?.let { pos[K.POINTS] = Reading(it.toString(), 0.9) }
+        n += putFields(slot, pos, "fim", now)
+        if (r.over) {
             val total = f[K.ROUND_TOTAL]?.value?.toIntOrNull()
             if (total != null && (f[K.ROUND_DONE]?.value?.toIntOrNull() ?: 0) < total) {
                 dao.putField(FieldEntity(slot, K.ROUND_DONE, total.toString(), 0.9, now, "fim"))

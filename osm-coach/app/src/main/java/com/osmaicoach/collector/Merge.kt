@@ -33,7 +33,10 @@ object FieldMerge {
         if (!known(incoming.value)) return null
         val v = incoming.value.trim()
         if (old == null || !known(old.value)) return StoredField(v, incoming.conf, now)
-        if (key in PER_GAME && now - old.updatedAt > PER_GAME_MS && incoming.conf >= 0.7) {
+        // Digitado à mão há mais de 1 h e o pré-jogo mostra outro valor: a tela do jogo é a fonte certa (o bônus
+        // muda ao longo do dia). Antes, um "+1%" digitado de madrugada segurava o "+2%" lido de manhã.
+        val manualStale = old.conf >= 2.0 && now - old.updatedAt > 3600000L && incoming.conf >= 0.8
+        if (key in PER_GAME && (now - old.updatedAt > PER_GAME_MS || manualStale) && incoming.conf >= 0.7) {
             // bônus de outro jogo (até o digitado à mão): a leitura de agora vale (e renova a data da leitura)
             return StoredField(v, incoming.conf, now)
         }

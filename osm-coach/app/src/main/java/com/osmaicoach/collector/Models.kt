@@ -299,6 +299,9 @@ object Pos {
      */
     fun catFromStats(ata: Int?, def: Int?, med: Int?): String? {
         if (ata == null || def == null || med == null) return null
+        // o número principal de um jogador profissional nunca fica abaixo de 50: abaixo disso é dígito perdido
+        // pelo OCR ("2" no lugar de "72") e a forma da linha não diz nada
+        if (maxOf(ata, def, med) < 50) return null
         return when {
             ata >= def + 20 && ata >= med + 8 -> "ATA"
             def >= ata + 20 && def >= med + 8 -> "DEF"
@@ -532,12 +535,12 @@ object PlayerName {
     }
 }
 
-/** Telas do fim da competição e da diretoria (classificação final, objetivos, prêmios, demissão). */
+/** Telas do fim da competição e da diretoria (resumo da época, classificação final, valor do plantel, direção). */
 object SeasonScreens {
     private val WORDS = listOf(
         "a epoca acabou", "epoca acabou", "fim da epoca", "fim de epoca", "final da epoca", "classificacao final", "direcao",
-        "diretoria", "administracao", "conselho", "presidente", "demiss", "despedid", "objetivo da epoca", "objetivo",
-        "premio", "orcamento", "lista de treinadores", "campeao", "campeoes", "promovid", "despromovid", "a gozar"
+        "diretoria", "administracao", "presidente", "demiss", "despedid", "objetivo da epoca", "lista de treinadores",
+        "campeao da liga", "melhor marcador", "nova epoca", "proxima epoca", "esta liga termina", "promovid", "despromovid", "a gozar"
     )
 
     fun isSeasonScreen(fullText: String): Boolean {
@@ -548,6 +551,7 @@ object SeasonScreens {
     fun seasonOver(text: String): Boolean {
         val t = Txt.norm(text)
         return t.contains("epoca acabou") || t.contains("fim da epoca") || t.contains("classificacao final") ||
-            (t.contains("a gozar") && t.contains("ferias"))
+            t.contains("nova epoca") || t.contains("proxima epoca") || t.contains("esta liga termina") ||
+            (t.contains("a gozar") && t.contains("jogadores"))
     }
 }

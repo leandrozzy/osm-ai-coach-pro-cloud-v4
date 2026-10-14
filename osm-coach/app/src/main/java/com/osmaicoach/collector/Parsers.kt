@@ -779,6 +779,63 @@ object Parsers {
         return words.count { t.contains(it) } >= 2
     }
 
+    // ---------------------------------------------------------------- FIM DA COMPETIÇÃO
+
+    data class SeasonRead(
+        val rank: Int?, val points: Int?, val goals: String?, val champion: String?, val board: String?,
+        val squadValue: String?, val valueRank: Int?, val over: Boolean
+    )
+
+    private val SEASON_UI = listOf(
+        "lista de treinadores", "melhores marcadores", "os que mais contribuem", "jogadores melhores", "valor do plantel",
+        "esta liga termina", "vinga-te", "valor medio", "missoes", "nova epoca", "campeao da liga", "melhor marcador", "classifica"
+    )
+
+    /**
+     * Resumo da época, classificação final e valor do plantel. Lê só o que dá para ancorar: a linha do MEU time
+     * (pelo nome) e as colunas pelos cabeçalhos ("Pts", "Gm-Gs", "Valor"); a mensagem da direção é a frase longa
+     * com "!"/"?"; o campeão é o nome logo abaixo de "Campeão da liga".
+     */
+    fun seasonSummary(o: OcrResult, myTeam: String?): SeasonRead {
+        fun n(t: String) = Txt.norm(t)
+        val board = o.lines.filter { ln ->
+            val t = n(ln.text)
+            Txt.letters(ln.text) >= 15 && (ln.text.contains('!') || ln.text.contains('?') || t.contains("epoca")) &&
+                SEASON_UI.none { t.contains(it) }
+        }.sortedBy { it.yc }.joinToString(" ") { it.text.trim() }.ifBlank { null }
+        val champHead = o.lines.firstOrNull { n(it.text).contains("campeao da liga") }
+        val champion = champHead?.let { h ->
+            o.lines.filter { it !== h && abs(it.xc - h.xc) <= 0.05f && it.yc > h.yc && it.yc - h.yc <= 0.35f && Txt.letters(it.text) >= 3 }
+                .minByOrNull { it.yc }?.text?.trim()
+        }
+        var rank: Int? = null
+        var points: Int? = null
+        var goals: String? = null
+        var value: String? = null
+        var valueRank: Int? = null
+        val key = myTeam?.let { Txt.key(it) }?.takeIf { it.length >= 4 }
+        val mine = if (key == null) null else o.lines.filter { Txt.sim(Txt.key(it.text), key) >= 0.85 }.minByOrNull { it.xc }
+        if (mine != null) {
+            // o número da posição fica entre a linha do time e a do apelido, na coluna da esquerda
+            val rowY = mine.yc + 0.02f
+            fun near(t: OcrToken, x: Float) = abs(t.xc - x) <= 0.025f && abs(t.yc - rowY) <= 0.045f
+            val rankTok = o.tokens.filter { it.xc < 0.06f && abs(it.yc - rowY) <= 0.045f && intTok(it) != null }.minByOrNull { abs(it.yc - rowY) }
+            // cabeçalho de coluna é uma linha sozinha ("Valor"), não a palavra dentro de "Valor do plantel"
+            val ptsHead = o.lines.firstOrNull { n(it.text) == "pts" }
+            val gmHead = o.lines.firstOrNull { n(it.text).replace(" ", "") == "gm-gs" }
+            val valHead = o.lines.firstOrNull { n(it.text) == "valor" }
+            if (ptsHead != null) {
+                rank = rankTok?.let { intTok(it) }?.takeIf { it in 1..40 }
+                points = o.tokens.filter { near(it, ptsHead.xc) && intTok(it) != null }.minByOrNull { abs(it.yc - rowY) }?.let { intTok(it) }
+                goals = gmHead?.let { h -> o.tokens.filter { near(it, h.xc) && RX_SCORE.matches(it.text.trim()) }.minByOrNull { abs(it.yc - rowY) }?.text?.trim() }
+            } else if (valHead != null) {
+                valueRank = rankTok?.let { intTok(it) }?.takeIf { it in 1..40 }
+                value = o.tokens.filter { abs(it.xc - valHead.xc) <= 0.04f && abs(it.yc - rowY) <= 0.045f }.mapNotNull { Money.extract(it.text) }.firstOrNull()
+            }
+        }
+        return SeasonRead(rank, points, goals, champion, board, value, valueRank, SeasonScreens.seasonOver(o.fullText))
+    }
+
     // ---------------------------------------------------------------- MERCADO
     fun market(o: OcrResult): Extraction {
         val f = LinkedHashMap<String, Reading>()
