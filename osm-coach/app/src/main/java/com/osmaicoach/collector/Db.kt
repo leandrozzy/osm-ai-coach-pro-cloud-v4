@@ -271,6 +271,9 @@ interface CoachDao {
     @Query("SELECT * FROM sessions ORDER BY startedAt DESC")
     suspend fun allSessions(): List<SessionEntity>
 
+    @Query("SELECT * FROM screens WHERE sessionId = :id ORDER BY at ASC")
+    suspend fun screensOfSession(id: String): List<ScreenEntity>
+
     @Query("SELECT * FROM screens ORDER BY at DESC LIMIT :limit")
     suspend fun allScreens(limit: Int): List<ScreenEntity>
 
