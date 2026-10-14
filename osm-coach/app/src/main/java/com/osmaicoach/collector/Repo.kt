@@ -179,6 +179,10 @@ class Repo(private val ctx: Context) {
             dao.deletePlan(slot, p.kind)
         }
         dao.deletePlan(slot, "tactic")
+        dao.plan(slot, "season")?.let {
+            dao.putPlan(PlanEntity(slot, "old_" + tag + "_season", it.json, it.at))
+            dao.deletePlan(slot, "season")
+        }
         for (k in listOf(K.ROUND, K.ROUND_DONE, K.MATCH_AT)) dao.deleteField(slot, k)
         learn(slot, "temporada", "Competição nova (rodada $r depois da $done): calendário e relatórios antigos arquivados; o aprendizado das táticas continua.", now)
         return true
@@ -600,6 +604,18 @@ class Repo(private val ctx: Context) {
                 for (o in list.takeLast(20)) keep.put(o)
                 dao.putPlan(PlanEntity(slot, "board", j.put("items", keep).toString(), now))
             }
+        }
+        // resumo estruturado (para o cartão de fim de competição): cada leitura completa o que faltava
+        if (r.rank != null || r.points != null || r.champion != null || r.squadValue != null) {
+            val s = planJson(slot, "season")
+            r.rank?.let { s.put("rank", it) }
+            r.points?.let { s.put("points", it) }
+            r.goals?.let { s.put("goals", it) }
+            r.champion?.let { s.put("champion", it) }
+            r.squadValue?.let { s.put("value", it) }
+            r.valueRank?.let { s.put("valueRank", it) }
+            if (r.over) s.put("over", true)
+            dao.putPlan(PlanEntity(slot, "season", s.put("at", now).toString(), now))
         }
         val pos = LinkedHashMap<String, Reading>()
         r.rank?.let { pos[K.LEAGUE_POS] = Reading(it.toString(), 0.9) }
