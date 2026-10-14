@@ -472,7 +472,8 @@ object AiClient {
                                 continue
                             }
                         }
-                        r.code == 400 && withThinking && b.contains("thinking") -> {
+                        // 400 "invalid argument": alguns modelos (ex. *-lite novos) recusam o thinkingConfig. Tenta sem ele.
+                        r.code == 400 && withThinking && (b.contains("thinking") || b.contains("invalid argument")) -> {
                             withThinking = false
                             continue
                         }
@@ -581,7 +582,7 @@ object AiClient {
         if (jpeg != null) {
             val models = compatVisionModels(ctx, base, key)
             if (models.isEmpty()) {
-                return@withContext Reply(false, null, "este provedor não tem modelo que leia imagem (Groq tem: use a URL https://api.groq.com/openai/v1)")
+                return@withContext Reply(false, null, "o provedor alternativo não oferece hoje nenhum modelo que leia imagem para esta chave")
             }
             var lastErr = "falha desconhecida"
             for (model in models) {
@@ -764,7 +765,28 @@ object AiClient {
         val ck = Settings.get(ctx, Settings.COMPAT_KEY, "")
         val base = Settings.get(ctx, Settings.COMPAT_BASE, Settings.DEFAULT_COMPAT_BASE).trimEnd('/')
         if (ck.isNotBlank() && base.contains("groq.com")) {
-            for (model in listOf("groq/compound", "groq/compound-mini", "compound-beta")) {
+            // gpt-oss no Groq com a ferramenta de busca no navegador (a chave gratuita costuma ter acesso)
+            for (model in listOf("openai/gpt-oss-120b", "openai/gpt-oss-20b")) {
+                AiStatus.set("Pesquisando a comunidade do OSM na internet (Groq $model + busca)…")
+                Diag.aiCalls.incrementAndGet()
+                try {
+                    val body = JSONObject().put("model", model).put("temperature", 0.2)
+                        .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", prompt)))
+                        .put("tools", JSONArray().put(JSONObject().put("type", "browser_search"))).toString()
+                    val r = request("POST", "$base/chat/completions", mapOf("Authorization" to "Bearer $ck"), body)
+                    if (r.code in 200..299) {
+                        val t = JSONObject(r.body).optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content")
+                        if (!t.isNullOrBlank()) {
+                            AiStatus.set("")
+                            return@withContext Reply(true, t, null)
+                        }
+                        errs.add("Groq $model (busca): resposta vazia")
+                    } else errs.add("Groq $model (busca): HTTP ${r.code} " + short(r.body))
+                } catch (e: Exception) {
+                    errs.add("Groq $model (busca): " + (e.message ?: e.javaClass.simpleName))
+                }
+            }
+            for (model in listOf("groq/compound", "groq/compound-mini")) {
                 AiStatus.set("Pesquisando a comunidade do OSM na internet (Groq $model)…")
                 Diag.aiCalls.incrementAndGet()
                 try {
@@ -902,14 +924,13 @@ object AiPrompts {
         "offside (\"Sim\" ou \"Não\"), tackle (desarme: ex. \"Normal\" ou \"Agressivo\"), " +
         "secretTraining (\"Sim\" SOMENTE se houver um cadeado visível no relatório; caso contrário \"NI\"), " +
         "trainingCamp (\"Sim\"/\"Não\"/\"NI\"), rivalStrength (número), rivalValue (ex.: \"21,1M\" — mantenha a vírgula), " +
-        "stadiumLevel (texto), stadiumBonus (texto), loginBonus (texto), referee (\"Brando\", \"Médio\" ou \"Rigoroso\" pela cor/nível do termômetro)."
+        "stadiumLevel (texto), stadiumBonus (texto), loginBonus (texto), referee (pela cor do termômetro ao lado de \"Árbitro\": verde = \"Brando\", laranja = \"Médio\", vermelho = \"Rigoroso\")."
 
     fun squad(): String = HEAD +
         "É a lista de elenco. Chaves: team (nome do time no cabeçalho), players (lista). Cada jogador: " +
         "name, age (número), pos (código como ED, PL, MC, DC, GR), strength (a força em negrito: Ata para atacantes, " +
-        "Med para meias, Def para defensores e goleiros), value (ex.: \"7,3M\"), " +
-        "training (true somente se a camisa for LARANJA; false se for azul/cinza; null se não der para ver). " +
-        "Camisa laranja = jogador treinando. Cartão amarelo/vermelho NÃO é treino nem venda."
+        "Med para meias, Def para defensores e goleiros), value (ex.: \"7,3M\"). " +
+        "Não informe treino: a cor da camisa no plantel não indica treino."
 }
 
 object AiMapper {
@@ -964,7 +985,8 @@ object AiMapper {
             val pos = o.optString("pos").trim().uppercase().takeIf { it.length in 1..4 && it.all { ch -> ch.isLetter() } }
             val strength = o.optInt("strength", -1).takeIf { it in 30..120 }
             val value = o.optString("value").trim().takeIf { Money.valid(it) }
-            val training = if (o.has("training") && !o.isNull("training")) o.optBoolean("training") else null
+            // treino vem só da tela de Treinamento (a camisa no plantel não indica treino)
+            val training: Boolean? = null
             if (strength == null && value == null) continue
             out.add(PlayerRead(name, age, pos, Pos.cat(pos), strength, value, training, null))
         }
@@ -1261,6 +1283,46 @@ object MetaRefresh {
             runCatching { repo.dao.putPlan(PlanEntity(0, LAST, log.toString(), now)) }
             running = false
         }
+    }
+
+    /** Situação do modelo da comunidade para a tela de Ajustes: o que está valendo e como foi a última pesquisa. */
+    suspend fun status(repo: Repo): List<String> {
+        val out = ArrayList<String>()
+        val fmt = java.text.SimpleDateFormat("dd/MM HH:mm", java.util.Locale.getDefault())
+        val r = remote(repo)
+        val rules = r?.optJSONObject("rules")
+        if (r == null || rules == null || rules.length() == 0) {
+            out.add("Nenhuma regra da internet ainda: a tática usa o modelo embutido do app + os resultados dos seus slots.")
+        } else {
+            val age = System.currentTimeMillis() - r.optLong("at")
+            out.add(
+                "${rules.length()} situação(ões) da comunidade, atualizadas em ${fmt.format(java.util.Date(r.optLong("at")))}" +
+                    if (age > 30L * 86400000L) " (vencidas: mais de 30 dias, não estão sendo usadas)" else " (em uso)"
+            )
+            val names = mapOf("U" to "mais fraco", "E" to "parelho", "F" to "mais forte")
+            for (k in rules.keys().asSequence().sorted()) {
+                val o = rules.optJSONObject(k) ?: continue
+                val rel = names[k.substringBefore('|')] ?: k.substringBefore('|')
+                val rf = k.substringAfter('|').let { if (it == "?") "qualquer formação" else it }
+                out.add(
+                    "• Meu time $rel vs $rf: ${o.optString("formation")} • ${o.optString("style")}" +
+                        (if (o.has("pressure")) " • pressão ${o.optInt("pressure")}" else "") +
+                        (if (o.has("mentality")) " / estilo ${o.optInt("mentality")}" else "") +
+                        (if (o.has("tempo")) " / ritmo ${o.optInt("tempo")}" else "") + " — ${o.optString("source")}"
+                )
+            }
+        }
+        repo.dao.plan(0, LAST)?.let { p ->
+            val j = runCatching { JSONObject(p.json) }.getOrNull() ?: return@let
+            val res = when {
+                j.has("error") -> "falhou: " + j.optString("error").take(160)
+                j.optInt("valid", -1) == 0 -> "a resposta veio sem regras utilizáveis"
+                j.has("valid") -> "${j.optInt("valid")} regra(s) aproveitada(s)" + (if (j.optString("searchError").isNotBlank()) " (sem busca na internet: ${j.optString("searchError").take(120)})" else " (com busca na internet)")
+                else -> "sem resultado"
+            }
+            out.add("Última pesquisa: ${fmt.format(java.util.Date(p.at))} — $res")
+        }
+        return out
     }
 
     /** Atualiza sozinho uma vez por semana (em segundo plano); depois de uma tentativa, espera 24 h para tentar de novo. */

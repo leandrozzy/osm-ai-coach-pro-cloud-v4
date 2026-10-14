@@ -817,7 +817,7 @@ object Director {
         val mids = if (human) listOf(t0.advMid, "Manter posições", "Ajudar a defesa").distinct() else listOf(t0.advMid)
         for (f in candidateFormations(res, inp)) {
             val rows = TacticEngine.lineup(f, inp.players, inp.fitness)?.first ?: continue
-            for (st in SIM_STYLES) for (dm in listOf(-12, 0, 12)) for (tk in Osm.allowedTackles(inp.referee).filter { it != "Cuidadoso" })
+            for (st in SIM_STYLES) for (dm in listOf(-12, 0, 12)) for (tk in Osm.allowedTackles(inp.referee).filter { it != "Cuidadoso" }.ifEmpty { listOf("Cuidadoso") })
                 for (off in listOf("Não", "Sim")) for (mk in listOf("À zona", "Homem-a-homem")) for (md in mids) {
                     // contra-ataque pede ritmo alto (transição rápida) e bloco baixo (pressão baixa)
                     val counter = st == "Contra-ataque"

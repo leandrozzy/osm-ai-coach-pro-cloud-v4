@@ -563,7 +563,9 @@ data class SlotData(
     /** Leituras que não batem entre telas (para conferir). */
     val conflicts: List<String> = emptyList(),
     /** Jogadores marcados fora do próximo jogo. */
-    val unavailable: Set<String> = emptySet()
+    val unavailable: Set<String> = emptySet(),
+    /** Fim da competição e mensagens da direção (mais nova primeiro). */
+    val board: List<String> = emptyList()
 )
 
 data class SessionRow(val s: SessionEntity, val counts: String, val unassigned: Int)
@@ -575,6 +577,9 @@ private suspend fun loadSlot(ctx: Context, slot: Int): SlotData {
         repo.relinkResults(slot)
         repo.validateHuman(slot)
         repo.syncRound(slot)
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        // saiu da tela antes de terminar: não é erro
+        throw e
     } catch (e: Exception) {
         Diag.lastError = "Resultados: " + (e.message ?: e.javaClass.simpleName)
     }
@@ -610,6 +615,7 @@ private suspend fun loadSlot(ctx: Context, slot: Int): SlotData {
         reports = dao.matchReports(slot),
         fitness = repo.fitness(slot),
         rivalProfile = repo.rivalProfile(slot),
+        board = repo.boardMessages(slot),
         win = tplan?.takeIf { tacticCurrent(it, f) }?.let { Director.winProb(repo, slot, it) },
         evidence = repo.evidence(slot),
         conflicts = repo.conflicts(slot),
@@ -1473,6 +1479,7 @@ private fun SlotSummaryTab(slot: Int, d: SlotData) {
                 fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp)
             )
         }
+        BoardPanel(d.board)
     } else Panel {
         Text("Próximo jogo", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
         val rival = fv(d, K.RIVAL_TEAM)
@@ -1684,7 +1691,7 @@ private fun TrainingDialog(slot: Int, p: PlayerEntity, onDone: () -> Unit) {
         title = { Text(p.name, fontWeight = FontWeight.Bold) },
         text = {
             Column {
-                Text("Este jogador está em treino (camisa laranja)? Cada slot tem até 5 treinos: 4 treinadores de posição + 1 universal.", fontSize = 12.sp, color = C.MUTED)
+                Text("Este jogador está em treino? O app lê isso da tela de Treinamento do OSM. Cada slot tem até 5 treinos: 1 por treinador de posição (GOL, DEF, MEI, ATA) + 1 universal (qualquer posição).", fontSize = 12.sp, color = C.MUTED)
                 OutlinedButton(onClick = { set(true) }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("🟠 Está treinando") }
                 OutlinedButton(onClick = { set(false) }, modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) { Text("Não está treinando") }
                 OutlinedButton(onClick = { set(null) }, modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) { Text("Voltar ao automático") }
@@ -1728,7 +1735,7 @@ private fun SlotSquad(slot: Int, d: SlotData) {
             }
         }
         Spacer(Modifier.height(8.dp))
-        KV("Treinando (camisa laranja)", "${mine.count { it.training == true }} de 5")
+        KV("Treinando (tela de Treinamento)", "${mine.count { it.training == true }} de 5")
         Text("São no máximo 5 treinos por vez (4 treinadores de posição + 1 universal). Toque num jogador para corrigir o treino ou remover quem não existe no elenco.", fontSize = 11.sp, color = C.MUTED)
         Text("⛔ = suspenso/lesionado no próximo jogo: toque no ícone à direita e ele sai da escalação da tática (só nesta rodada).", fontSize = 11.sp, color = C.MUTED)
         KV("Força geral / GOL / DEF / MEI / ATA", listOf(K.MY_STRENGTH, K.MY_GOL, K.MY_DEF, K.MY_MID, K.MY_ATK).joinToString(" / ") { fv(d, it) })
@@ -3001,6 +3008,28 @@ private fun SlotResult(slot: Int, d: SlotData, goTactic: () -> Unit) {
     }
 }
 
+/** Fim da competição (posição, pontos, campeão, valor) e o que a direção disse — entra no aprendizado e na IA. */
+@Composable
+private fun BoardPanel(items: List<String>) {
+    if (items.isEmpty()) return
+    Panel {
+        Text("🏁 Fim da competição e direção", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+        for (t in items.take(8)) {
+            val fired = Txt.norm(t).contains("demiss")
+            Text(
+                (if (fired) "⚠ " else "• ") + t, fontSize = 12.sp, color = if (fired) C.WARN else Color.White,
+                fontWeight = if (fired) FontWeight.Bold else FontWeight.Normal, modifier = Modifier.padding(top = 4.dp)
+            )
+        }
+        if (items.any { Txt.norm(it).contains("demiss") }) {
+            Text(
+                "A direção falou em demissão: na próxima época este slot pode ser de outro clube. O app recomeça o slot quando ler o novo time.",
+                fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 6.dp)
+            )
+        }
+    }
+}
+
 @Composable
 private fun SlotLearning(slot: Int, d: SlotData) {
     data class Row2(
@@ -3036,6 +3065,7 @@ private fun SlotLearning(slot: Int, d: SlotData) {
     val logsJ = d.logs.mapNotNull { runCatching { JSONObject(it.json) }.getOrNull() }
     val (hit, graded) = Calib.accuracy(logsJ)
     val calib = Calib.offset(logsJ)
+    BoardPanel(d.board)
     Panel {
         Text("🧠 Treinador: o que vou fazer no próximo jogo", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
         if (games.isEmpty()) {
@@ -3323,6 +3353,10 @@ private fun SettingsTab() {
                 modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
             ) { Text("🌐 Atualizar agora pela internet") }
             if (metaMsg.isNotBlank()) Text(metaMsg, fontSize = 12.sp, color = C.WARN)
+            // o que está valendo agora (regras da internet) e como foi a última pesquisa
+            val metaTick = rememberTick(5000L)
+            val metaLines = rememberLoaded(emptyList<String>(), metaTick, metaMsg) { MetaRefresh.status(Repo(ctx)) }
+            for (l in metaLines) Text(l, fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 3.dp))
         }
         Panel {
             Text("Diagnóstico", fontWeight = FontWeight.Bold)

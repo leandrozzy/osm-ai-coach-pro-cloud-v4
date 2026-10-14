@@ -337,7 +337,8 @@ object TacticEngine {
         }
 
         val tackle = when {
-            inp.referee == "Rigoroso" -> "Normal"
+            // termômetro laranja ou vermelho: cartão fácil -> Cuidadoso
+            inp.referee == "Rigoroso" || inp.referee == "Médio" -> "Cuidadoso"
             inp.referee == "Brando" && diff != null && diff >= 5 -> "Agressivo"
             else -> "Normal"
         }
@@ -385,7 +386,9 @@ object TacticEngine {
         if (inp.myAtk != null && inp.rivalDef != null) {
             notes.add("Ataque ${inp.myAtk} vs defesa rival ${inp.rivalDef} (${if (inp.myAtk >= inp.rivalDef) "+" else "-"}${gap(inp.myAtk, inp.rivalDef)}).")
         }
-        if (inp.referee == "Rigoroso") notes.add("Árbitro rigoroso: desarme em Normal para evitar cartões.")
+        if (inp.referee == "Rigoroso" || inp.referee == "Médio") {
+            notes.add("Árbitro ${if (inp.referee == "Rigoroso") "rigoroso (termômetro vermelho)" else "médio (termômetro laranja)"}: desarme Cuidadoso para evitar cartões.")
+        }
         if (inp.referee == "Brando" && tackle == "Agressivo") notes.add("Árbitro brando e rival fraco: desarme Agressivo é seguro.")
         if (marking == "Homem-a-homem") notes.add("Ataque do rival (${inp.rivalAtk}) supera sua defesa (${inp.myDef}): marcação homem a homem.")
         if (inp.fitness.isNotEmpty()) {

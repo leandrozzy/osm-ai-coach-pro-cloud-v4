@@ -132,6 +132,7 @@ class Repo(private val ctx: Context) {
             }
             ScreenType.STADIUM -> putFields(slot, ex.fields, source, now)
             ScreenType.RESULT -> applyResult(slot, ex, now)
+            ScreenType.TRAINING -> applyTraining(slot, ex.trainees, now)
             else -> 0
         }
     }
@@ -481,6 +482,73 @@ class Repo(private val ctx: Context) {
         return changed
     }
 
+    // ------------------------------------------------------------------ treinos (tela de Treinamento)
+
+    /** Jogador do meu elenco pelo nome que a tela de Treinamento mostra ("BUKAYO SAKA" -> Saka). */
+    private fun matchTrainee(mine: List<PlayerEntity>, name: String, role: String): PlayerEntity? {
+        val full = Txt.key(name)
+        val last = Txt.key(name.trim().split(Regex("\\s+")).last())
+        fun cat(p: PlayerEntity) = role == "UNI" || p.cat == null || p.cat == role
+        val hits = mine.filter { p ->
+            val k = p.nameKey
+            k.length >= 3 && (k == full || k == last || (k.length >= 4 && full.endsWith(k)) || Txt.sim(k, last) >= 0.85 ||
+                (full.length >= 6 && Txt.sim(k, full) >= 0.85))
+        }
+        return hits.firstOrNull { cat(it) } ?: hits.singleOrNull()
+    }
+
+    /**
+     * Treinos lidos da tela de Treinamento (a última leitura de cada treinador vale). Com os 4 treinadores de posição
+     * lidos, quem não está em nenhum deixa de "treinar" no app; a camisa do plantel não conta mais.
+     */
+    suspend fun applyTraining(slot: Int, list: List<TraineeRead>, now: Long): Int {
+        if (list.isEmpty()) return 0
+        val j = planJson(slot, "trainscreen")
+        for (t in list) {
+            j.put(t.role, JSONObject().put("name", t.name ?: JSONObject.NULL).put("state", t.state).put("at", now))
+        }
+        dao.putPlan(PlanEntity(slot, "trainscreen", j.toString(), now))
+        val mine = dao.playersOf(slot).filter { it.owner == "MY" }
+        if (mine.isEmpty()) return 0
+        // treinando = cronômetro rodando, lido nas últimas 24 h
+        val active = HashSet<String>()
+        val labels = ArrayList<String>()
+        var rolesKnown = 0
+        for (role in listOf("UNI", "ATA", "MEI", "DEF", "GOL")) {
+            val o = j.optJSONObject(role) ?: continue
+            if (now - o.optLong("at") > 24L * 3600000L) continue
+            if (role != "UNI") rolesKnown++
+            val nm = if (o.isNull("name")) null else o.optString("name")
+            val p = nm?.let { matchTrainee(mine, it, role) }
+            when (o.optString("state")) {
+                "active" -> {
+                    if (p != null) active.add(p.nameKey)
+                    labels.add(role + " " + (p?.name ?: nm ?: "?"))
+                }
+                "done" -> labels.add(role + " " + (p?.name ?: nm ?: "?") + " (concluído, falta reclamar)")
+            }
+        }
+        var changed = 0
+        val full = rolesKnown >= 4
+        for (p in mine) {
+            val want = when {
+                p.nameKey in active -> true
+                full -> false
+                else -> continue
+            }
+            if (p.training != want) {
+                dao.putPlayer(p.copy(training = want))
+                changed++
+            }
+        }
+        // o que o usuário marcou à mão antes desta leitura deixa de valer (a tela do jogo é a fonte)
+        dao.plan(slot, "trainov")?.let { if (it.at < now) dao.deletePlan(slot, "trainov") }
+        if (changed > 0) {
+            learn(slot, "treino", "Treinos (tela de Treinamento): " + labels.joinToString(", ").ifBlank { "nenhum treinando" } + ".", now)
+        }
+        return changed
+    }
+
     // ------------------------------------------------------------------ fim de temporada e diretoria
 
     /**
@@ -505,16 +573,33 @@ class Repo(private val ctx: Context) {
         if (items.isNotEmpty()) {
             val j = planJson(slot, "board")
             val arr = j.optJSONArray("items") ?: JSONArray()
-            val seen = (0 until arr.length()).map { Txt.key(arr.optJSONObject(it)?.optString("text") ?: "") }.toHashSet()
+            val list = ArrayList<JSONObject>()
+            for (i in 0 until arr.length()) arr.optJSONObject(i)?.let { list.add(it) }
             for (t in items) {
-                if (!seen.add(Txt.key(t))) continue
-                arr.put(JSONObject().put("at", now).put("text", t))
+                val k = Txt.key(t)
+                // mesma frase lida de novo (OCR com uma letra diferente, ou cortada no fim): fica a versão mais completa
+                val same = list.indexOfFirst { o ->
+                    val ok = Txt.key(o.optString("text"))
+                    ok == k || ok.startsWith(k) || k.startsWith(ok) || (k.length <= 60 && Txt.sim(ok, k) >= 0.85)
+                }
+                if (same >= 0) {
+                    val ok = Txt.key(list[same].optString("text"))
+                    // só troca por uma versão bem mais longa (frase que veio cortada); 1-2 letras a mais é erro de OCR
+                    if (k.length > ok.length + 4) {
+                        list[same] = JSONObject().put("at", now).put("text", t)
+                        n++
+                    }
+                    continue
+                }
+                list.add(JSONObject().put("at", now).put("text", t))
                 learn(slot, "diretoria", t, now)
                 n++
             }
-            val keep = JSONArray()
-            for (i in maxOf(0, arr.length() - 20) until arr.length()) keep.put(arr.get(i))
-            if (n > 0) dao.putPlan(PlanEntity(slot, "board", j.put("items", keep).toString(), now))
+            if (n > 0) {
+                val keep = JSONArray()
+                for (o in list.takeLast(20)) keep.put(o)
+                dao.putPlan(PlanEntity(slot, "board", j.put("items", keep).toString(), now))
+            }
         }
         val pos = LinkedHashMap<String, Reading>()
         r.rank?.let { pos[K.LEAGUE_POS] = Reading(it.toString(), 0.9) }
@@ -534,7 +619,17 @@ class Repo(private val ctx: Context) {
     /** Mensagens da diretoria / fim de temporada guardadas (mais nova primeiro). */
     suspend fun boardMessages(slot: Int): List<String> {
         val arr = planJson(slot, "board").optJSONArray("items") ?: return emptyList()
-        return (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.optString("text") }.reversed()
+        val all = (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.optString("text") }
+            .filter { !Txt.norm(it).contains("atribuid") }
+            .map { it.replace(Regex("(?<=[A-Za-z])0|0(?=[A-Za-z])"), "O") }
+        // leituras repetidas da mesma frase: fica a mais completa
+        val out = ArrayList<String>()
+        for (t in all.reversed()) {
+            val k = Txt.key(t)
+            val i = out.indexOfFirst { o -> val ok = Txt.key(o); ok == k || ok.startsWith(k) || k.startsWith(ok) || (k.length <= 60 && Txt.sim(ok, k) >= 0.85) }
+            if (i < 0) out.add(t) else if (k.length > Txt.key(out[i]).length + 4) out[i] = t
+        }
+        return out
     }
 
     /** Valor digitado pelo usuário: confiança acima de qualquer leitura (nada da leitura automática sobrescreve). */
@@ -1324,6 +1419,16 @@ class Repo(private val ctx: Context) {
         val removed = dao.deleteLegacyFields()
         prefs.edit().putBoolean("legacy_imported", true).apply()
         try {
+            // Versões antigas marcavam "treinando" pela camisa laranja do plantel (errado). Uma vez: zera os slots que
+            // ainda não leram a tela de Treinamento (a leitura dela refaz tudo certo).
+            if (!prefs.getBoolean("train_reset_v1", false)) {
+                for (slot in 1..4) {
+                    if (dao.plan(slot, "trainscreen") != null) continue
+                    for (p in dao.playersOf(slot)) if (p.training != null) dao.putPlayer(p.copy(training = null))
+                    dao.deletePlan(slot, "trainov")
+                }
+                prefs.edit().putBoolean("train_reset_v1", true).apply()
+            }
             dedupeSquads()
             dropStaleTactics()
             canonicalizeOptions()

@@ -72,7 +72,7 @@ class EngineTest {
     }
 
     @Test fun strictRefereeAvoidsAggressiveTackleAndLenientAllowsIt() {
-        assertEquals("Normal", TacticEngine.recommend(input(91, 61, "Rigoroso"))!!.tactic.tackle)
+        assertEquals("Cuidadoso", TacticEngine.recommend(input(91, 61, "Rigoroso"))!!.tactic.tackle)
         assertEquals("Agressivo", TacticEngine.recommend(input(91, 61, "Brando"))!!.tactic.tackle)
     }
 
@@ -293,17 +293,17 @@ class EngineTest {
     }
 
     @Test fun tackleFollowsTheReferee() {
-        assertEquals("Normal", Osm.clampTackle("Extremo", "Médio"))
-        assertEquals("Normal", Osm.clampTackle("Agressivo", "Médio"))
+        assertEquals("Cuidadoso", Osm.clampTackle("Extremo", "Médio"))
+        assertEquals("Cuidadoso", Osm.clampTackle("Agressivo", "Médio"))
         assertEquals("Normal", Osm.clampTackle("Extremo", null))
         assertEquals("Agressivo", Osm.clampTackle("Extremo", "Brando"))
         assertEquals("Cuidadoso", Osm.clampTackle("Cuidadoso", "Rigoroso"))
-        assertEquals("Normal", TacticEngine.recommend(input(91, 61, "Médio"))!!.tactic.tackle)
+        assertEquals("Cuidadoso", TacticEngine.recommend(input(91, 61, "Médio"))!!.tactic.tackle)
         val (t, _) = TacticValidator.validate(
             org.json.JSONObject().put("formation", "4-3-3 A").put("pressure", 60).put("mentality", 70).put("tempo", 60).put("tackle", "Extremo"),
             "Médio"
         )
-        assertEquals("Normal", t!!.tackle)
+        assertEquals("Cuidadoso", t!!.tackle)
     }
 
     @Test fun communityCounterTacticIsKnown() {

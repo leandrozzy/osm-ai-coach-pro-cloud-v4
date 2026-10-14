@@ -225,6 +225,7 @@ class FramePipeline private constructor(private val ctx: Context) {
         ScreenType.REPORT -> Parsers.report(ocr)
         ScreenType.STADIUM -> Parsers.stadium(ocr, img)
         ScreenType.RESULT -> Parsers.matchResult(ocr)
+        ScreenType.TRAINING -> Extraction(ScreenType.TRAINING, trainees = Parsers.training(ocr))
         else -> Extraction(type)
     }
 
@@ -310,6 +311,13 @@ class FramePipeline private constructor(private val ctx: Context) {
             val ocr = OcrEngine.read(bmp)
             lastProcessedAt = now
             Diag.ocr.incrementAndGet()
+            // Tela do próprio OSM Coach (barra "Hoje/Sessões/Slots/Diretor/Ajustes" ou textos dele): não é o jogo.
+            if (OwnApp.looksLikeApp(ocr.fullText)) {
+                Diag.discarded.incrementAndGet()
+                Diag.log("Descartada: tela do próprio OSM Coach")
+                lastProcessed = h
+                return
+            }
             val type = ScreenClassifier.classify(ocr, topBar)
             Diag.currentType = type.name
             lastType = type
