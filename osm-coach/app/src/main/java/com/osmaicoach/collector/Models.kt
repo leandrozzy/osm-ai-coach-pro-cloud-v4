@@ -177,8 +177,13 @@ object Overlay {
     /** Palavra que começa com o texto de um botão colado em outra ("Encerraroden", "Taticabarnes"). */
     fun glued(text: String): Boolean {
         val n = Txt.norm(text).replace(Regex("[^a-z]"), "")
-        return n.length > 8 && (n.startsWith("encerrar") || n.startsWith("tatica") && n.length > 10)
+        // o OCR também lê "Encerar", "Encerr", "TEncerar", "iencerrar…" quando o botão cobre o texto do jogo
+        return n.length >= 6 && (Regex("encerr?ar|encerr").containsMatchIn(n) || (n.startsWith("tatica") && n.length > 10))
     }
+
+    /** Texto que veio (todo ou em parte) dos botões do app: "App", "Encerrar", "Tática", e colagens. */
+    fun polluted(text: String): Boolean = isChip(text) || glued(text) ||
+        Txt.norm(text).split(" ").any { it == "app" || it == "osm" || glued(it) }
 
     fun covers(xc: Float, yc: Float): Boolean {
         val b = bounds ?: return false

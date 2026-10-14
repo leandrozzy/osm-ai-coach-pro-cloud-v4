@@ -167,6 +167,12 @@ object Evidence {
      */
     private fun weight(source: String): Int = if (source == "REPORT" || source == "PREGAME" || source == "SQUAD") 2 else 1
 
+    /** Sigla curta toda em maiúsculas ("NNIV", "ED") lida uma vez pode ser ruído: precisa de outra tela. */
+    private fun weak(value: String): Boolean {
+        val t = value.trim()
+        return t.length <= 4 && t.none { it.isLowerCase() || it.isDigit() }
+    }
+
     private val JUNK_PREFIX = listOf("anniv", "aniver")
     private val JUNK_WORDS = setOf(
         "season", "temporada", "edition", "edicao", "jornada", "liga", "copa", "batalha", "estadio", "arbitro",
@@ -205,7 +211,7 @@ object Evidence {
             if (field == K.RIVAL_NICK && !plausibleNick(v)) continue
             val b = f.optJSONObject(v) ?: continue
             val srcs = b.keys().asSequence().toList()
-            val w = srcs.sumOf { weight(it) }
+            val w = srcs.sumOf { weight(it) }.let { w -> if (field == K.RIVAL_NICK && weak(v) && srcs.size < 2) minOf(w, 1) else w }
             if (out == null || w > out.weight) out = Best(v, w, srcs)
         }
         return out
@@ -220,7 +226,7 @@ object Evidence {
             if (field == K.RIVAL_NICK && !plausibleNick(v)) return@mapNotNull null
             val b = f.optJSONObject(v) ?: return@mapNotNull null
             val srcs = b.keys().asSequence().toList()
-            Best(v, srcs.sumOf { weight(it) }, srcs)
+            Best(v, srcs.sumOf { weight(it) }.let { w -> if (field == K.RIVAL_NICK && weak(v) && srcs.size < 2) minOf(w, 1) else w }, srcs)
         }.sortedByDescending { it.weight }.toList()
     }
 
