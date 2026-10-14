@@ -3233,6 +3233,23 @@ private fun SettingsTab() {
         NotificationsPanel()
         val exportScope = rememberCoroutineScope()
         var exportMsg by remember { mutableStateOf("") }
+        var metaMsg by remember { mutableStateOf("") }
+        Panel {
+            Text("Modelo de táticas da comunidade", fontWeight = FontWeight.Bold)
+            Text(
+                "O Gemini pesquisa na internet (fórum do OSM, osmnextlevel, osmcoach, YouTube…) as táticas recomendadas por situação. " +
+                    "É só o ponto de partida: os resultados dos seus 4 slots ajustam por cima. Atualiza sozinho uma vez por semana.",
+                fontSize = 12.sp, color = C.MUTED
+            )
+            OutlinedButton(
+                onClick = {
+                    metaMsg = "Pesquisando…"
+                    exportScope.launch { metaMsg = withContext(Dispatchers.IO) { MetaRefresh.refresh(ctx) } }
+                },
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+            ) { Text("🌐 Atualizar agora pela internet") }
+            if (metaMsg.isNotBlank()) Text(metaMsg, fontSize = 12.sp, color = C.WARN)
+        }
         Panel {
             Text("Diagnóstico", fontWeight = FontWeight.Bold)
             Text(

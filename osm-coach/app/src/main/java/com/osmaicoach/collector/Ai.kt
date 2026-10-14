@@ -8,6 +8,7 @@ import java.net.SocketTimeoutException
 import java.net.URL
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -519,6 +520,43 @@ object AiClient {
         return lines.joinToString("\n")
     }
 
+    /** Pergunta ao Gemini com busca no Google (fontes atuais da internet). Devolve o texto (com JSON no meio). */
+    suspend fun askGrounded(ctx: Context, prompt: String): Reply = withContext(Dispatchers.IO) {
+        val key = Settings.get(ctx, Settings.GEMINI_KEY, "")
+        if (key.isBlank()) return@withContext Reply(false, null, "chave do Gemini não configurada")
+        val models = geminiModels(ctx, key, false).filter { !blockedToday(ctx, it) && !it.contains("lite") }
+            .ifEmpty { listOf("gemini-2.5-flash") }
+        var lastErr = "falha desconhecida"
+        for (model in models.take(3)) {
+            Diag.aiCalls.incrementAndGet()
+            AiStatus.set("Pesquisando a comunidade do OSM na internet ($model)…")
+            val body = JSONObject()
+                .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
+                .put("tools", JSONArray().put(JSONObject().put("google_search", JSONObject())))
+                .put("generationConfig", JSONObject().put("temperature", 0.2).put("maxOutputTokens", 8192))
+                .toString()
+            try {
+                val r = request("POST", "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent", mapOf("x-goog-api-key" to key), body)
+                if (r.code in 200..299) {
+                    val parts = JSONObject(r.body).optJSONArray("candidates")?.optJSONObject(0)?.optJSONObject("content")?.optJSONArray("parts")
+                    val sb = StringBuilder()
+                    if (parts != null) for (i in 0 until parts.length()) sb.append(parts.optJSONObject(i)?.optString("text") ?: "")
+                    if (sb.isNotBlank()) {
+                        AiStatus.set("")
+                        return@withContext Reply(true, sb.toString(), null)
+                    }
+                    lastErr = "resposta vazia ($model)"
+                } else {
+                    lastErr = "HTTP ${r.code} ($model)"
+                }
+            } catch (e: Exception) {
+                lastErr = (e.message ?: e.javaClass.simpleName) + " ($model)"
+            }
+        }
+        AiStatus.set("")
+        Reply(false, null, lastErr)
+    }
+
     fun parseJson(raw: String?): JSONObject? {
         if (raw == null) return null
         val s = raw.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
@@ -734,5 +772,72 @@ object Processor {
         repo.dao.updateScreenAi(s.id, r.state, s.extracted + r.changed, r.note)
         ProcessState.tick()
         ProcessState.finish(r.note)
+    }
+}
+
+
+/**
+ * Modelo da comunidade atualizado pela internet: o Gemini (com busca no Google) consulta fóruns e sites de OSM
+ * e devolve a tática recomendada por situação. Fica guardado (slot 0) e vale por 30 dias; os resultados reais
+ * dos 4 slots continuam ajustando por cima (MetaLearner).
+ */
+object MetaRefresh {
+    private const val KIND = "metaremote"
+    @Volatile var running = false
+
+    suspend fun remote(repo: Repo): JSONObject? = repo.dao.plan(0, KIND)?.json?.let { runCatching { JSONObject(it) }.getOrNull() }
+
+    private fun prompt(): String =
+        "Pesquise na internet (fórum oficial do Online Soccer Manager, osmnextlevel.com, osmcoach.com, osmtacticsassistant.com, " +
+            "osmguide.com, vídeos do YouTube) as táticas que a comunidade recomenda HOJE no OSM (temporada atual) e responda com " +
+            "um JSON {\"rules\": {...}}. Chaves das regras: \"U|<formação base do rival>\" (meu time mais fraco), \"E|...\" (parelho), " +
+            "\"F|...\" (meu time mais forte), com formação base do rival em [4-3-3, 4-4-2, 4-2-3-1, 4-5-1, 5-4-1, 5-3-2, 3-4-3, 5-2-3, 3-5-2, ?] " +
+            "(? = desconhecida). Cada regra: formation (uma de ${Formations.OSM}), style (um de ${Osm.STYLES}), pressure, mentality " +
+            "(o controle Estilo), tempo (0 a 100, jogando em casa), attack (um de ${Osm.ATTACK}), mid (um de ${Osm.MIDFIELD}), " +
+            "def (um de ${Osm.DEFENSE}), marking (um de ${Osm.MARKING}), offside (Sim/Não), source (site). Use só o que achar nas fontes; " +
+            "se não houver dado para uma situação, omita a chave. Responda APENAS o JSON."
+
+    suspend fun refresh(ctx: Context): String {
+        if (running) return "já está atualizando"
+        running = true
+        try {
+            val reply = AiClient.askGrounded(ctx, prompt())
+            val json = AiClient.parseJson(reply.text) ?: return "não consegui pesquisar agora (${reply.error ?: "resposta sem JSON"})"
+            val rules = json.optJSONObject("rules") ?: return "a pesquisa não trouxe regras"
+            val clean = JSONObject()
+            for (k in rules.keys()) {
+                if (!Regex("^[UEF]\\|[0-9?][0-9-]*$").matches(k)) continue
+                val o = rules.optJSONObject(k) ?: continue
+                val f = Formations.canonical(o.optString("formation")) ?: continue
+                val st = Osm.style(o.optString("style")) ?: continue
+                fun n(x: String): Int? = o.optInt(x, -1).takeIf { it in 0..100 }
+                val p = n("pressure") ?: continue
+                val m = n("mentality") ?: continue
+                val t = n("tempo") ?: continue
+                clean.put(
+                    k, JSONObject().put("formation", f).put("style", st).put("pressure", p).put("mentality", m).put("tempo", t)
+                        .put("attack", Osm.attack(o.optString("attack")) ?: "").put("mid", Osm.midfield(o.optString("mid")) ?: "")
+                        .put("def", Osm.defense(o.optString("def")) ?: "").put("marking", Osm.marking(o.optString("marking")) ?: "")
+                        .put("offside", if (o.optString("offside") == "Sim") "Sim" else "Não").put("source", o.optString("source").take(60))
+                )
+            }
+            if (clean.length() < 3) return "a pesquisa trouxe poucas regras válidas (${clean.length()}); mantive o modelo atual"
+            val now = System.currentTimeMillis()
+            Repo(ctx).dao.putPlan(PlanEntity(0, KIND, JSONObject().put("at", now).put("rules", clean).toString(), now))
+            return "modelo da comunidade atualizado: ${clean.length()} situações"
+        } finally {
+            running = false
+        }
+    }
+
+    /** Atualiza sozinho uma vez por semana (em segundo plano, se houver chave do Gemini). */
+    fun refreshIfStale(ctx: Context) {
+        if (running || Settings.get(ctx, Settings.GEMINI_KEY, "").isBlank()) return
+        AppScope.scope.launch(Dispatchers.IO) {
+            val r = remote(Repo(ctx))
+            if (r == null || System.currentTimeMillis() - r.optLong("at") > 7L * 86400000L) {
+                runCatching { Diag.log("Modelo da comunidade: " + refresh(ctx)) }
+            }
+        }
     }
 }

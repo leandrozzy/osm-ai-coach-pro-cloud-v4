@@ -174,6 +174,10 @@ object Overlay {
     @Volatile
     var bounds: FloatArray? = null
 
+    /** A foto foi tirada com os botões escondidos: nada na área deles é do app. */
+    @Volatile
+    var shotClean: Boolean = false
+
     /** Palavra que começa com o texto de um botão colado em outra ("Encerraroden", "Taticabarnes"). */
     fun glued(text: String): Boolean {
         val n = Txt.norm(text).replace(Regex("[^a-z]"), "")
@@ -186,6 +190,7 @@ object Overlay {
         Txt.norm(text).split(" ").any { it == "app" || it == "osm" || glued(it) }
 
     fun covers(xc: Float, yc: Float): Boolean {
+        if (shotClean) return false
         val b = bounds ?: return false
         return xc >= b[0] - 0.01f && xc <= b[2] + 0.01f && yc >= b[1] - 0.01f && yc <= b[3] + 0.01f
     }
