@@ -896,7 +896,60 @@ class Repo(private val ctx: Context) {
      * Análises do jogo já lidas que nunca chegaram ao calendário/tática (sem lado definido ou com placar
      * diferente do card): liga de novo. Idempotente; roda ao abrir o slot.
      */
+    /**
+     * Limpa o que já foi gravado com texto dos botões do app ("App", "Encerrar", "Encerar-White"...) e apelidos
+     * falsos do calendário (o próprio nome do time, "ED:"). Idempotente; roda ao abrir o slot.
+     */
+    suspend fun cleanPollution(slot: Int) {
+        val now = System.currentTimeMillis()
+        for (p in dao.matchReports(slot)) {
+            val j = try { org.json.JSONObject(p.json) } catch (e: Exception) { continue }
+            var dirty = false
+            j.optJSONObject("stats")?.let { st ->
+                for (k in st.keys().asSequence().toList()) {
+                    val a = st.optJSONArray(k) ?: continue
+                    if ((0 until a.length()).any { Overlay.polluted(a.optString(it)) }) {
+                        st.remove(k)
+                        dirty = true
+                    }
+                }
+            }
+            if (j.has("mom") && Overlay.polluted(j.optString("mom"))) {
+                j.remove("mom")
+                dirty = true
+            }
+            for (side in listOf("rh", "ra", "events")) {
+                val a = j.optJSONArray(side) ?: continue
+                val keep = org.json.JSONArray()
+                for (i in 0 until a.length()) {
+                    val txt = a.optJSONArray(i)?.optString(0) ?: a.optString(i)
+                    if (Overlay.polluted(txt) || Txt.norm(txt).contains(" app ") || Regex("encerr?ar", RegexOption.IGNORE_CASE).containsMatchIn(txt)) {
+                        dirty = true
+                    } else keep.put(a.get(i))
+                }
+                j.put(side, keep)
+            }
+            if (dirty) dao.putPlan(PlanEntity(slot, p.kind, j.toString(), p.at))
+        }
+        for (m in dao.matchesOf(slot)) {
+            val nk = m.opponentNick ?: continue
+            val opp = m.opponent
+            if (nk.contains(':') || Overlay.polluted(nk) || (opp != null && Txt.sim(Txt.key(nk), Txt.key(opp)) >= 0.8)) {
+                dao.putMatch(m.copy(opponentNick = null))
+            }
+        }
+        dao.plan(slot, "cm")?.let { p ->
+            val j = try { org.json.JSONObject(p.json) } catch (e: Exception) { return@let }
+            val bad = j.keys().asSequence().filter { Overlay.glued(it) }.toList()
+            if (bad.isNotEmpty()) {
+                bad.forEach { j.remove(it) }
+                dao.putPlan(PlanEntity(slot, "cm", j.toString(), now))
+            }
+        }
+    }
+
     suspend fun relinkResults(slot: Int) {
+        cleanPollution(slot)
         val now = System.currentTimeMillis()
         for (p in dao.matchReports(slot)) {
             val round = p.kind.removePrefix("mr_R").toIntOrNull() ?: continue

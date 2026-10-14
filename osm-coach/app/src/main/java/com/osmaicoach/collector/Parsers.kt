@@ -414,7 +414,10 @@ object Parsers {
                 }
             }
             val opponent = alpha.getOrNull(0)?.text?.trim()
-            val nick = alpha.getOrNull(1)?.text?.trim()?.takeIf { isNick(it) }
+            // apelido = 2ª linha do card, mas nunca o próprio nome do time repetido nem rótulo ("ED:")
+            val nick = alpha.getOrNull(1)?.text?.trim()?.takeIf { n ->
+                isNick(n) && !n.contains(':') && (opponent == null || Txt.sim(Txt.key(n), Txt.key(opponent)) < 0.8)
+            }
             if (score == null && opponent == null && stage == null) continue
 
             val badge = img?.let { PixelProbe.resultBadge(it, a.line.xc, a.line.yc) }

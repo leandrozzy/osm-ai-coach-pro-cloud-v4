@@ -40,7 +40,28 @@ class EngineTest {
         assertTrue(lines.first() >= 4)
         assertTrue(lines.last() <= 2)
         assertTrue(r.tactic.mentality <= 42)
-        assertEquals("Ajudar a defender", r.tactic.advAttack)
+        // modelo de referência do OSM para o azarão: atacantes ficam lá na frente para o contra-ataque
+        assertEquals("Atacar apenas", r.tactic.advAttack)
+        assertEquals("Ajudar a defesa", r.tactic.advMid)
+    }
+
+    @Test fun underdogFollowsTheCommunityModel() {
+        val r = TacticEngine.recommend(input(70, 90).copy(rivalFormation = "4-3-3 A"))!!
+        assertEquals("5-4-1 A", r.tactic.formation)
+        assertEquals("Contra-ataque", r.tactic.playStyle)
+        assertTrue(r.tactic.mentality <= 25)
+        assertTrue(r.tactic.pressure <= 36)
+        assertTrue(r.tactic.tempo >= 60)
+        assertEquals("Não", r.tactic.offside)
+        assertTrue(r.tactic.notes.first().startsWith("Modelo de referência"))
+    }
+
+    @Test fun favouriteAttacksWideAgainstFourFourTwo() {
+        val r = TacticEngine.recommend(input(85, 72).copy(rivalFormation = "4-4-2 A", home = true))!!
+        assertEquals("4-3-3 A", r.tactic.formation)
+        assertEquals("Jogar pelas alas", r.tactic.playStyle)
+        assertTrue(r.tactic.mentality >= 70)
+        assertEquals(70, r.tactic.pressure)
     }
 
     @Test fun unknownRivalStrengthGivesBalancedTacticAndSaysSo() {

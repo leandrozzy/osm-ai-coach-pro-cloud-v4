@@ -399,17 +399,61 @@ object TacticEngine {
         if (stat != null) notes.add("Histórico de $formation: ${stat.v}V ${stat.e}E ${stat.d}D em ${stat.games} jogo(s) registrados.")
         if (inp.rivalHuman == true) notes.add("Rival humano: ele pode mudar a tática; confira o relatório antes do jogo.")
 
+        // Modelo de referência da comunidade do OSM: base quando um time é claramente mais forte. Se a formação do
+        // modelo já perdeu demais neste slot, fica a do elenco; o estilo vencedor do histórico também prevalece.
+        val meta = if (diff != null && kotlin.math.abs(diff) >= 5) Meta.template(diff, inp.home, inp.rivalFormation) else null
+        var fF = formation
+        var rowsF = best.second
+        var styleF = playStyle
+        var pF = pressure
+        var mF = mentality
+        var tF = tempo
+        var aA = advAttack
+        var aM = advMid
+        var aD = advDef
+        var markF = marking
+        var offF = offside
+        var fname: String? = null
+        if (meta != null) {
+            val mb = Formations.base(meta.formation)
+            val st = Learning.stats(inp.history).firstOrNull { Formations.base(it.formation) == mb }
+            val failing = st != null && st.d - st.v >= 2
+            val lu = if (!failing) lineup(mb, inp.players, inp.fitness) else null
+            if (lu != null) {
+                fF = mb
+                rowsF = lu.first
+                fname = meta.formation
+                notes.removeAll { it.startsWith("Formação ") || it.startsWith("Segunda opção") }
+            }
+            if (styleNote == null) styleF = meta.style
+            val adj = inp.lessons?.let { 3 * it.atkNeed - 5 * it.defNeed } ?: 0
+            pF = meta.pressure
+            mF = (meta.mentality + adj).coerceIn(0, 100)
+            tF = meta.tempo
+            aA = meta.attack
+            aM = meta.mid
+            aD = meta.def
+            markF = meta.marking
+            offF = meta.offside
+            notes.add(
+                0,
+                "Modelo de referência do OSM (${meta.label}): ${meta.formation} • ${meta.style} • pressão ${meta.pressure} / estilo ${meta.mentality} / ritmo ${meta.tempo}" +
+                    (if (lu == null) " — a formação $mb já perdeu demais aqui, mantive ${Formations.variant(formation, styleF)}." else ".")
+            )
+        }
         // Contra-ataque: ritmo alto para a transição e pressão baixa para atrair o rival (comunidade do OSM).
-        val counterStyle = playStyle == "Contra-ataque"
-        val tempoF = if (counterStyle) maxOf(tempo, 62) else tempo
-        val pressureF = if (counterStyle) minOf(pressure, 42) else pressure
-        if (counterStyle && (tempoF != tempo || pressureF != pressure)) notes.add("Contra-ataque: ritmo $tempoF (transição rápida) e pressão $pressureF (bloco baixo).")
+        val counterStyle = styleF == "Contra-ataque"
+        val tempoF = if (counterStyle) maxOf(tF, 62) else tF
+        val pressureF = if (counterStyle) minOf(pF, 42) else pF
+        if (meta == null && counterStyle && (tempoF != tF || pressureF != pF)) notes.add("Contra-ataque: ritmo $tempoF (transição rápida) e pressão $pressureF (bloco baixo).")
+        val name = fname?.takeIf { Formations.base(it) == fF } ?: Formations.variant(fF, styleF)
         val tactic = Tactic(
-            formation = Formations.variant(formation, playStyle), playStyle = playStyle, pressure = pressureF, mentality = mentality, tempo = tempoF,
-            marking = marking, offside = offside, tackle = tackleFinal, advAttack = advAttack, advMid = advMid, advDef = advDef,
+            formation = name, playStyle = styleF, pressure = pressureF, mentality = mF, tempo = tempoF,
+            marking = markF, offside = offF, tackle = tackleFinal, advAttack = aA, advMid = aM, advDef = aD,
             notes = notes
         )
-        return Result(tactic, best.second, diff, scored.take(4).map { Pair(it.first, it.third) })
+        val ranking = (listOf(fF) + scored.map { it.first }).distinct().take(4).map { f -> Pair(f, scored.firstOrNull { it.first == f }?.third ?: 0.0) }
+        return Result(tactic, rowsF, diff, ranking)
     }
 }
 

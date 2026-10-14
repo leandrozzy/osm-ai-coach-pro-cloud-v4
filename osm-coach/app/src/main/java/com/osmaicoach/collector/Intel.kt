@@ -167,6 +167,12 @@ object Evidence {
      */
     private fun weight(source: String): Int = if (source == "REPORT" || source == "PREGAME" || source == "SQUAD") 2 else 1
 
+    /** Sigla curta toda em maiúsculas ("NNIV", "ED") lida uma vez pode ser ruído: precisa de outra tela. */
+    private fun weak(value: String): Boolean {
+        val t = value.trim()
+        return t.length <= 4 && t.none { it.isLowerCase() || it.isDigit() }
+    }
+
     private val JUNK_PREFIX = listOf("anniv", "aniver")
     private val JUNK_WORDS = setOf(
         "season", "temporada", "edition", "edicao", "jornada", "liga", "copa", "batalha", "estadio", "arbitro",
@@ -205,7 +211,7 @@ object Evidence {
             if (field == K.RIVAL_NICK && !plausibleNick(v)) continue
             val b = f.optJSONObject(v) ?: continue
             val srcs = b.keys().asSequence().toList()
-            val w = srcs.sumOf { weight(it) }
+            val w = srcs.sumOf { weight(it) }.let { w -> if (field == K.RIVAL_NICK && weak(v) && srcs.size < 2) minOf(w, 1) else w }
             if (out == null || w > out.weight) out = Best(v, w, srcs)
         }
         return out
@@ -220,7 +226,7 @@ object Evidence {
             if (field == K.RIVAL_NICK && !plausibleNick(v)) return@mapNotNull null
             val b = f.optJSONObject(v) ?: return@mapNotNull null
             val srcs = b.keys().asSequence().toList()
-            Best(v, srcs.sumOf { weight(it) }, srcs)
+            Best(v, srcs.sumOf { weight(it) }.let { w -> if (field == K.RIVAL_NICK && weak(v) && srcs.size < 2) minOf(w, 1) else w }, srcs)
         }.sortedByDescending { it.weight }.toList()
     }
 
@@ -402,7 +408,18 @@ object WinModel {
                 }
             }
             val m = (p.mentality - 50) / 50.0
-            if (m != 0.0) t.add(Term("Mentalidade ${p.mentality}", 0.12 * m, 0.10 * m))
+            // Estilo (mentalidade): o mais fraco ganha fechando (corta mais os gols do rival que os seus);
+            // o mais forte ganha abrindo (cria mais do que concede).
+            val edgeM = my - rv
+            if (m != 0.0) {
+                val (mm, mo) = if (edgeM <= -4) Pair(0.07, 0.15) else if (edgeM >= 4) Pair(0.15, 0.07) else Pair(0.12, 0.10)
+                t.add(Term("Mentalidade ${p.mentality}", mm * m, mo * m))
+            }
+            Meta.template(edgeM, i.home, i.rivalFormation)?.let { tpl ->
+                if (Meta.follows(tpl, p.formation, p.style, p.pressure, p.mentality, p.tempo)) {
+                    t.add(Term("Modelo de referência do OSM (${tpl.label})", 0.07, -0.04))
+                }
+            }
             // Antídotos ao estilo do rival (o que mais pesa contra humanos, que escolhem o estilo a dedo).
             val myD = mine?.first()
             when (Osm.style(i.rivalStyle)) {
@@ -758,4 +775,57 @@ object Calib {
         }
         return Pair(hit, g.size)
     }
+}
+
+/**
+ * Modelo de referência da comunidade do OSM (apps de tática e tabelas por confronto, ex. osmnextlevel/osmcoach e
+ * as táticas de IA que o usuário mostrou): é a BASE quando um time é claramente mais forte. A simulação e o
+ * aprendizado do slot só ajustam em volta dele.
+ */
+object Meta {
+    data class Template(
+        val label: String, val formation: String, val style: String, val pressure: Int, val mentality: Int, val tempo: Int,
+        val attack: String, val mid: String, val def: String, val marking: String = "À zona", val offside: String = "Não"
+    )
+
+    private data class Fav(val formation: String, val style: String, val p: Int, val m: Int, val t: Int)
+
+    fun template(edge: Int, home: Boolean?, rivalFormation: String?): Template? {
+        val rf = rivalFormation?.let { Formations.canonical(it) }
+        val rl = rf?.let { Formations.lines(it) }?.takeIf { it.isNotEmpty() }
+        val away = home == false
+        if (edge <= -5) {
+            // azarão: fechado e saindo rápido (5-4-1 A, contra-ataque, estilo super defensivo, ritmo de passes rápidos)
+            val deep = edge <= -12
+            return Template(
+                "rival mais forte", "5-4-1 A", "Contra-ataque",
+                (if (deep) 32 else 36) - (if (away) 2 else 0), (if (deep) 18 else 25) - (if (away) 3 else 0), if (deep) 66 else 64,
+                "Atacar apenas", "Ajudar a defesa", "Defender atrás"
+            )
+        }
+        if (edge >= 5) {
+            val base = rf?.let { Formations.base(it) }
+            val fav = when {
+                rl != null && rl.first() >= 5 -> Fav("4-3-3 A", "Jogar pelas alas", 59, 79, 69) // rival retrancado: amplitude
+                base == "4-4-2" -> Fav("4-3-3 A", "Jogar pelas alas", 70, 74, 65)
+                base == "4-3-3" -> Fav("4-3-3 A", "Jogo de passe", 65, 65, 75)
+                rl != null && rl.first() == 3 -> Fav("4-3-3 B", "Jogar pelas alas", 63, 73, 70)
+                else -> Fav("4-3-3 A", "Jogar pelas alas", 64, 74, 68)
+            }
+            val strong = edge >= 15
+            val m = (fav.m + (if (strong) 6 else 0) - (if (away) 12 else 0)).coerceIn(40, 88)
+            return Template(
+                if (strong) "rival bem mais fraco" else "rival mais fraco", fav.formation, fav.style,
+                fav.p - (if (away) 8 else 0), m, fav.t - (if (away) 6 else 0),
+                "Atacar apenas", "Manter posições", "Defender atrás"
+            )
+        }
+        return null
+    }
+
+    /** A tática está no modelo (mesma formação base e estilo, controles a até 12 pontos). */
+    fun follows(t: Template, formation: String, style: String?, pressure: Int, mentality: Int, tempo: Int): Boolean =
+        Formations.base(formation) == Formations.base(t.formation) && Osm.style(style) == t.style &&
+            kotlin.math.abs(pressure - t.pressure) <= 12 && kotlin.math.abs(mentality - t.mentality) <= 12 &&
+            kotlin.math.abs(tempo - t.tempo) <= 12
 }
