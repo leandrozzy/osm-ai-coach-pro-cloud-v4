@@ -300,7 +300,9 @@ object WinModel {
         /** Resultados já obtidos com esta formação/estilo. */
         val tacticRecord: List<String> = emptyList(),
         /** Correção aprendida deste slot: o modelo vem prevendo gols a mais (<0) ou a menos (>0). */
-        val calib: Double = 0.0
+        val calib: Double = 0.0,
+        /** Modelo do jogo (comunidade + aprendizado); null = o embutido. */
+        val meta: Meta.Template? = null
     )
 
     /** Efeito de um fator: no log dos meus gols esperados, no log dos gols do rival e na imprevisibilidade. */
@@ -415,7 +417,7 @@ object WinModel {
                 val (mm, mo) = if (edgeM <= -4) Pair(0.07, 0.15) else if (edgeM >= 4) Pair(0.15, 0.07) else Pair(0.12, 0.10)
                 t.add(Term("Mentalidade ${p.mentality}", mm * m, mo * m))
             }
-            Meta.template(edgeM, i.home, i.rivalFormation)?.let { tpl ->
+            (i.meta ?: Meta.template(edgeM, i.home, i.rivalFormation))?.let { tpl ->
                 if (Meta.follows(tpl, p.formation, p.style, p.pressure, p.mentality, p.tempo)) {
                     t.add(Term("Modelo de referência do OSM (${tpl.label})", 0.07, -0.04))
                 }
@@ -790,6 +792,40 @@ object Meta {
 
     private data class Fav(val formation: String, val style: String, val p: Int, val m: Int, val t: Int)
 
+    /** Situação do jogo: relação de força (U azarão, E parelho, F favorito) e formação base do rival. */
+    fun key(edge: Int, rivalFormation: String?): String {
+        val rel = if (edge <= -5) "U" else if (edge >= 5) "F" else "E"
+        val rb = rivalFormation?.let { Formations.canonical(it) }?.let { Formations.base(it) } ?: "?"
+        return "$rel|$rb"
+    }
+
+    /**
+     * Modelo para este jogo: o da comunidade atualizado pela internet (quando houver e for recente), senão o
+     * embutido; depois ajustado pelos resultados reais dos 4 slots em jogos parecidos (MetaLearner).
+     */
+    fun resolve(edge: Int, home: Boolean?, rivalFormation: String?, remote: JSONObject?, logs: List<JSONObject>): Template? {
+        val base = fromRemote(edge, home, rivalFormation, remote) ?: template(edge, home, rivalFormation) ?: return null
+        return MetaLearner.adapt(base, logs, edge, home, rivalFormation)
+    }
+
+    private fun fromRemote(edge: Int, home: Boolean?, rivalFormation: String?, remote: JSONObject?): Template? {
+        if (remote == null || System.currentTimeMillis() - remote.optLong("at") > 30L * 86400000L) return null
+        val rules = remote.optJSONObject("rules") ?: return null
+        val k = key(edge, rivalFormation)
+        val o = rules.optJSONObject(k) ?: rules.optJSONObject(k.substringBefore('|') + "|?") ?: return null
+        val f = Formations.canonical(o.optString("formation")) ?: return null
+        val st = Osm.style(o.optString("style")) ?: return null
+        fun sl(n: String, d: Int) = o.optInt(n, d).coerceIn(0, 100)
+        val away = home == false
+        return Template(
+            "comunidade (internet, ${o.optString("source").take(40).ifBlank { "fóruns" }})", f, st,
+            sl("pressure", 50) - (if (away) 5 else 0), sl("mentality", 50) - (if (away) 8 else 0), sl("tempo", 60),
+            Osm.attack(o.optString("attack")) ?: "Atacar apenas", Osm.midfield(o.optString("mid")) ?: "Manter posições",
+            Osm.defense(o.optString("def")) ?: "Defender atrás", Osm.marking(o.optString("marking")) ?: "À zona",
+            if (o.optString("offside") == "Sim") "Sim" else "Não"
+        )
+    }
+
     fun template(edge: Int, home: Boolean?, rivalFormation: String?): Template? {
         val rf = rivalFormation?.let { Formations.canonical(it) }
         val rl = rf?.let { Formations.lines(it) }?.takeIf { it.isNotEmpty() }
@@ -828,4 +864,80 @@ object Meta {
         Formations.base(formation) == Formations.base(t.formation) && Osm.style(style) == t.style &&
             kotlin.math.abs(pressure - t.pressure) <= 12 && kotlin.math.abs(mentality - t.mentality) <= 12 &&
             kotlin.math.abs(tempo - t.tempo) <= 12
+}
+
+
+/**
+ * Aprendizado do modelo com os jogos reais dos 4 slots: em jogos parecidos (mesma relação de força, e de
+ * preferência mesma formação do rival e mesmo mando), a formação+estilo que mais rendeu pontos passa a ser a
+ * base, e os controles caminham na direção dos que venceram. Nada fica fixo: o modelo inicial só é o ponto de
+ * partida (vale como alguns jogos "de crédito") e perde peso conforme os resultados chegam.
+ */
+object MetaLearner {
+    private fun pts(r: String): Double = when (r) { "V" -> 3.0; "E" -> 1.0; else -> 0.0 }
+
+    private fun rel(edge: Int): String = if (edge <= -5) "U" else if (edge >= 5) "F" else "E"
+
+    /** Jogos com resultado na mesma situação, com peso pela semelhança. */
+    fun similar(logs: List<JSONObject>, edge: Int, home: Boolean?, rivalFormation: String?): List<Pair<JSONObject, Double>> {
+        val rb = rivalFormation?.let { Formations.canonical(it) }?.let { Formations.base(it) }
+        return logs.mapNotNull { j ->
+            val r = j.optString("result")
+            if (j.isNull("result") || r !in setOf("V", "E", "D")) return@mapNotNull null
+            if (!j.has("myStrength") || !j.has("rivalStrength") || j.isNull("myStrength") || j.isNull("rivalStrength")) return@mapNotNull null
+            val e = j.optInt("myStrength") - j.optInt("rivalStrength")
+            if (rel(e) != rel(edge)) return@mapNotNull null
+            val lrb = j.optString("rivalFormationRead").takeIf { it.isNotBlank() }?.let { Formations.canonical(it) }?.let { Formations.base(it) }
+            var w = if (rb == null || lrb == null) 1.0 else if (rb == lrb) 2.0 else 0.6
+            val lh = if (j.has("home") && !j.isNull("home")) j.optBoolean("home") else null
+            if (home != null && lh != null && home == lh) w *= 1.3
+            Pair(j, w)
+        }
+    }
+
+    fun adapt(t: Meta.Template, logs: List<JSONObject>, edge: Int, home: Boolean?, rivalFormation: String?): Meta.Template {
+        val sim = similar(logs, edge, home, rivalFormation)
+        if (sim.isEmpty()) return t
+        fun okey(j: JSONObject): String? {
+            val f = j.optString("formation").takeIf { it.isNotBlank() } ?: return null
+            return Formations.base(f) + "|" + (Osm.style(j.optString("playStyle")) ?: return null)
+        }
+        val tKey = Formations.base(t.formation) + "|" + t.style
+        val groups = HashMap<String, Pair<Double, Double>>() // peso, pontos*peso
+        for ((j, w) in sim) {
+            val k = okey(j) ?: continue
+            val g = groups[k] ?: Pair(0.0, 0.0)
+            groups[k] = Pair(g.first + w, g.second + w * pts(j.optString("result")))
+        }
+        // crédito do modelo: 3 jogos a 1,9 ponto; outras opções começam neutras (2 jogos a 1,2)
+        fun score(k: String): Double {
+            val g = groups[k] ?: Pair(0.0, 0.0)
+            val (pw, pp) = if (k == tKey) Pair(3.0, 1.9) else Pair(2.0, 1.2)
+            return (g.second + pw * pp) / (g.first + pw)
+        }
+        val bestKey = (groups.keys + tKey).maxByOrNull { score(it) } ?: tKey
+        val baseF = bestKey.substringBefore('|')
+        val style = bestKey.substringAfter('|')
+        val formation = if (baseF == Formations.base(t.formation)) t.formation else Formations.variant(baseF, style)
+        // controles: média do modelo (peso 3) com os das vitórias dessa opção (peso de cada jogo)
+        var wSum = 3.0
+        var p = 3.0 * t.pressure
+        var m = 3.0 * t.mentality
+        var tp = 3.0 * t.tempo
+        for ((j, w) in sim) {
+            if (okey(j) != bestKey || j.optString("result") != "V") continue
+            wSum += w
+            p += w * j.optInt("pressure", t.pressure)
+            m += w * j.optInt("mentality", t.mentality)
+            tp += w * j.optInt("tempo", t.tempo)
+        }
+        val games = sim.size
+        val g = groups[bestKey]
+        val note = if (bestKey == tKey) " • confirmado/ajustado com $games jogo(s) seus"
+        else " • trocado pelo que mais rendeu nos seus jogos (${"%.1f".format(score(bestKey))} pts/jogo em ${"%.0f".format(g?.first ?: 0.0)})"
+        return t.copy(
+            label = t.label + note, formation = formation, style = style,
+            pressure = (p / wSum).toInt(), mentality = (m / wSum).toInt(), tempo = (tp / wSum).toInt()
+        )
+    }
 }

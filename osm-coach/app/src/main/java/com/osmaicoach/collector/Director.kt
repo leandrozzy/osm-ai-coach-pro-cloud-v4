@@ -257,9 +257,15 @@ object Director {
             rivalMid = f[K.RIVAL_MID]?.value?.toIntOrNull(),
             rivalDef = f[K.RIVAL_DEF]?.value?.toIntOrNull(),
             fitness = repo.fitness(slot),
-            lessons = Coach.lessons(coachGames(repo, slot), f[K.RIVAL_TEAM]?.value?.takeIf { FieldMerge.known(it) })
+            lessons = Coach.lessons(coachGames(repo, slot), f[K.RIVAL_TEAM]?.value?.takeIf { FieldMerge.known(it) }),
+            metaLogs = allLogs(repo),
+            metaRemote = MetaRefresh.remote(repo)
         )
     }
+
+    /** Táticas usadas com resultado nos 4 slots: o modelo aprende com todas. */
+    suspend fun allLogs(repo: Repo): List<JSONObject> =
+        (1..4).flatMap { s -> repo.dao.tacticLogs(s).mapNotNull { runCatching { JSONObject(it.json) }.getOrNull() } }
 
     /** Jogos do slot para o treinador: táticas usadas + análises do jogo lidas. */
     suspend fun coachGames(repo: Repo, slot: Int): List<Coach.Game> = Coach.games(
@@ -327,7 +333,15 @@ object Director {
             myBonus = bonus(K.MY_BONUS), rivalBonus = bonus(K.RIVAL_LOGIN_BONUS),
             recent = played.filter { !Fixtures.isCup(it) }.mapNotNull { it.result }.take(5),
             headToHead = h2h,
-            calib = Calib.offset(repo.dao.tacticLogs(slot).mapNotNull { runCatching { JSONObject(it.json) }.getOrNull() })
+            calib = Calib.offset(repo.dao.tacticLogs(slot).mapNotNull { runCatching { JSONObject(it.json) }.getOrNull() }),
+            meta = run {
+                val my = int(K.MY_STRENGTH)
+                val rv = int(K.RIVAL_STRENGTH)
+                if (my != null && rv != null) Meta.resolve(
+                    my - rv, boolOf(str(K.HOME), "Casa", "Fora"), str(K.RIVAL_FORMATION) ?: repo.rivalProfileFormation(slot),
+                    MetaRefresh.remote(repo), allLogs(repo)
+                ) else null
+            }
         )
     }
 
@@ -550,6 +564,8 @@ object Director {
     ): JSONObject {
         val j = JSONObject().put("round", round ?: -1).put("rival", rival ?: NI).put("formation", t.formation)
             .put("playStyle", t.playStyle).put("pressure", t.pressure).put("mentality", t.mentality).put("tempo", t.tempo)
+            .put("advAttack", t.advAttack).put("advMid", t.advMid).put("advDef", t.advDef)
+            .put("marking", t.marking).put("offside", t.offside).put("tackle", t.tackle)
             .put("myStrength", inp.myStrength ?: JSONObject.NULL).put("rivalStrength", inp.rivalStrength ?: JSONObject.NULL)
             .put("human", inp.rivalHuman ?: JSONObject.NULL).put("home", inp.home ?: JSONObject.NULL)
             .put("result", JSONObject.NULL)

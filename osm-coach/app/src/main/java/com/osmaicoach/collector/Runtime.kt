@@ -136,6 +136,7 @@ object GenState {
 fun startGeneration(ctx: Context, kind: String, slot: Int) {
     val app = ctx.applicationContext
     if (!GenState.begin(kind, slot)) return
+    if (kind == "tactic" || kind == "tactic_ai") MetaRefresh.refreshIfStale(app)
     AppScope.scope.launch(Dispatchers.IO) {
         val r = try {
             when (kind) {

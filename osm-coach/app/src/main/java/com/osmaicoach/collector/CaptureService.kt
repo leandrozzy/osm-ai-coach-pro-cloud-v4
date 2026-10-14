@@ -89,11 +89,22 @@ class CaptureService : AccessibilityService() {
                     continue
                 }
                 try {
-                    val bmp = takeShot()
+                    // Os botões somem por um instante na hora da foto: o OCR lê o texto do jogo que estava atrás
+                    // deles (antes lia "Encerrar"/"App" colado nos nomes, estatísticas e notas).
+                    val hid = withContext(Dispatchers.Main) {
+                        val b = overlayBox
+                        if (b != null && b.alpha > 0f) { b.alpha = 0f; true } else false
+                    }
+                    if (hid) delay(60L)
+                    val bmp = try { takeShot() } finally {
+                        if (hid) withContext(Dispatchers.Main) { overlayBox?.alpha = 0.95f }
+                    }
                     if (bmp != null) {
+                        Overlay.shotClean = hid
                         try {
                             pipeline.onShot(sid, bmp)
                         } finally {
+                            Overlay.shotClean = false
                             bmp.recycle()
                         }
                     }

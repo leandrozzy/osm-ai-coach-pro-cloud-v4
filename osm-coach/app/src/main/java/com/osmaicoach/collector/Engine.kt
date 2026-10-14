@@ -142,7 +142,11 @@ object TacticEngine {
         val rivalDef: Int? = null,
         val fitness: Map<String, Pair<Int, Int>> = emptyMap(),
         /** Ajustes que o treinador tirou dos últimos jogos (Coach.lessons). */
-        val lessons: Coach.Lessons? = null
+        val lessons: Coach.Lessons? = null,
+        /** Táticas usadas com resultado nos 4 slots (o modelo aprende com elas). */
+        val metaLogs: List<org.json.JSONObject> = emptyList(),
+        /** Modelo da comunidade atualizado pela internet. */
+        val metaRemote: org.json.JSONObject? = null
     )
 
     private data class Sliders(val mentality: Int, val pressure: Int, val tempo: Int, val bucket: String)
@@ -401,7 +405,7 @@ object TacticEngine {
 
         // Modelo de referência da comunidade do OSM: base quando um time é claramente mais forte. Se a formação do
         // modelo já perdeu demais neste slot, fica a do elenco; o estilo vencedor do histórico também prevalece.
-        val meta = if (diff != null && kotlin.math.abs(diff) >= 5) Meta.template(diff, inp.home, inp.rivalFormation) else null
+        val meta = if (diff != null) Meta.resolve(diff, inp.home, inp.rivalFormation, inp.metaRemote, inp.metaLogs) else null
         var fF = formation
         var rowsF = best.second
         var styleF = playStyle
