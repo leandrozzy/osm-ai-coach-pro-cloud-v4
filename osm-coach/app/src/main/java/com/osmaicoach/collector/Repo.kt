@@ -33,6 +33,8 @@ class Repo(private val ctx: Context) {
         var changed = 0
         for ((k, r) in readings) {
             val o = old[k]?.let { StoredField(it.fvalue, it.conf, it.updatedAt) }
+            // leitura de uma tela mais antiga que o dado guardado (reprocessamento, telas aplicadas com atraso) não volta atrás
+            if (o != null && now < o.updatedAt && FieldMerge.known(o.value)) continue
             if (k in CHECKED && o != null && old[k]?.source != "manual") noteConflict(slot, k, o, r.value, now)
             val n = FieldMerge.merge(k, o, r, now) ?: continue
             dao.putField(FieldEntity(slot, k, n.value, n.conf, n.updatedAt, source))

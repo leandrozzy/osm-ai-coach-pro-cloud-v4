@@ -13,6 +13,7 @@ import android.os.PowerManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
@@ -1201,6 +1202,44 @@ private fun SessionsTab() {
             },
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
         ) { Text("Reprocessar quadros sem slot e fila de IA") }
+        OutlinedButton(
+            onClick = {
+                if (!ProcessState.running) {
+                    val app = ctx.applicationContext
+                    AppScope.scope.launch(Dispatchers.IO) {
+                        try {
+                            val repo = Repo(app)
+                            val last = repo.dao.sessions().firstOrNull { it.endedAt != null } ?: repo.dao.sessions().firstOrNull()
+                            if (last == null) {
+                                ProcessState.begin("Reprocessando a última captura…", 0)
+                                ProcessState.finish("Nenhuma captura guardada ainda.")
+                                return@launch
+                            }
+                            ProcessState.begin("Reprocessando a última captura (${fmtTime(last.startedAt)})…", 1)
+                            val r = FramePipeline.get(app).replaySession(last.id) { i, n ->
+                                ProcessState.total = n
+                                ProcessState.done = i
+                                ProcessState.label("Relendo tela ${minOf(i + 1, n)} de $n da captura de ${fmtTime(last.startedAt)}…")
+                            }
+                            withContext(Dispatchers.Main) { UiBus.version++ }
+                            ProcessState.finish(
+                                "Captura de ${fmtTime(last.startedAt)} relida: ${r.read} de ${r.screens} telas guardadas, ${r.fields} campo(s) atualizados" +
+                                    (if (r.bySlot.isNotEmpty()) " (" + r.bySlot.toSortedMap().entries.joinToString { "S${it.key}: ${it.value}" } + ")" else "") +
+                                    ". Só as telas com imagem guardada podem ser relidas."
+                            )
+                        } catch (e: Exception) {
+                            ProcessState.finish("Erro ao reprocessar: " + (e.message ?: e.javaClass.simpleName))
+                        }
+                    }
+                }
+            },
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+        ) { Text("🔁 Reprocessar a última captura inteira") }
+        Text(
+            "Relê com a versão atual do app todas as telas guardadas da última captura (as mesmas que vão no diagnóstico) e " +
+                "aplica nos slots. Dado mais novo nunca é trocado por leitura antiga.",
+            fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 2.dp)
+        )
         SavedScreens(tick)
         Title("Histórico")
         if (rows.isEmpty()) Text("Nenhuma sessão ainda.", color = C.MUTED)
@@ -3290,10 +3329,38 @@ private fun SettingsTab() {
             Text(
                 "Gera um arquivo com TUDO o que o app tem (campos, elenco, calendário, análises do fim do jogo, táticas, telas lidas, " +
                     "registro de erros e as imagens guardadas; das chaves de IA vão só os 4 últimos caracteres). " +
-                    "Fica salvo no celular em Download/OSM Coach e você pode compartilhar depois.",
+                    "Fica salvo no celular (em Download/OSM Coach ou na pasta que você escolher) e você pode compartilhar depois.",
                 fontSize = 12.sp, color = C.MUTED
             )
             var exported by remember { mutableStateOf<DiagExport.Result?>(null) }
+            // pasta escolhida uma vez e guardada (o seletor do Android pede a permissão de gravar nela)
+            var folderName by remember { mutableStateOf(DiagExport.folderLabel(ctx)) }
+            val pickFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+                if (uri != null) {
+                    try {
+                        DiagExport.setFolder(ctx, uri)
+                        exportMsg = "Pasta escolhida: os próximos diagnósticos vão para ela."
+                    } catch (e: Exception) {
+                        exportMsg = "Essa pasta não deixou o app gravar: escolha outra. (" + (e.message ?: "") + ")"
+                    }
+                    folderName = DiagExport.folderLabel(ctx)
+                }
+            }
+            KV("Salvar em", folderName)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedButton(onClick = { pickFolder.launch(DiagExport.folder(ctx)) }, modifier = Modifier.weight(1f)) {
+                    Text("📁 Escolher pasta", fontSize = 12.sp)
+                }
+                if (DiagExport.folder(ctx) != null) {
+                    OutlinedButton(
+                        onClick = {
+                            DiagExport.setFolder(ctx, null)
+                            folderName = DiagExport.folderLabel(ctx)
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Voltar ao padrão", fontSize = 12.sp) }
+                }
+            }
             OutlinedButton(
                 onClick = {
                     exportMsg = "Gerando (pode levar alguns segundos com as imagens)…"

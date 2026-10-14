@@ -23,8 +23,61 @@ import org.json.JSONObject
 object DiagExport {
     data class Result(
         val zipName: String, val zipUri: Uri?, val jsonName: String, val jsonUri: Uri?, val fallback: File?,
-        val images: Int, val bytes: Long
+        val images: Int, val bytes: Long, val where: String = "Download/OSM Coach"
     )
+
+    // ---------------------------------------------------------------- pasta escolhida pelo usuário
+
+    private const val TREE = "export_tree"
+
+    /** Pasta escolhida uma vez (fica guardada até trocar); null = Download/OSM Coach. */
+    fun folder(ctx: Context): Uri? = Settings.get(ctx, TREE, "").takeIf { it.isNotBlank() }?.let { Uri.parse(it) }
+
+    /** Guarda a pasta escolhida no seletor do Android (com permissão permanente de gravar nela). */
+    fun setFolder(ctx: Context, tree: Uri?) {
+        val old = folder(ctx)
+        if (old != null && old != tree) {
+            runCatching {
+                ctx.contentResolver.releasePersistableUriPermission(old, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            }
+        }
+        if (tree != null) {
+            ctx.contentResolver.takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        }
+        Settings.put(ctx, TREE, tree?.toString() ?: "")
+    }
+
+    /** Nome legível da pasta ("Documents/OSM", "cartão SD: Backup"). */
+    fun folderLabel(ctx: Context): String {
+        val t = folder(ctx) ?: return "Download/$FOLDER (padrão)"
+        val id = runCatching { android.provider.DocumentsContract.getTreeDocumentId(t) }.getOrNull() ?: return t.toString()
+        val vol = id.substringBefore(':')
+        val path = id.substringAfter(':', "")
+        return (if (vol == "primary") "" else "cartão/USB $vol: ") + path.ifBlank { "raiz" }
+    }
+
+    private fun saveToTree(ctx: Context, tree: Uri, name: String, mime: String, write: (java.io.OutputStream) -> Unit): Uri? {
+        val resolver = ctx.contentResolver
+        return try {
+            val parent = android.provider.DocumentsContract.buildDocumentUriUsingTree(tree, android.provider.DocumentsContract.getTreeDocumentId(tree))
+            val doc = android.provider.DocumentsContract.createDocument(resolver, parent, mime, name) ?: return null
+            resolver.openOutputStream(doc)?.use { write(it) } ?: return null
+            doc
+        } catch (e: Exception) {
+            Diag.lastError = "Salvar na pasta escolhida: " + (e.message ?: e.javaClass.simpleName)
+            null
+        }
+    }
+
+    /** Pasta escolhida (se houver e ainda tiver permissão); senão Download/OSM Coach. */
+    private fun save(ctx: Context, name: String, mime: String, write: (java.io.OutputStream) -> Unit): Pair<Uri?, String> {
+        val tree = folder(ctx)
+        if (tree != null) {
+            val u = saveToTree(ctx, tree, name, mime, write)
+            if (u != null) return Pair(u, folderLabel(ctx))
+        }
+        return Pair(saveToDownloads(ctx, name, mime, write), "Download/$FOLDER" + if (tree != null) " (a pasta escolhida não aceitou: escolha de novo)" else "")
+    }
 
     private const val FOLDER = "OSM Coach"
     private const val IMAGE_BUDGET = 150L * 1024 * 1024
@@ -235,8 +288,8 @@ object DiagExport {
         val root = buildJson(ctx)
         val (zip, images) = buildZip(ctx, root, stamp)
         val jsonName = "osm-coach-diagnostico-$stamp.json"
-        val jsonUri = saveToDownloads(ctx, jsonName, "application/json") { it.write(root.toString(1).toByteArray(Charsets.UTF_8)) }
-        val zipUri = saveToDownloads(ctx, zip.name, "application/zip") { out -> zip.inputStream().use { it.copyTo(out) } }
+        val (jsonUri, _) = save(ctx, jsonName, "application/json") { it.write(root.toString(1).toByteArray(Charsets.UTF_8)) }
+        val (zipUri, where) = save(ctx, zip.name, "application/zip") { out -> zip.inputStream().use { it.copyTo(out) } }
         val bytes = zip.length()
         // salvo na pasta Download: a cópia do cache não é mais necessária
         val fallback = if (zipUri == null) zip else {
@@ -244,7 +297,7 @@ object DiagExport {
             null
         }
         Diag.log("Diagnóstico exportado: ${zip.name} (${bytes / 1024} KB, $images imagens)" + if (zipUri == null) " — só no cache" else "")
-        return Result(zip.name, zipUri, jsonName, jsonUri, fallback, images, bytes)
+        return Result(zip.name, zipUri, jsonName, jsonUri, fallback, images, bytes, where)
     }
 
     /** Abre o "Compartilhar" do Android com o arquivo já salvo. */
@@ -261,8 +314,8 @@ object DiagExport {
     fun summary(r: Result): String {
         val size = if (r.bytes >= 1024 * 1024) "%.1f MB".format(r.bytes / 1048576.0) else "${r.bytes / 1024} KB"
         return if (r.zipUri != null) {
-            "Salvo no celular em Download/$FOLDER:\n• ${r.zipName} ($size, ${r.images} imagens)" +
+            "Salvo no celular em ${r.where}:\n• ${r.zipName} ($size, ${r.images} imagens)" +
                 (if (r.jsonUri != null) "\n• ${r.jsonName} (só o texto)" else "")
-        } else "Não consegui salvar na pasta Download; o arquivo ficou no app ($size). Use Compartilhar para enviar."
+        } else "Não consegui salvar no celular; o arquivo ficou no app ($size). Use Compartilhar para enviar."
     }
 }

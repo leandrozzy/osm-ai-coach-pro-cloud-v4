@@ -135,6 +135,7 @@ class FramePipeline private constructor(private val ctx: Context) {
     private var resultSaved = 0
     private var pregameSaved = 0
     private var squadSaved = 0
+    private var seasonSaved = 0
     private var tacticSaved = 0
     private var calendarSaved = 0
     private var lastOsmAcceptedAt = 0L
@@ -171,6 +172,7 @@ class FramePipeline private constructor(private val ctx: Context) {
         resultSaved = 0
         pregameSaved = 0
         squadSaved = 0
+        seasonSaved = 0
         imagesThisSession = 0
         val p = ctx.getSharedPreferences("machine", Context.MODE_PRIVATE)
         if (p.getString("session", null) == sessionId) {
@@ -447,8 +449,10 @@ class FramePipeline private constructor(private val ctx: Context) {
             val diagResult = type == ScreenType.RESULT && resultSaved < 16
             val diagPregame = type == ScreenType.PREGAME && pregameSaved < 6
             val diagSquad = type == ScreenType.SQUAD && squadSaved < 10
+            // fim de época / direção: guarda para dar para reprocessar e conferir depois
+            val diagSeason = type == ScreenType.OTHER_OSM && seasonSaved < 12 && SeasonScreens.isSeasonScreen(ocr.fullText)
             var path: String? = null
-            if (((unassigned && dataType) || ex.needsAi || reportHint || diagTactic || diagCalendar || diagResult || diagPregame || diagSquad) &&
+            if (((unassigned && dataType) || ex.needsAi || reportHint || diagTactic || diagCalendar || diagResult || diagPregame || diagSquad || diagSeason) &&
                 imagesThisSession < 90
             ) {
                 if (diagTactic) tacticSaved++
@@ -456,6 +460,7 @@ class FramePipeline private constructor(private val ctx: Context) {
                 if (diagResult) resultSaved++
                 if (diagPregame) pregameSaved++
                 if (diagSquad) squadSaved++
+                if (diagSeason) seasonSaved++
                 path = ImageIo.saveJpeg(ctx, bmp, sessionId, now)
                 imagesThisSession++
                 if (reportHint) reportCandidates++
@@ -505,5 +510,68 @@ class FramePipeline private constructor(private val ctx: Context) {
             }
         }
         return fixed
+    }
+
+    data class ReplayResult(val screens: Int, val read: Int, val fields: Int, val bySlot: Map<Int, Int>)
+
+    /**
+     * Reprocessa a captura inteira (todas as telas guardadas da sessão, em ordem), com os leitores atuais: o que
+     * uma versão nova do app aprendeu a ler entra nos slots sem precisar navegar de novo. Leitura antiga nunca
+     * sobrescreve dado mais novo (o Repo compara a hora da tela com a do campo).
+     */
+    suspend fun replaySession(sessionId: String, onStep: (Int, Int) -> Unit = { _, _ -> }): ReplayResult {
+        val list = dao.screensOfSession(sessionId).filter { it.imagePath != null && File(it.imagePath).exists() }
+        var read = 0
+        var fields = 0
+        val bySlot = HashMap<Int, Int>()
+        val owners = HashMap<ScreenType, Triple<Int, String, Long>>()
+        var lastSeasonSlot: Int? = null
+        var lastSeasonAt = 0L
+        for ((i, s) in list.withIndex()) {
+            onStep(i, list.size)
+            val bmp = BitmapFactory.decodeFile(s.imagePath ?: continue) ?: continue
+            try {
+                val img = ImageIo.toImg(bmp)
+                val ocr = OcrEngine.read(bmp)
+                val type = ScreenClassifier.classify(ocr, PixelProbe.isOsmTopBar(img))
+                var ex = parse(ocr, type, img, s.at)
+                read++
+                val known = repo.knownIdentities()
+                // o slot gravado na hora da captura veio da navegação: vale; sem ele, tenta pelos nomes da tela
+                val slot = s.slotId.takeIf { it in 1..4 } ?: when (type) {
+                    ScreenType.PREGAME -> SlotMatcher.match(ex.teamCandidates, ex.roundRead, known)?.slot
+                    ScreenType.SQUAD, ScreenType.CALENDAR, ScreenType.RESULT ->
+                        SlotMatcher.match(ex.ownerTeam?.let { listOf(it) } ?: ex.teamCandidates, null, known)?.takeIf { it.conf >= 0.85 }?.slot
+                    else -> null
+                }
+                // lista rolada sem cabeçalho: o dono é o da última tela do mesmo tipo e slot (como na captura ao vivo)
+                if (slot != null && ex.ownerTeam == null && (type == ScreenType.SQUAD || type == ScreenType.CALENDAR)) {
+                    owners[type]?.takeIf { it.first == slot && s.at - it.third < 600000L }?.let { ex = ex.copy(ownerTeam = it.second) }
+                }
+                if (slot != null && ex.ownerTeam != null && (type == ScreenType.SQUAD || type == ScreenType.CALENDAR)) {
+                    owners[type] = Triple(slot, ex.ownerTeam!!, s.at)
+                }
+                var changed = if (type == ScreenType.HUB || slot != null) repo.apply(slot, ex, "reprocess", s.at) else 0
+                if (type == ScreenType.OTHER_OSM && SeasonScreens.isSeasonScreen(ocr.fullText)) {
+                    val full = Txt.key(ocr.fullText)
+                    val ss = slot ?: known.filter { id -> id.names.any { it.length >= 5 && full.contains(it) } }.map { it.slot }.distinct().singleOrNull()
+                        ?: lastSeasonSlot?.takeIf { s.at - lastSeasonAt < 180000L }
+                    if (ss != null) {
+                        lastSeasonSlot = ss
+                        lastSeasonAt = s.at
+                        changed += repo.recordSeasonScreen(ss, Parsers.seasonSummary(ocr, repo.fieldMap(ss)[K.TEAM]?.value), s.at)
+                    }
+                }
+                if (changed > 0 && slot != null) bySlot[slot] = (bySlot[slot] ?: 0) + changed
+                fields += changed
+            } catch (e: Exception) {
+                Diag.lastError = "Reprocessar tela ${s.id}: " + (e.message ?: e.javaClass.simpleName)
+            } finally {
+                bmp.recycle()
+            }
+        }
+        onStep(list.size, list.size)
+        for (slot in 1..4) runCatching { repo.syncRound(slot) }
+        return ReplayResult(list.size, read, fields, bySlot)
     }
 }
