@@ -128,16 +128,20 @@ object PixelProbe {
     }
 
     /** Termômetro do árbitro no pré-jogo: cor do bulbo (azul=brando, laranja=médio, vermelho=rigoroso). */
-    fun refereeSeverity(img: Img): String? {
-        val x0 = 0.49f
-        val x1 = 0.508f
-        val y0 = 0.484f
-        val y1 = 0.496f
-        val xa = (x0 * img.w).toInt()
-        val xb = max((x1 * img.w).toInt(), xa + 1)
-        val ya = (y0 * img.h).toInt()
-        val yb = max((y1 * img.h).toInt(), ya + 1)
-        var blue = 0
+    /**
+     * Termômetro do árbitro no pré-jogo (logo à esquerda do texto "Árbitro"): o preenchimento é VERDE (brando),
+     * LARANJA (médio) ou VERMELHO (rigoroso). Azul é o fundo (quadro de transição) e nunca conta. Só responde com uma
+     * cor dominante (60%+) e pixels suficientes; senão null (não chuta).
+     */
+    fun refereeSeverity(img: Img, labelLeft: Float? = null, labelYc: Float? = null): String? {
+        val x0 = if (labelLeft != null) labelLeft - 0.02f else 0.490f
+        val x1 = if (labelLeft != null) labelLeft - 0.002f else 0.508f
+        val y0 = if (labelYc != null) labelYc - 0.06f else 0.430f
+        val y1 = if (labelYc != null) labelYc + 0.035f else 0.505f
+        val xa = (x0.coerceIn(0f, 1f) * img.w).toInt()
+        val xb = max((x1.coerceIn(0f, 1f) * img.w).toInt(), xa + 1)
+        val ya = (y0.coerceIn(0f, 1f) * img.h).toInt()
+        val yb = max((y1.coerceIn(0f, 1f) * img.h).toInt(), ya + 1)
         var orange = 0
         var red = 0
         var green = 0
@@ -148,22 +152,20 @@ object PixelProbe {
                 if (t[1] < 0.5f || t[2] < 0.55f) continue
                 val h = t[0]
                 when {
-                    h <= 10f || h >= 344f -> red++
-                    h < 20f -> red++
-                    h <= 70f -> orange++
-                    h <= 165f -> green++
-                    h <= 260f -> blue++
+                    h < 18f || h >= 340f -> red++
+                    h <= 65f -> orange++
+                    h in 80f..165f -> green++
                 }
             }
         }
-        val total = blue + orange + red + green
-        if (total < 8) return null
-        val top = max(max(blue, orange), max(red, green))
+        val total = orange + red + green
+        if (total < 6) return null
+        val top = max(orange, max(red, green))
+        if (top < total * 0.6f) return null
         return when (top) {
             red -> "Rigoroso"
             orange -> "Médio"
-            blue -> "Brando"
-            else -> null
+            else -> "Brando"
         }
     }
 }

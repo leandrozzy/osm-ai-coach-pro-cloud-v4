@@ -63,7 +63,9 @@ class PixelProbeTest {
             paint(i, 190, 210, 190, 200, c)
             return PixelProbe.refereeSeverity(i)
         }
-        assertEquals("Brando", sev(rgb(30, 150, 255)))
+        // verde = brando; azul é o fundo da tela (nunca conta)
+        assertEquals("Brando", sev(rgb(40, 200, 60)))
+        assertNull(sev(rgb(30, 150, 255)))
         assertEquals("Médio", sev(rgb(255, 150, 0)))
         assertEquals("Rigoroso", sev(rgb(230, 20, 20)))
         assertNull(PixelProbe.refereeSeverity(img(400, 400)))

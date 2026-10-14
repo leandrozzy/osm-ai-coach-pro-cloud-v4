@@ -10,7 +10,7 @@ object FieldMerge {
     )
 
     /** Valem só para o jogo em que foram lidos (o bônus muda a cada dia/jogo): leitura antiga não segura a nova. */
-    val PER_GAME = setOf(K.MY_BONUS, K.RIVAL_LOGIN_BONUS)
+    val PER_GAME = setOf(K.MY_BONUS, K.RIVAL_LOGIN_BONUS, K.REFEREE)
     const val PER_GAME_MS = 12L * 3600000L
 
     /** Bônus lido (ou digitado) há mais de 30 h é de outro jogo (os jogos são diários): não entra na tática nem na previsão. */

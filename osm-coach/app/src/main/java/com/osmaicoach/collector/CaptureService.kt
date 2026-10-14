@@ -88,6 +88,12 @@ class CaptureService : AccessibilityService() {
                     delay(1500L)
                     continue
                 }
+                // O próprio OSM Coach na tela: não é o jogo. Antes as abas Tática/Elenco/Resumo do app eram lidas como
+                // "Relatório"/"Tática"/"Estádio" do OSM e podiam gravar lixo nos slots.
+                if (AppVisible.resumed || rootInActiveWindow?.packageName?.toString() == packageName) {
+                    delay(1200L)
+                    continue
+                }
                 try {
                     // Os botões somem por um instante na hora da foto: o OCR lê o texto do jogo que estava atrás
                     // deles (antes lia "Encerrar"/"App" colado nos nomes, estatísticas e notas).

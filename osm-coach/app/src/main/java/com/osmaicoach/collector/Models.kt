@@ -108,8 +108,16 @@ data class Extraction(
     val roundRead: Int? = null,
     val needsAi: Boolean = false,
     val note: String = "",
-    val matchReport: MatchReportRead? = null
+    val matchReport: MatchReportRead? = null,
+    val trainees: List<TraineeRead> = emptyList()
 )
+
+/**
+ * Uma coluna da tela de Treinamento: papel do treinador (UNI = universal, ATA, MEI, DEF, GOL), o jogador (nome como o
+ * jogo mostra, ex. "BUKAYO SAKA") e o estado: "active" (cronômetro/Concluir), "done" (Treino concluído, falta
+ * reclamar) ou "empty" (Seleciona).
+ */
+data class TraineeRead(val role: String, val name: String?, val state: String)
 
 /** Chaves dos campos escalares guardados por slot. */
 object K {
@@ -384,10 +392,16 @@ object Osm {
 
     /**
      * Desarme permitido pelo árbitro (termômetro do pré-jogo): Extremo nunca (expulsão quase certa);
-     * Agressivo só com árbitro brando (azul); médio (laranja), rigoroso (vermelho) ou desconhecido: até Normal.
+     * Termômetro verde (brando): até Agressivo; laranja (médio) ou vermelho (rigoroso): só Cuidadoso; não lido: até Normal.
      */
-    fun allowedTackles(referee: String?): List<String> =
-        if (referee == "Brando") listOf("Cuidadoso", "Normal", "Agressivo") else listOf("Cuidadoso", "Normal")
+    fun allowedTackles(referee: String?): List<String> = when (referee) {
+        // termômetro verde: dá para entrar forte
+        "Brando" -> listOf("Cuidadoso", "Normal", "Agressivo")
+        // laranja ou vermelho: cartão fácil, só Cuidadoso
+        "Médio", "Rigoroso" -> listOf("Cuidadoso")
+        // árbitro não lido: no máximo Normal
+        else -> listOf("Cuidadoso", "Normal")
+    }
 
     /** Rebaixa o desarme para o máximo que o árbitro permite. */
     fun clampTackle(t: String?, referee: String?): String {
@@ -540,11 +554,14 @@ object SeasonScreens {
     private val WORDS = listOf(
         "a epoca acabou", "epoca acabou", "fim da epoca", "fim de epoca", "final da epoca", "classificacao final", "direcao",
         "diretoria", "administracao", "presidente", "demiss", "despedid", "objetivo da epoca", "lista de treinadores",
-        "campeao da liga", "melhor marcador", "nova epoca", "proxima epoca", "esta liga termina", "promovid", "despromovid", "a gozar"
+        "campeao da liga", "nova epoca", "proxima epoca", "esta liga termina", "promovid", "despromovid", "a gozar",
+        "desiludido", "ultimo jogo ja foi realizado"
     )
 
     fun isSeasonScreen(fullText: String): Boolean {
         val t = Txt.norm(fullText)
+        // cabeçalho do plantel ("Jogador estrela", "Melhor marcador", "Número 22 atribuído!") não é fim de época
+        if (t.contains("jogador estrela") || t.contains("nota mais alta") || t.contains("atribuid")) return false
         return WORDS.any { t.contains(it) }
     }
 
@@ -553,5 +570,19 @@ object SeasonScreens {
         return t.contains("epoca acabou") || t.contains("fim da epoca") || t.contains("classificacao final") ||
             t.contains("nova epoca") || t.contains("proxima epoca") || t.contains("esta liga termina") ||
             (t.contains("a gozar") && t.contains("jogadores"))
+    }
+}
+
+/** Reconhece as telas do próprio OSM Coach (para nunca serem lidas como tela do jogo). */
+object OwnApp {
+    private val MARKS = listOf(
+        "o numero na camisa e a forca do titular", "gerar tatica", "conferencia entre telas", "osm + captura", "completude:",
+        "faltando — toque", "faltando - toque", "o que o app aprendeu", "previsao do jogo", "consultar a ia"
+    )
+
+    fun looksLikeApp(fullText: String): Boolean {
+        val t = Txt.norm(fullText)
+        if (t.contains("sessoes") && t.contains("ajustes") && t.contains("diretor")) return true
+        return MARKS.count { t.contains(Txt.norm(it)) } >= 1
     }
 }

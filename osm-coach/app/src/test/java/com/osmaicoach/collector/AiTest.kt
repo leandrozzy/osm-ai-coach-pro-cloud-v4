@@ -38,7 +38,8 @@ class AiTest {
         val (team, players) = AiMapper.squad(j)
         assertEquals("Tobol", team)
         assertEquals(2, players.size)
-        assertEquals(true, players[0].training)
+        // treino vem só da tela de Treinamento: o que a IA disser sobre a camisa é ignorado
+        assertNull(players[0].training)
         assertNull(players[1].training)
     }
 
@@ -108,7 +109,7 @@ class AiTest {
         val ok = JSONObject("""{"formation":"4-5-1","playStyle":"Jogo de passe","pressure":60,"mentality":40,"tempo":55,"marking":"À zona","offside":"Sim","tackle":"Agressivo"}""")
         val (t, err) = TacticValidator.validate(ok, "Rigoroso")
         assertNull(err)
-        assertEquals("Normal", t!!.tackle)
+        assertEquals("Cuidadoso", t!!.tackle)
         assertTrue(t.notes.isNotEmpty())
         assertEquals("Agressivo", TacticValidator.validate(ok, "Brando").first!!.tackle)
         assertNotNull(TacticValidator.validate(JSONObject("""{"formation":"7-7-7","pressure":1,"mentality":1,"tempo":1}"""), null).second)

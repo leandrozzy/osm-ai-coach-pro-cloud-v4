@@ -34,7 +34,7 @@ class RealScreensTest {
         assertTrue(SeasonScreens.isSeasonScreen(o.fullText))
         val r = Parsers.seasonSummary(o, "Universidad de Chile")
         assertTrue(r.over)
-        assertEquals("COLO-COL0", r.champion)
+        assertEquals("COLO-COLO", r.champion)
         assertNotNull(r.board)
         assertTrue(r.board!!.contains("MISERAVEL"))
         assertFalse(r.board!!.contains("VINGA-TE"))

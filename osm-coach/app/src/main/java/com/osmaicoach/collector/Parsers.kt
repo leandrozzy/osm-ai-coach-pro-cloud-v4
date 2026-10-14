@@ -194,7 +194,9 @@ object Parsers {
             }
         }
         if (img != null) {
-            PixelProbe.refereeSeverity(img)?.let { f[K.REFEREE] = Reading(it, 0.55) }
+            // termômetro ancorado no texto "Árbitro" quando o OCR o acha (a posição muda um pouco entre telas)
+            val label = o.lines.firstOrNull { Txt.norm(it.text).startsWith("arbitro") && it.xc in 0.40f..0.65f }
+            PixelProbe.refereeSeverity(img, label?.l, label?.yc)?.let { f[K.REFEREE] = Reading(it, 0.8) }
         }
         return Extraction(
             ScreenType.PREGAME,
@@ -320,7 +322,8 @@ object Parsers {
                     cat = cat,
                     strength = strength,
                     valueText = value,
-                    training = img?.let { PixelProbe.orangeShirt(it, a.yc) },
+                    // a camisa no plantel NÃO diz quem treina: isso vem só da tela de Treinamento
+                    training = null,
                     forSale = null,
                     cond = img?.let { PixelProbe.barFill(it, 0.757f, 0.800f, a.yc) },
                     morale = img?.let { PixelProbe.barFill(it, 0.808f, 0.850f, a.yc) }
@@ -779,6 +782,52 @@ object Parsers {
         return words.count { t.contains(it) } >= 2
     }
 
+    // ---------------------------------------------------------------- TREINAMENTO
+
+    private val TRAINER_ROLES = listOf(
+        "universal" to "UNI", "avancados" to "ATA", "medios" to "MEI", "defesas" to "DEF", "guarda-redes" to "GOL", "guarda redes" to "GOL"
+    )
+    private val RARITY = setOf("epico", "lendario", "raro", "elite", "comum")
+    private val RX_TIMER = Regex("\\d{1,2}\\s*h\\s*\\d{1,2}\\s*m")
+
+    /**
+     * Tela de Treinamento: uma coluna por treinador (universal, avançados, médios, defesas, guarda-redes). O estado vem
+     * do que a coluna mostra: cronômetro/"Concluir" = treinando agora; "Treino concluído" = terminou (falta
+     * reclamar); "Seleciona" = livre. Quadros com a animação da recompensa (Épico/Lendário...) são ignorados, e
+     * coluna sem estado claro fica de fora. É esta tela, não a camisa no plantel, que diz quem está treinando.
+     */
+    fun training(o: OcrResult): List<TraineeRead> {
+        fun n(t: String) = Txt.norm(t)
+        if (o.lines.any { n(it.text) in RARITY }) return emptyList()
+        val heads = o.lines.mapNotNull { ln ->
+            val t = n(ln.text)
+            if (!t.startsWith("treinador")) null else TRAINER_ROLES.firstOrNull { t.contains(it.first) }?.let { Pair(ln, it.second) }
+        }.distinctBy { it.second }
+        val out = ArrayList<TraineeRead>()
+        for ((h, role) in heads) {
+            val col = o.lines.filter { it !== h && abs(it.xc - h.xc) <= 0.055f && it.yc > h.yc && it.yc - h.yc <= 0.72f }
+            val texts = col.map { n(it.text) }
+            val nameLn = col.filter { ln ->
+                val t = n(ln.text)
+                ln.yc - h.yc in 0.12f..0.26f && Txt.letters(ln.text) >= 3 && !t.contains("idade") && !t.contains("dade:") &&
+                    !t.contains("anniv") && !t.contains("nivers") &&
+                    !t.startsWith("nivel") && !RX_TIMER.containsMatchIn(t)
+            }.minByOrNull { it.yc }
+            val name = nameLn?.text?.trim()?.replace(Regex("^\\d+\\s*"), "")?.takeIf { Txt.letters(it) >= 3 }
+            val timer = texts.any { RX_TIMER.containsMatchIn(it) || it == "concluir" }
+            val done = texts.any { it.contains("treino conclu") || it.contains("treino concu") }
+            val empty = texts.any { it.startsWith("seleciona") }
+            val state = when {
+                timer && name != null -> "active"
+                done && name != null -> "done"
+                empty && name == null -> "empty"
+                else -> null
+            } ?: continue
+            out.add(TraineeRead(role, name, state))
+        }
+        return out
+    }
+
     // ---------------------------------------------------------------- FIM DA COMPETIÇÃO
 
     data class SeasonRead(
@@ -807,6 +856,8 @@ object Parsers {
         val champion = champHead?.let { h ->
             o.lines.filter { it !== h && abs(it.xc - h.xc) <= 0.05f && it.yc > h.yc && it.yc - h.yc <= 0.35f && Txt.letters(it.text) >= 3 }
                 .minByOrNull { it.yc }?.text?.trim()
+                // "COLO-COL0": zero no meio de letras é a letra O
+                ?.replace(Regex("(?<=[A-Za-z])0|0(?=[A-Za-z])"), "O")
         }
         var rank: Int? = null
         var points: Int? = null
