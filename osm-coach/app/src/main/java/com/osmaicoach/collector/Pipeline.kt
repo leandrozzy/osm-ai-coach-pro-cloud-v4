@@ -129,6 +129,8 @@ class FramePipeline private constructor(private val ctx: Context) {
         Diag.log("Tática no OSM → $msg")
         CaptureService.instance?.notice(msg)
     }
+    private var seasonSlot: Int? = null
+    private var seasonSlotAt = 0L
     private var reportCandidates = 0
     private var resultSaved = 0
     private var pregameSaved = 0
@@ -386,10 +388,14 @@ class FramePipeline private constructor(private val ctx: Context) {
             if (type == ScreenType.OTHER_OSM && SeasonScreens.isSeasonScreen(ocr.fullText)) {
                 val full = Txt.key(ocr.fullText)
                 val byName = known.filter { id -> id.names.any { it.length >= 5 && full.contains(it) } }.map { it.slot }.distinct()
-                val ss = asgSlot ?: byName.singleOrNull()
+                // telas sem nome de time ("A época acabou...") seguem o slot da tela de fim de época vista há pouco
+                val ss = asgSlot ?: byName.singleOrNull() ?: seasonSlot?.takeIf { now - seasonSlotAt < 180000L }
                 if (ss != null) {
-                    changed += repo.recordSeasonScreen(ss, ocr.lines.map { it.text }, now)
-                    Diag.log("Fim de temporada/diretoria → S$ss (aprendizado)")
+                    seasonSlot = ss
+                    seasonSlotAt = now
+                    val sr = Parsers.seasonSummary(ocr, repo.fieldMap(ss)[K.TEAM]?.value)
+                    changed += repo.recordSeasonScreen(ss, sr, now)
+                    Diag.log("Fim de temporada/direção → S$ss" + (sr.rank?.let { " (${it}º lugar)" } ?: "") + (if (sr.over) " • competição encerrada" else ""))
                 }
             }
             if (type == ScreenType.TACTIC && asgSlot != null) {
