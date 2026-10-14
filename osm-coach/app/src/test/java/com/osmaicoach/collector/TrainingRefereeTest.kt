@@ -68,11 +68,26 @@ class TrainingRefereeTest {
 
     // ------------------------------------------------------------------ árbitro
 
+    /**
+     * Recorte real da tela de pré-jogo (região do termômetro) gravado como pixels crus: largura, altura, origem e
+     * tamanho do recorte (6 inteiros) + RGB. O resto da imagem fica preto (não conta como cor).
+     */
     private fun img(name: String): PixelProbe.Img {
-        val bi = javax.imageio.ImageIO.read(javaClass.getResourceAsStream("/referee/$name.jpg"))
-        val px = IntArray(bi.width * bi.height)
-        bi.getRGB(0, 0, bi.width, bi.height, px, 0, bi.width)
-        return PixelProbe.Img(bi.width, bi.height, px)
+        val inp = java.io.DataInputStream(javaClass.getResourceAsStream("/referee/$name.rgb")!!.buffered())
+        val w = inp.readInt()
+        val h = inp.readInt()
+        val x0 = inp.readInt()
+        val y0 = inp.readInt()
+        val cw = inp.readInt()
+        val ch = inp.readInt()
+        val px = IntArray(w * h) { 0xFF000000.toInt() }
+        for (y in 0 until ch) for (x in 0 until cw) {
+            val r = inp.readUnsignedByte()
+            val g = inp.readUnsignedByte()
+            val b = inp.readUnsignedByte()
+            px[(y0 + y) * w + x0 + x] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+        }
+        return PixelProbe.Img(w, h, px)
     }
 
     @Test fun orangeThermometerIsMedium() {
