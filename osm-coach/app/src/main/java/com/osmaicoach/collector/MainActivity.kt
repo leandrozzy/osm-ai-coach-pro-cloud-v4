@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -2532,6 +2533,7 @@ private fun SlotTactic(slot: Int, d: SlotData) {
 
     Spacer(Modifier.height(8.dp))
     GenPanel("tactic_ai", slot, "🤖 Refinar com IA (opcional)") { startGeneration(ctx, "tactic_ai", slot) }
+    ChatAskPanel(slot)
 
     Panel {
         Text("Controles", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
@@ -3343,5 +3345,75 @@ private fun SettingsTab() {
             ) { Text(if (AiTest.running) "Testando…" else "Testar a IA agora (mostra o tempo)") }
             if (AiTest.result.isNotBlank()) Text(AiTest.result, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
         }
+    }
+}
+
+
+/**
+ * Usa um chat de IA gratuito (ChatGPT, Gemini, Claude) como "analista": o app monta a pergunta com todos os dados
+ * e a simulação, abre o chat escolhido, e a resposta colada volta para o app, que confere e aplica.
+ */
+@Composable
+private fun ChatAskPanel(slot: Int) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var answer by remember { mutableStateOf("") }
+    var msg by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    Panel {
+        Text("💬 Usar um chat de IA grátis", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+        Text(
+            "1) Toque em Perguntar: a pergunta completa (elenco, rival, histórico, simulação) é copiada e você escolhe o app " +
+                "(ChatGPT, Gemini, Claude…). 2) Cole lá e envie. 3) Copie a resposta inteira e cole abaixo.",
+            fontSize = 12.sp, color = C.MUTED
+        )
+        OutlinedButton(
+            enabled = !busy,
+            onClick = {
+                busy = true
+                msg = "Montando a pergunta…"
+                scope.launch {
+                    val q = withContext(Dispatchers.IO) { runCatching { Director.chatPrompt(Repo(ctx), slot) }.getOrNull() }
+                    busy = false
+                    if (q == null) {
+                        msg = "Faltam dados do elenco para montar a pergunta (leia o Plantel do seu time)."
+                        return@launch
+                    }
+                    val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
+                    cm?.setPrimaryClip(android.content.ClipData.newPlainText("Pergunta OSM", q))
+                    msg = "Pergunta copiada. Escolha o chat, cole e envie."
+                    try {
+                        val send = android.content.Intent(android.content.Intent.ACTION_SEND).setType("text/plain")
+                            .putExtra(android.content.Intent.EXTRA_TEXT, q)
+                        ctx.startActivity(android.content.Intent.createChooser(send, "Perguntar a qual IA?").addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+                    } catch (e: Exception) {
+                        msg = "Pergunta copiada: abra o chat de IA e cole."
+                    }
+                }
+            },
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+        ) { Text("💬 Perguntar num chat de IA") }
+        OutlinedTextField(
+            answer, { answer = it }, label = { Text("Cole aqui a resposta do chat") },
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp).heightIn(min = 90.dp, max = 220.dp)
+        )
+        Button(
+            enabled = !busy && answer.isNotBlank(),
+            onClick = {
+                busy = true
+                msg = "Conferindo a resposta…"
+                scope.launch {
+                    val r = withContext(Dispatchers.IO) {
+                        runCatching { Director.refineTactic(ctx, Repo(ctx), slot, answer) }.getOrElse { Director.Outcome(false, null, it.message) }
+                    }
+                    busy = false
+                    msg = if (r.ok) "✔ Tática do chat aplicada (veja acima a formação, a previsão e as notas)." else "✘ " + (r.error ?: "não deu certo")
+                    if (r.ok) answer = ""
+                    UiBus.version++
+                }
+            },
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+        ) { Text("Aplicar a resposta do chat") }
+        if (msg.isNotBlank()) Text(msg, fontSize = 12.sp, color = if (msg.startsWith("✘")) C.WARN else C.MUTED, modifier = Modifier.padding(top = 4.dp))
     }
 }
