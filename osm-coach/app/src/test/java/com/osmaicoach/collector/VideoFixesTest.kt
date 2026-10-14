@@ -77,4 +77,17 @@ class VideoFixesTest {
         assertTrue(Evidence.plausibleNick("el chiri_2"))
         assertTrue(Evidence.plausibleNick("Fredis Landa"))
     }
+
+    @Test fun screenLabelsAreNotNicknames() {
+        // plantel de um time de CPU: a linha sob o nome do time é um rótulo
+        assertFalse(Evidence.plausibleNick("Melhor marcador:"))
+        assertFalse(Evidence.plausibleNick("Melhor marcador"))
+        assertFalse(Evidence.plausibleNick("Valor do plantel"))
+        assertFalse(Evidence.plausibleNick("Jogador estrela"))
+        val ev = org.json.JSONObject()
+        Evidence.add(ev, K.RIVAL_NICK, "Melhor marcador:", "SQUAD", 1L)
+        Evidence.add(ev, K.RIVAL_NICK, "el chiri_2", "CALENDAR", 1L)
+        assertTrue(Evidence.purgeNicks(ev))
+        assertEquals("el chiri_2", Evidence.best(ev, K.RIVAL_NICK)?.value)
+    }
 }
