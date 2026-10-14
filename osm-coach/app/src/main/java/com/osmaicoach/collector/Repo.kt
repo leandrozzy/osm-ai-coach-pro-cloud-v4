@@ -677,7 +677,7 @@ class Repo(private val ctx: Context) {
     private suspend fun recordRivalProfile(slot: Int, fields: Map<String, Reading>, now: Long) {
         val f = fieldMap(slot)
         val nick = fields[K.RIVAL_NICK]?.value ?: f[K.RIVAL_NICK]?.value ?: return
-        if (!FieldMerge.known(nick)) return
+        if (!FieldMerge.known(nick) || !Evidence.plausibleNick(nick)) return
         val attrs = listOf(
             K.RIVAL_FORMATION to "formation", K.RIVAL_PLAN to "plan", K.RIVAL_MARKING to "marking",
             K.RIVAL_OFFSIDE to "offside", K.RIVAL_TACKLE to "tackle"
@@ -719,7 +719,7 @@ class Repo(private val ctx: Context) {
         val fm = fieldMap(slot)
         if (fm[K.RIVAL_HUMAN]?.value == "Não") return null
         val nick = fm[K.RIVAL_NICK]?.value ?: return null
-        if (!FieldMerge.known(nick)) return null
+        if (!FieldMerge.known(nick) || !Evidence.plausibleNick(nick)) return null
         return profileOf(nick, slot)
     }
 
@@ -1086,6 +1086,8 @@ class Repo(private val ctx: Context) {
         val now = System.currentTimeMillis()
         // Rival CPU não tem apelido (nem "perfil de humano"); apelido que é lixo de OCR também sai. O digitado fica.
         run {
+            val ev = planJson(slot, "evidence")
+            if (Evidence.purgeNicks(ev)) dao.putPlan(PlanEntity(slot, "evidence", ev.toString(), now))
             val rows = dao.fieldsOf(slot).associateBy { it.fkey }
             val nick = rows[K.RIVAL_NICK]
             if (nick != null && nick.source != "manual" && (rows[K.RIVAL_HUMAN]?.fvalue == "Não" || !Evidence.plausibleNick(nick.fvalue))) {
@@ -1219,7 +1221,10 @@ class Repo(private val ctx: Context) {
 
     private suspend fun recordEvidence(slot: Int, values: Map<String, String>, evSource: String, now: Long): Int {
         val j = planJson(slot, "evidence")
-        for ((k, v) in values) Evidence.add(j, k, v, evSource, now)
+        for ((k, v) in values) {
+            if (k == K.RIVAL_NICK && !Evidence.plausibleNick(v)) continue
+            Evidence.add(j, k, v, evSource, now)
+        }
         dao.putPlan(PlanEntity(slot, "evidence", j.toString(), now))
         return confirmHuman(slot, j, now)
     }

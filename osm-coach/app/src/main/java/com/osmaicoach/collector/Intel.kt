@@ -197,7 +197,12 @@ object Evidence {
         "season", "temporada", "edition", "edicao", "jornada", "liga", "copa", "batalha", "estadio", "arbitro",
         "treinador", "ranking", "pontos", "jogos", "vitorias", "classificacao", "anos", "years", "aniversario",
         // textos dos botões flutuantes do próprio app (aparecem nas capturas da tela)
-        "encerrar", "toque", "captura", "app", "osm", "vers", "versus", "vs"
+        "encerrar", "toque", "captura", "app", "osm", "vers", "versus", "vs",
+        // rótulos das telas do OSM que ficam logo abaixo do nome do time (plantel de CPU, análise, relatório)
+        "melhor", "marcador", "marcadores", "capitao", "estrela", "jogador", "jogadores", "valor", "media", "idade",
+        "forca", "plantel", "formacao", "tatica", "nota", "golos", "assistencias", "proximo", "ultimo", "posicao",
+        "objetivo", "lesionado", "suspenso", "contrato", "salario", "moral", "condicao", "titulares", "reservas",
+        "transferencias", "mercado", "relatorio", "analise", "estilo", "marcacao", "treino", "computador", "cpu"
     )
 
     /** Pode ser um apelido de usuário? (rejeita textos de fundo, números soltos e palavras do jogo) */
@@ -210,8 +215,19 @@ object Evidence {
         if (Regex("^\\d+\\s").containsMatchIn(n)) return false
         // lixo de OCR: vírgula/ponto-e-vírgula no meio ou palavra "quebrada" (minúscula seguida de várias maiúsculas: "sARY")
         if (t.contains(',') || t.contains(';')) return false
+        // "Melhor marcador:", "Valor:": rótulo de tela, não nome de usuário
+        if (t.contains(':')) return false
         if (t.split(' ').any { w -> Regex("^[a-z][A-Z]{2,}").containsMatchIn(w) }) return false
         return true
+    }
+
+    /** Tira das evidências os apelidos que não passam no filtro (lidos antes do filtro existir). */
+    fun purgeNicks(j: JSONObject): Boolean {
+        val f = j.optJSONObject(K.RIVAL_NICK) ?: return false
+        val bad = f.keys().asSequence().filter { !plausibleNick(it) }.toList()
+        for (k in bad) f.remove(k)
+        if (f.length() == 0) j.remove(K.RIVAL_NICK)
+        return bad.isNotEmpty()
     }
 
     fun add(j: JSONObject, field: String, value: String, source: String, now: Long) {
