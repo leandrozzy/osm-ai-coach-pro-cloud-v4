@@ -823,15 +823,16 @@ object Director {
      * Refino: a IA escolhe olhando a simulação das alternativas. Se a IA repetir o rascunho quando há opção
      * claramente melhor, ou falhar, aplica a melhor tática simulada (com a explicação).
      */
-    suspend fun refineTactic(ctx: Context, repo: Repo, slot: Int): Outcome {
-        repo.syncRound(slot)
-        val curPlan = repo.dao.plan(slot, "tactic")
-        val curRound = repo.fieldMap(slot)[K.ROUND]?.value?.toIntOrNull()
-        val current = curPlan != null && curRound != null &&
-            runCatching { JSONObject(curPlan.json).optInt("forRound", -1) == curRound }.getOrDefault(false)
-        if (!current) return Outcome(false, null, "Gere a tática desta rodada primeiro: a IA só refina uma tática que você já pediu.")
+    /** Tudo o que a IA (da API ou de um chat) precisa para escolher a tática deste jogo. */
+    private class Prep(
+        val inp: TacticEngine.Input, val res: TacticEngine.Result, val f: Map<String, StoredField>, val round: Int?, val rival: String?,
+        val hist: List<HistRow>, val base: WinModel.Input, val scen: List<Pair<WinModel.Input, Double>>, val lost: Map<String, Int>,
+        val draftProb: WinModel.Prob?, val draftPts: Double, val best: Cand?, val allowed: List<String>, val prompt: String
+    )
+
+    private suspend fun prep(repo: Repo, slot: Int): Prep? {
         val inp = tacticInput(repo, slot)
-        val res = TacticEngine.recommend(inp) ?: return Outcome(false, null, "Gere a tática local primeiro (faltam dados do elenco).")
+        val res = TacticEngine.recommend(inp) ?: return null
         val f = repo.fieldMap(slot)
         val round = f[K.ROUND]?.value?.toIntOrNull()
         val rival = f[K.RIVAL_TEAM]?.value
@@ -868,22 +869,70 @@ object Director {
         val allowed = candidateFormations(res, inp)
         val allowedNames = allowed.flatMap { Formations.variants(it).ifEmpty { listOf(it) } }
 
+        val prompt = tacticRefinePrompt(context(repo, slot), draft, pct(draftProb), table, stats, allowedNames, Osm.allowedTackles(inp.referee))
+        return Prep(inp, res, f, round, rival, hist, base, scen, lost, draftProb, draftPts, best, allowed, prompt)
+    }
+
+    private fun probOf(pp: Prep, t: Tactic, rows: List<List<PlayerEntity?>>): WinModel.Prob? {
+        val sp = simPlan(t, rows)
+        return WinModel.predict(pp.base.copy(plan = sp, tacticRecord = record(pp.hist, sp)))
+    }
+
+    /**
+     * Pergunta pronta para colar num chat de IA gratuito (ChatGPT, Gemini, Claude): os mesmos dados e a mesma
+     * simulação que a IA da API recebe, pedindo o JSON da tática no fim.
+     */
+    suspend fun chatPrompt(repo: Repo, slot: Int): String? {
+        repo.syncRound(slot)
+        val pp = prep(repo, slot) ?: return null
+        return "Sou técnico no jogo Online Soccer Manager (OSM). Pense com calma, como um especialista do jogo, use o que você sabe " +
+            "dos fóruns e da comunidade do OSM, e no FINAL responda com um bloco JSON.\n\n" + pp.prompt
+    }
+
+    suspend fun refineTactic(ctx: Context, repo: Repo, slot: Int, chatAnswer: String? = null): Outcome {
+        repo.syncRound(slot)
+        val curPlan = repo.dao.plan(slot, "tactic")
+        val curRound = repo.fieldMap(slot)[K.ROUND]?.value?.toIntOrNull()
+        val current = curPlan != null && curRound != null &&
+            runCatching { JSONObject(curPlan.json).optInt("forRound", -1) == curRound }.getOrDefault(false)
+        if (!current) return Outcome(false, null, "Gere a tática desta rodada primeiro: a IA só refina uma tática que você já pediu.")
+        val pp = prep(repo, slot) ?: return Outcome(false, null, "Gere a tática local primeiro (faltam dados do elenco).")
+        val inp = pp.inp
+        val res = pp.res
+        val f = pp.f
+        val round = pp.round
+        val rival = pp.rival
+        val hist = pp.hist
+        val base = pp.base
+        val scen = pp.scen
+        val lost = pp.lost
+        val draftProb = pp.draftProb
+        val draftPts = pp.draftPts
+        val best = pp.best
+        val allowed = pp.allowed
+        fun prob(t: Tactic, rows: List<List<PlayerEntity?>>): WinModel.Prob? = probOf(pp, t, rows)
+        val fromChat = chatAnswer != null
         val notes = ArrayList<String>()
         var chosen: Cand? = null
-        val reply = AiClient.ask(ctx, tacticRefinePrompt(context(repo, slot), draft, pct(draftProb), table, stats, allowedNames, Osm.allowedTackles(inp.referee)), null)
+        val reply = if (chatAnswer != null) AiClient.Reply(true, chatAnswer, null) else AiClient.ask(ctx, pp.prompt, null)
         val json = AiClient.parseJson(reply.text)
         if (reply.ok && json != null) {
             val (validated, err) = TacticValidator.validate(json, inp.referee)
             if (validated != null) {
                 val t = TacticValidator.canonical(validated, res.tactic)
-                val okLimits = Formations.base(t.formation) in allowed && Math.abs(t.pressure - res.tactic.pressure) <= 15 &&
-                    Math.abs(t.mentality - res.tactic.mentality) <= 15 && Math.abs(t.tempo - res.tactic.tempo) <= 15
+                // resposta colada do chat: a escolha é do usuário (sem o limite das 3 formações/15 pontos)
+                val okLimits = fromChat || (Formations.base(t.formation) in allowed && Math.abs(t.pressure - res.tactic.pressure) <= 15 &&
+                    Math.abs(t.mentality - res.tactic.mentality) <= 15 && Math.abs(t.tempo - res.tactic.tempo) <= 15)
                 val rows = TacticEngine.lineup(t.formation, inp.players, inp.fitness)?.first
                 if (okLimits && rows != null) {
                     val pts = score(t, rows, scen, hist, lost) ?: prob(t, rows)?.points ?: 0.0
                     val bestPts = best?.points ?: pts
                     val repeated = same(t, res.tactic)
-                    if (repeated && best != null && bestPts > draftPts + 0.05) {
+                    if (fromChat && pts >= bestPts - 0.30) {
+                        chosen = Cand(t.copy(notes = t.notes), rows, pts)
+                        notes.add("💬 Tática da resposta do chat de IA (${"%.2f".format(pts)} pontos esperados na simulação; melhor simulada ${"%.2f".format(bestPts)}).")
+                        notes.addAll(t.notes)
+                    } else if (repeated && best != null && bestPts > draftPts + 0.05) {
                         notes.add("A IA manteve o rascunho, mas a simulação achou opção melhor (${"%.2f".format(bestPts)} x ${"%.2f".format(draftPts)} pontos esperados): apliquei a melhor.")
                     } else if (pts >= bestPts - 0.08) {
                         chosen = Cand(t.copy(notes = t.notes), rows, pts)
@@ -899,6 +948,7 @@ object Director {
                 notes.add("Resposta da IA inválida ($err): apliquei a melhor tática simulada.")
             }
         } else {
+            if (fromChat) return Outcome(false, null, "Não achei o JSON da tática na resposta colada. Cole a resposta inteira do chat (com o bloco { ... }).")
             notes.add("IA indisponível agora (${(reply.error ?: "sem resposta").take(80)}): apliquei a melhor tática simulada.")
         }
         val pick = chosen ?: best ?: return Outcome(false, null, "Não consegui simular alternativas com o elenco lido.")

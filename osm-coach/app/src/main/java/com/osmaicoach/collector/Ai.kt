@@ -109,7 +109,8 @@ object ModelPicker {
     fun pickCompat(ids: List<String>): String? {
         val bad = listOf("whisper", "tts", "guard", "embed", "playai", "orpheus", "distil", "moderation", "image")
         val ok = ids.filter { id -> bad.none { id.contains(it, ignoreCase = true) } }
-        val prefs = listOf("llama-3.3-70b", "gpt-oss-120b", "llama-3.1-70b", "gpt-oss-20b", "qwen", "grok", "llama-3.1-8b", "llama")
+        // modelo que "pensa" antes (melhor para tática) primeiro; os demais como reserva
+        val prefs = listOf("gpt-oss-120b", "qwen3", "llama-3.3-70b", "llama-3.1-70b", "gpt-oss-20b", "qwen", "grok", "llama-3.1-8b", "llama")
         for (p in prefs) {
             val hit = ok.firstOrNull { it.contains(p, ignoreCase = true) }
             if (hit != null) return hit
@@ -474,6 +475,9 @@ object AiClient {
     }
 
     /** Tenta cada provedor com chave, em ordem, com orçamento total de tempo. Nunca fica preso. */
+    fun hasAnyKey(ctx: Context): Boolean =
+        listOf(Settings.GEMINI_KEY, Settings.CLAUDE_KEY, Settings.COMPAT_KEY).any { Settings.get(ctx, it, "").isNotBlank() }
+
     suspend fun ask(ctx: Context, prompt: String, jpeg: ByteArray?, budgetMs: Long = 150000L): Reply {
         val deadline = System.currentTimeMillis() + budgetMs
         val order = providerOrder(ctx, jpeg != null)
@@ -522,12 +526,44 @@ object AiClient {
 
     /** Pergunta ao Gemini com busca no Google (fontes atuais da internet). Devolve o texto (com JSON no meio). */
     suspend fun askGrounded(ctx: Context, prompt: String): Reply = withContext(Dispatchers.IO) {
+        val errs = ArrayList<String>()
         val key = Settings.get(ctx, Settings.GEMINI_KEY, "")
-        if (key.isBlank()) return@withContext Reply(false, null, "chave do Gemini não configurada")
-        val models = geminiModels(ctx, key, false).filter { !blockedToday(ctx, it) && !it.contains("lite") }
-            .ifEmpty { listOf("gemini-2.5-flash") }
+        if (key.isNotBlank()) {
+            val g = groundedGemini(key, prompt, (geminiModels(ctx, key, false).filter { !blockedToday(ctx, it) && !it.contains("lite") } +
+                // modelos com busca no Google no plano gratuito (cota própria)
+                listOf("gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite")).distinct())
+            if (g.ok) return@withContext g
+            errs.add("Gemini: " + g.error)
+        }
+        // Groq: o modelo "compound" pesquisa na web sozinho
+        val ck = Settings.get(ctx, Settings.COMPAT_KEY, "")
+        val base = Settings.get(ctx, Settings.COMPAT_BASE, Settings.DEFAULT_COMPAT_BASE).trimEnd('/')
+        if (ck.isNotBlank() && base.contains("groq.com")) {
+            for (model in listOf("groq/compound", "compound-beta")) {
+                AiStatus.set("Pesquisando a comunidade do OSM na internet (Groq $model)…")
+                try {
+                    val body = JSONObject().put("model", model).put("temperature", 0.2)
+                        .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", prompt))).toString()
+                    val r = request("POST", "$base/chat/completions", mapOf("Authorization" to "Bearer $ck"), body)
+                    if (r.code in 200..299) {
+                        val t = JSONObject(r.body).optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content")
+                        if (!t.isNullOrBlank()) {
+                            AiStatus.set("")
+                            return@withContext Reply(true, t, null)
+                        }
+                    } else errs.add("Groq $model: HTTP ${r.code}")
+                } catch (e: Exception) {
+                    errs.add("Groq $model: " + (e.message ?: e.javaClass.simpleName))
+                }
+            }
+        }
+        AiStatus.set("")
+        Reply(false, null, errs.joinToString(" | ").ifBlank { "nenhuma IA com busca na internet configurada" })
+    }
+
+    private fun groundedGemini(key: String, prompt: String, models: List<String>): Reply {
         var lastErr = "falha desconhecida"
-        for (model in models.take(3)) {
+        for (model in models.take(5)) {
             Diag.aiCalls.incrementAndGet()
             AiStatus.set("Pesquisando a comunidade do OSM na internet ($model)…")
             val body = JSONObject()
@@ -543,18 +579,17 @@ object AiClient {
                     if (parts != null) for (i in 0 until parts.length()) sb.append(parts.optJSONObject(i)?.optString("text") ?: "")
                     if (sb.isNotBlank()) {
                         AiStatus.set("")
-                        return@withContext Reply(true, sb.toString(), null)
+                        return Reply(true, sb.toString(), null)
                     }
                     lastErr = "resposta vazia ($model)"
                 } else {
-                    lastErr = "HTTP ${r.code} ($model)"
+                    lastErr = (if (r.code == 429) "cota da busca esgotada" else "HTTP ${r.code}") + " ($model)"
                 }
             } catch (e: Exception) {
                 lastErr = (e.message ?: e.javaClass.simpleName) + " ($model)"
             }
         }
-        AiStatus.set("")
-        Reply(false, null, lastErr)
+        return Reply(false, null, lastErr)
     }
 
     fun parseJson(raw: String?): JSONObject? {
@@ -801,8 +836,19 @@ object MetaRefresh {
         if (running) return "já está atualizando"
         running = true
         try {
-            val reply = AiClient.askGrounded(ctx, prompt())
-            val json = AiClient.parseJson(reply.text) ?: return "não consegui pesquisar agora (${reply.error ?: "resposta sem JSON"})"
+            var reply = AiClient.askGrounded(ctx, prompt())
+            var viaSearch = true
+            if (!reply.ok) {
+                // sem busca disponível (cota): usa o que a IA já sabe dos fóruns, marcado como tal
+                val r2 = AiClient.ask(ctx, prompt() + " Se não puder pesquisar, use o que você sabe das fontes citadas.", null, 90000L)
+                if (r2.ok) {
+                    reply = r2
+                    viaSearch = false
+                } else {
+                    return "não consegui pesquisar agora (${reply.error}); sem busca também falhou (${r2.error})"
+                }
+            }
+            val json = AiClient.parseJson(reply.text) ?: return "a IA respondeu sem o JSON das regras; tente de novo mais tarde"
             val rules = json.optJSONObject("rules") ?: return "a pesquisa não trouxe regras"
             val clean = JSONObject()
             for (k in rules.keys()) {
@@ -818,13 +864,15 @@ object MetaRefresh {
                     k, JSONObject().put("formation", f).put("style", st).put("pressure", p).put("mentality", m).put("tempo", t)
                         .put("attack", Osm.attack(o.optString("attack")) ?: "").put("mid", Osm.midfield(o.optString("mid")) ?: "")
                         .put("def", Osm.defense(o.optString("def")) ?: "").put("marking", Osm.marking(o.optString("marking")) ?: "")
-                        .put("offside", if (o.optString("offside") == "Sim") "Sim" else "Não").put("source", o.optString("source").take(60))
+                        .put("offside", if (o.optString("offside") == "Sim") "Sim" else "Não")
+                        .put("source", (o.optString("source").take(50).ifBlank { "fóruns" }) + if (viaSearch) "" else " • sem busca")
                 )
             }
             if (clean.length() < 3) return "a pesquisa trouxe poucas regras válidas (${clean.length()}); mantive o modelo atual"
             val now = System.currentTimeMillis()
             Repo(ctx).dao.putPlan(PlanEntity(0, KIND, JSONObject().put("at", now).put("rules", clean).toString(), now))
-            return "modelo da comunidade atualizado: ${clean.length()} situações"
+            return "modelo da comunidade atualizado: ${clean.length()} situações" +
+                (if (viaSearch) " (pesquisa na internet)" else " (a busca estava sem cota: usei o conhecimento da IA; tento a busca de novo na semana)")
         } finally {
             running = false
         }
