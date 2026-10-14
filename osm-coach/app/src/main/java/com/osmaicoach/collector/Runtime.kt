@@ -140,7 +140,17 @@ fun startGeneration(ctx: Context, kind: String, slot: Int) {
     AppScope.scope.launch(Dispatchers.IO) {
         val r = try {
             when (kind) {
-                "tactic" -> Director.generateTacticLocal(Repo(app), slot)
+                "tactic" -> {
+                    // Um toque: tática pela simulação e, se houver IA configurada, a IA revisa na sequência
+                    // (Gemini, Groq… o que tiver cota); se a IA falhar, fica a da simulação.
+                    val local = Director.generateTacticLocal(Repo(app), slot)
+                    if (local.ok && AiClient.hasAnyKey(app)) {
+                        AiStatus.set("Consultando a IA para revisar a tática…")
+                        val ai = runCatching { Director.refineTactic(app, Repo(app), slot) }.getOrNull()
+                        AiStatus.set("")
+                        if (ai != null && ai.ok) ai else local
+                    } else local
+                }
                 "tactic_ai" -> Director.refineTactic(app, Repo(app), slot)
                 else -> Director.marketNote(app, Repo(app), slot)
             }

@@ -109,7 +109,8 @@ object ModelPicker {
     fun pickCompat(ids: List<String>): String? {
         val bad = listOf("whisper", "tts", "guard", "embed", "playai", "orpheus", "distil", "moderation", "image")
         val ok = ids.filter { id -> bad.none { id.contains(it, ignoreCase = true) } }
-        val prefs = listOf("llama-3.3-70b", "gpt-oss-120b", "llama-3.1-70b", "gpt-oss-20b", "qwen", "grok", "llama-3.1-8b", "llama")
+        // modelo que "pensa" antes (melhor para tática) primeiro; os demais como reserva
+        val prefs = listOf("gpt-oss-120b", "qwen3", "llama-3.3-70b", "llama-3.1-70b", "gpt-oss-20b", "qwen", "grok", "llama-3.1-8b", "llama")
         for (p in prefs) {
             val hit = ok.firstOrNull { it.contains(p, ignoreCase = true) }
             if (hit != null) return hit
@@ -474,6 +475,9 @@ object AiClient {
     }
 
     /** Tenta cada provedor com chave, em ordem, com orçamento total de tempo. Nunca fica preso. */
+    fun hasAnyKey(ctx: Context): Boolean =
+        listOf(Settings.GEMINI_KEY, Settings.CLAUDE_KEY, Settings.COMPAT_KEY).any { Settings.get(ctx, it, "").isNotBlank() }
+
     suspend fun ask(ctx: Context, prompt: String, jpeg: ByteArray?, budgetMs: Long = 150000L): Reply {
         val deadline = System.currentTimeMillis() + budgetMs
         val order = providerOrder(ctx, jpeg != null)
