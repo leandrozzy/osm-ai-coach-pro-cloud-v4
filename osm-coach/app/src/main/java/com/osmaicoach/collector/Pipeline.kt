@@ -364,10 +364,23 @@ class FramePipeline private constructor(private val ctx: Context) {
             }
 
             val known = repo.knownIdentities()
-            val asg = if (type == ScreenType.HUB) {
+            var asg = if (type == ScreenType.HUB) {
                 machine.onHub(ex.hubCards)
             } else {
                 machine.onScreen(type, ex.teamCandidates, ex.roundRead, ex.ownerTeam, known)
+            }
+            // Pré-jogo do MEU time (apelido ao lado) que não bate com nenhum slot: é a competição nova do slot que está
+            // em pré-época / procurando adversário / livre (batalha nova com outro clube). Antes ficava "sem identidade"
+            // e nada do slot novo era lido.
+            if (asg.slot == null && type == ScreenType.PREGAME && ex.fields.containsKey(K.TEAM)) {
+                val team = ex.fields[K.TEAM]?.value
+                val open = if (team != null) repo.openSlotFor(team, ocr.fullText) else null
+                if (open != null) {
+                    repo.startCompetition(open, team!!, now)
+                    machine.adopt(open)
+                    asg = Assignment(open, 0.8, "pré-jogo da competição nova")
+                    Diag.log("Competição nova reconhecida: $team → S$open")
+                }
             }
             saveMachine(sessionId)
             Diag.currentSlot = machine.current ?: 0

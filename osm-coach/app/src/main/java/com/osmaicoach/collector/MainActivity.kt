@@ -346,7 +346,9 @@ private fun ManualDialog(slot: Int, spec: ManualFields.Spec, current: String, on
 @Composable
 private fun EditSection(slot: Int, d: SlotData, title: String, rows: List<EditRow>, icon: String = "✏️", startOpen: Boolean = false) {
     var editing by remember { mutableStateOf<EditRow?>(null) }
-    val missing = rows.count { r -> r.key != null && (r.display ?: fv(d, r.key)) == NI }
+    val missing = rows.count { r ->
+        r.key != null && (r.display ?: fv(d, r.key)) == NI && !(r.key == K.RIVAL_NICK && fv(d, K.RIVAL_HUMAN) == "Não")
+    }
     Fold(icon, title, if (missing > 0) "faltam $missing" else "✔", startOpen) {
         for (r in rows) {
             val raw = r.display ?: (if (r.key != null) fv(d, r.key) else NI)
@@ -1149,12 +1151,13 @@ private suspend fun loadSlot(ctx: Context, slot: Int): SlotData {
                 val j = JSONObject(mp.json)
                 val then = j.optJSONArray("squad")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() }
                 val now = repo.playersOf(slot).filter { it.owner == "MY" }.map { it.nameKey }.toSet()
-                val fresh = if (then == null) System.currentTimeMillis() - mp.at < 24L * 3600000L
+                // nota antiga sem a lista do elenco não dá para conferir (citava jogadores que já saíram): não aparece
+                val fresh = if (then == null) false
                 else (then - now).size <= 2 && (now - then).size <= 2 && System.currentTimeMillis() - mp.at < 3L * 86400000L
                 if (fresh) j.optString("aiNote").ifBlank { null } else null
             } catch (e: Exception) { null }
         },
-        logs = dao.tacticLogs(slot),
+        logs = dao.tacticLogs(slot).filter { it.kind.startsWith("tlog_R") },
         reports = dao.matchReports(slot),
         fitness = repo.fitness(slot),
         rivalProfile = repo.rivalProfile(slot),
@@ -2588,7 +2591,7 @@ private fun MatchCard(m: MatchEntity, modifier: Modifier, highlight: Boolean, vo
         val opp = Fixtures.opponent(m)
         val nick = m.opponentNick?.takeIf { Evidence.plausibleNick(it) }
         Text(
-            opp ?: Fixtures.stage(m) ?: NI,
+            opp ?: Fixtures.stage(m) ?: (if (m.opponent != null) "a definir" else NI),
             fontSize = 11.sp, textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold
         )
         // Humano (apelido sob o time no card) ou CPU (card lido sem apelido).

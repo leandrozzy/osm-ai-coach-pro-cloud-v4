@@ -142,6 +142,8 @@ class Repo(private val ctx: Context) {
         for (c in ex.hubCards) {
             val rows = dao.fieldsOf(c.slot).associateBy { it.fkey }
             val prev = rows[K.SLOT_STATE]?.fvalue
+            // pré-época na central, mas o pré-jogo da competição nova já foi lido (jornada 1-2): o slot está ativo
+            if (c.state == "preepoca" && prev == "ativo" && (rows[K.ROUND]?.fvalue?.toIntOrNull() ?: 99) <= 2) continue
             if (c.state != null) {
                 // Slot livre, procurando adversário ou pré-época: a competição anterior acabou. Só arquiva quando DUAS
                 // leituras da central (com 15 s ou mais entre elas) mostram o mesmo estado; nunca apaga os campos
@@ -155,7 +157,9 @@ class Repo(private val ctx: Context) {
                         continue
                     }
                     if (now - pAt < 15000L) continue
-                    val hadComp = rows.containsKey(K.ROUND_DONE) || dao.matchesOf(c.slot).isNotEmpty()
+                    // só arquiva competição com jogo jogado (a nova, ainda sem placar, nunca é arquivada)
+                    val hadComp = (rows[K.ROUND_DONE]?.fvalue?.toIntOrNull() ?: 0) >= 1 ||
+                        dao.matchesOf(c.slot).any { it.result != null || it.scoreMine != null }
                     if (hadComp && prev != "vazio" && prev != "procurando" && prev != "preepoca") {
                         archiveSeason(c.slot, now, false)
                         dao.deleteRivalFields(c.slot)
@@ -204,6 +208,31 @@ class Repo(private val ctx: Context) {
         return changed
     }
 
+    /**
+     * Slot que espera uma competição nova (pré-época, procurando adversário ou livre). Com mais de um, desempata
+     * pelos grupos da batalha no título da central ("UZM VS UFN") que aparecem no pré-jogo.
+     */
+    suspend fun openSlotFor(team: String, screenText: String): Int? {
+        val open = (1..4).filter { s -> fieldMap(s)[K.SLOT_STATE]?.value in setOf("preepoca", "procurando", "vazio") }
+        if (open.size <= 1) return open.singleOrNull()
+        val txt = Txt.norm(screenText)
+        val byTag = open.filter { s ->
+            val title = Txt.norm(fieldMap(s)[K.HUB_TITLE]?.value ?: "")
+            title.split(" ").filter { it.length >= 3 && it != "vs" }.any { tag -> Regex("\\b$tag\\b").containsMatchIn(txt) }
+        }
+        return byTag.singleOrNull()
+    }
+
+    /** O slot passou a ter o meu time novo: troca o time guardado e o slot volta a "ativo". */
+    suspend fun startCompetition(slot: Int, team: String, now: Long) {
+        val old = dao.fieldsOf(slot).firstOrNull { it.fkey == K.TEAM }
+        if (old != null && Txt.sim(Txt.key(old.fvalue), Txt.key(team)) < 0.85 && old.source != "manual") dao.deleteField(slot, K.TEAM)
+        dao.putField(FieldEntity(slot, K.SLOT_STATE, "ativo", 0.9, now, "pregame"))
+        dao.deleteField(slot, K.SLOT_PENDING)
+        dao.deletePlan(slot, "evidence")
+        learn(slot, "temporada", "Competição nova: o meu time neste slot agora é $team.", now)
+    }
+
     /** Campo vindo da central: vale o que está na tela agora (troca mesmo com a mesma confiança). */
     private suspend fun hubPut(slot: Int, key: String, value: String, now: Long): Int {
         val old = dao.fieldsOf(slot).firstOrNull { it.fkey == key }
@@ -245,6 +274,12 @@ class Repo(private val ctx: Context) {
             dao.deletePlan(slot, p.kind)
         }
         dao.deletePlan(slot, "tactic")
+        // conferência entre telas e mensagens da direção são da competição que acabou
+        dao.deletePlan(slot, "evidence")
+        dao.plan(slot, "board")?.let {
+            dao.putPlan(PlanEntity(slot, "old_" + tag + "_board", it.json, it.at))
+            dao.deletePlan(slot, "board")
+        }
         dao.plan(slot, "season")?.let {
             dao.putPlan(PlanEntity(slot, "old_" + tag + "_season", it.json, it.at))
             dao.deletePlan(slot, "season")
@@ -618,9 +653,11 @@ class Repo(private val ctx: Context) {
         val team = f[K.TEAM]?.value ?: f[K.HUB_TITLE]?.value ?: "Meu time"
         val items = ArrayList<String>()
         if (r.rank != null) {
+            // classificação vista no meio da competição não é "fim": só com a tela de fim de época ou todas as rodadas jogadas
+            val ended = r.over || Fixtures.seasonEnded(f, dao.matchesOf(slot), now)
             items.add(
-                "Fim da competição: $team terminou em ${r.rank}º" + (if (r.points != null) " com ${r.points} pts" else "") +
-                    (if (r.goals != null) " (gols ${r.goals})" else "") + "."
+                (if (ended) "Fim da competição: $team terminou em ${r.rank}º" else "Classificação: $team estava em ${r.rank}º") +
+                    (if (r.points != null) " com ${r.points} pts" else "") + (if (r.goals != null) " (gols ${r.goals})" else "") + "."
             )
         }
         if (r.champion != null) items.add("Campeão da liga: ${r.champion}.")
@@ -688,9 +725,15 @@ class Repo(private val ctx: Context) {
     /** Mensagens da diretoria / fim de temporada guardadas (mais nova primeiro). */
     suspend fun boardMessages(slot: Int): List<String> {
         val arr = planJson(slot, "board").optJSONArray("items") ?: return emptyList()
+        // "Fim da competição" gravado de uma classificação vista no meio da liga: mostra como classificação
+        val ended = Fixtures.seasonEnded(fieldMap(slot), dao.matchesOf(slot), System.currentTimeMillis())
         val all = (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.optString("text") }
             .filter { !Txt.norm(it).contains("atribuid") }
             .map { it.replace(Regex("(?<=[A-Za-z])0|0(?=[A-Za-z])"), "O") }
+            .map { t ->
+                if (!ended && t.startsWith("Fim da competição:")) t.replace("Fim da competição:", "Classificação:").replace(" terminou em ", " estava em ")
+                else t
+            }
         // leituras repetidas da mesma frase: fica a mais completa
         val out = ArrayList<String>()
         for (t in all.reversed()) {

@@ -434,7 +434,11 @@ object Parsers {
                 val dm = RX_DATE_LOOSE.find(t)
                 val tm = RX_TIME.find(t)
                 val sm = RX_SCORE.find(t)
-                val junk = Txt.norm(t).let { it.contains("anniv") || it.startsWith("anive") || it.startsWith("annive") }
+                // resto do "25 ANNIVERSARY" do fundo do estádio ("LRSARY", "SARY", "ANNYEANS"): não é o rival
+                val junk = Txt.norm(t).let {
+                    it.contains("anniv") || it.startsWith("anive") || it.startsWith("annive") || it.endsWith("sary") ||
+                        it.contains("versar") || it.contains("annyea")
+                }
                 when {
                     dm != null -> date = dm.groupValues[1] + "/" + dm.groupValues[2] + "/" + dm.groupValues[3]
                     tm != null -> time = t

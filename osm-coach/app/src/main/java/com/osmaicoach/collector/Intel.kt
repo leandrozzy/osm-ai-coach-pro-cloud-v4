@@ -25,15 +25,24 @@ object Fixtures {
         else -> null
     }
 
-    /** Rival de verdade do card (null quando o card só mostra a fase da copa). */
-    fun opponent(m: MatchEntity): String? = m.opponent?.takeIf { !isStage(it) && FieldMerge.known(it) }
+    /** "ASD" (a ser definido) e restos do fundo do estádio ("…SARY" de "25 ANNIVERSARY") não são time. */
+    fun undecidedName(text: String?): Boolean {
+        val n = Txt.norm(text ?: return true)
+        return n.isBlank() || n == "asd" || n == "a s d" || n.contains("a definir") || n == "tbd" ||
+            n.endsWith("sary") || n.contains("anniv") || n.contains("annyea")
+    }
+
+    /** Rival de verdade do card (null quando o card só mostra a fase da copa ou o rival ainda não foi definido). */
+    fun opponent(m: MatchEntity): String? = m.opponent?.takeIf { !isStage(it) && FieldMerge.known(it) && !undecidedName(it) }
 
     /** Rodada da derrota que me tirou da copa (mata-mata); null se ainda estou na copa. */
     fun cupOutRound(ms: List<MatchEntity>): Int? =
         ms.filter { isCup(it) && it.result == "D" && it.round != null }.minOfOrNull { it.round!! }
 
     /** Jogo de copa depois da eliminação: não vou jogar, não é "próximo" nem pede resultado. */
-    fun void(m: MatchEntity, ms: List<MatchEntity>): Boolean {
+    fun void(m: MatchEntity, ms: List<MatchEntity>, now: Long = System.currentTimeMillis()): Boolean {
+        // jogo de copa com o rival "a definir" cujo dia já passou sem placar: não foi jogado (não pede resultado)
+        if (isCup(m) && m.result == null && m.scoreMine == null && opponent(m) == null && started(m, now)) return true
         val out = cupOutRound(ms) ?: return false
         return isCup(m) && m.result == null && (m.round ?: Int.MAX_VALUE) > out
     }
@@ -732,6 +741,7 @@ object Coach {
         var discipline = false
         val avoid = LinkedHashSet<String>()
         val lostCount = HashMap<String, Int>()
+        val lostTo = HashMap<String, ArrayList<String>>()
         for ((i, g) in recent.withIndex()) {
             val w = listOf(1.0, 0.75, 0.55, 0.4, 0.3)[i]
             val bad = g.result != "V"
@@ -743,6 +753,7 @@ object Coach {
             val key = g.formation?.let { Formations.base(it) + "|" + (Osm.style(g.style) ?: "") }
             if (g.result == "D" && key != null) {
                 lostCount[key] = (lostCount[key] ?: 0) + 1
+                lostTo.getOrPut(key) { ArrayList() }.add("J${g.round} vs ${g.rival}")
                 if (nextRival != null && same(g.rival, nextRival)) avoid.add(key)
             }
         }
@@ -754,7 +765,18 @@ object Coach {
         if (l.defNeed > 0) plan.add("Proteger a defesa: mentalidade mais baixa, sem linha de impedimento arriscada e atacantes ajudando quando o rival for forte.")
         if (l.atkNeed > 0) plan.add("Mais presença na área: um atacante a mais ou \"Remate à vista\" quando a defesa rival for fraca.")
         if (l.discipline) plan.add("Disciplina: as faltas passaram de 16 por jogo. O desarme segue o árbitro, mas cuidado com cartões.")
-        for (k in avoid) plan.add("Não repetir ${k.replace("|", " • ")}" + (if (nextRival != null) " contra $nextRival" else "") + ": já perdeu com ela.")
+        for (k in avoid) {
+            // diz contra quem perdeu de verdade (antes dizia "contra <próximo rival>" mesmo quando a derrota foi com outro)
+            val vsNext = nextRival != null && recent.any { g ->
+                g.result == "D" && same(g.rival, nextRival) && g.formation?.let { Formations.base(it) + "|" + (Osm.style(g.style) ?: "") } == k
+            }
+            val where = lostTo[k].orEmpty().joinToString(", ")
+            plan.add(
+                "Não repetir ${k.replace("|", " • ")}: " +
+                    (if (vsNext) "já perdeu com ela contra $nextRival" else "perdeu com ela ${lostTo[k]?.size ?: 0} vezes") +
+                    (if (where.isNotBlank()) " ($where)." else ".")
+            )
+        }
         if (plan.isEmpty()) plan.add("Manter a linha que vem funcionando e ajustar só ao rival da vez.")
         return l.copy(plan = plan)
     }

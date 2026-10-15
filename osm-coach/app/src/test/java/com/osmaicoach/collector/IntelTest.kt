@@ -273,6 +273,26 @@ class IntelTest {
         assertEquals(54, Coach.num("540", true))
     }
 
+    @Test fun lessonSaysWhoReallyBeatUs() {
+        fun g(r: Int, rival: String) = Coach.Game(r, rival, "D", 0, 1, "4-2-3-1", "Contra-ataque", 40, 3, 11, 10, "4-4-2 B", null)
+        // perdeu 2x com 4-2-3-1 • Contra-ataque para Xorazm e Pakhtakor; o próximo é o Navbahor
+        val l = Coach.lessons(listOf(g(17, "Xorazm Urganch"), g(11, "Pakhtakor")), "Navbahor")
+        val line = l.plan.first { it.startsWith("Não repetir") }
+        assertFalse(line.contains("Navbahor"))
+        assertTrue(line.contains("Xorazm Urganch") && line.contains("2 vezes"))
+    }
+
+    @Test fun cupGameWithUndecidedRivalIsNotPending() {
+        val now = 1_800_000_000_000L
+        fun m(key: String, label: String, round: Int, opp: String, date: String) =
+            MatchEntity(1, key, label, round, date, null, false, null, null, null, opp, null, now)
+        val past = m("L33", "Copa • Final", 33, "ASD", "01/01/26")
+        assertTrue(Fixtures.void(past, listOf(past), now))
+        assertNull(Fixtures.opponent(m("L26", "Jornada 26", 26, "LRSARY", "01/01/26")))
+        // jogo de liga com rival de verdade continua valendo
+        assertFalse(Fixtures.void(m("L34", "Jornada 34", 34, "Yelimay Semey", "01/01/26"), emptyList(), now))
+    }
+
     @Test fun predictionsAreCalibratedWithRealResults() {
         fun log(r: Int, res: String, pts: Double, w: Int, e: Int, d: Int) = JSONObject().put("round", r).put("result", res)
             .put("predPts", pts).put("predW", w).put("predE", e).put("predD", d)

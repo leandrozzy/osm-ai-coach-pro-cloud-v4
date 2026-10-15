@@ -491,7 +491,7 @@ object TacticEngine {
             }
             notes.add(
                 0,
-                "Base da comunidade (${meta.label}): ${meta.formation} • ${meta.style} • pressão ${meta.pressure} / estilo ${meta.mentality} / ritmo ${meta.tempo}" +
+                "Base da comunidade ${meta.label.removePrefix("comunidade ").let { if (it.startsWith("(")) it else "($it)" }}: ${meta.formation} • ${meta.style} • pressão ${meta.pressure} / estilo ${meta.mentality} / ritmo ${meta.tempo}" +
                     (if (failing) " — a formação $mb já perdeu demais aqui, mantive ${Formations.variant(formation, styleF)}." else ".") +
                     (if (adjust.isNotEmpty()) " Ajustada para este jogo: " + adjust.joinToString("; ") + "." else "")
             )

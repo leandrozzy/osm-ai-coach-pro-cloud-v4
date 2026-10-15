@@ -67,6 +67,12 @@ class SlotStateMachine {
         hubIdentities = hub
     }
 
+    /** Pré-jogo de um time ainda desconhecido reconhecido como a competição nova de um slot (pré-época/batalha nova). */
+    fun adopt(slot: Int) {
+        current = slot
+        awaitingEntry = false
+    }
+
     fun onHub(cards: List<HubCard>): Assignment {
         hubIdentities = cards.filter { it.state == null }.map {
             SlotIdentity(it.slot, setOf(Txt.key(it.team)), it.roundDone?.plus(1))
