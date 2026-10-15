@@ -8,6 +8,19 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ParsersTest {
+    @Test fun hubShiftedToTheLeftKeepsEachCardInItsSlot() {
+        // quadro real de 15/10 08:56: a grade inteira 0,24 mais à esquerda (antes Levski virava o slot 1 e os dados sumiam)
+        val shifted = Fx.hubLines().map { Fx.line(it.text, (it.l + it.r) / 2 - 0.24f, (it.t + it.b) / 2, it.r - it.l, it.b - it.t) }
+        val cards = Parsers.hub(Fx.ocr(*shifted.toTypedArray())).hubCards.associateBy { it.slot }
+        assertEquals("TOBOL", cards[1]?.team)
+        assertEquals("LEVSKI SOFIA", cards[2]?.team)
+        assertEquals("NASAF", cards[3]?.team)
+        assertEquals("UZM VS BAY", cards[4]?.team)
+        // sem o título da grade nem o número 1, card sem jornada não vale (tela que não é a central)
+        val loose = Parsers.hub(Fx.ocr(Fx.line("L ARBITRE", 0.58f, 0.85f), Fx.line("AMIGAVEIS", 0.80f, 0.85f))).hubCards
+        assertTrue(loose.isEmpty())
+    }
+
     @Test fun hubCardStatesFromTheRealCentral() {
         // central real de 15/10: S4 numa batalha nova em pré-época ("UZIM VS UFN" é o OCR de "UZM VS UFN")
         val base = Fx.hubLines().filter { it.yc < 0.5f || it.xc < 0.69f }

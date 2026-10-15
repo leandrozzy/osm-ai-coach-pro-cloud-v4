@@ -37,13 +37,21 @@ object Parsers {
     // ---------------------------------------------------------------- HUB
     fun hub(o: OcrResult): Extraction {
         val cards = ArrayList<HubCard>()
+        // A grade dos 4 cards muda de lugar na tela (o painel do perfil rola/anima): mede a posição pelo título
+        // "ESPAÇOS DE TREINADOR" (ou pelo número "1" do primeiro card). Antes as faixas eram fixas e, com a tela
+        // deslocada, o card do slot 2 era lido como slot 1 — o que chegou a apagar dados dos slots.
+        val label = o.lines.firstOrNull { Txt.norm(it.text).contains("espacos de treinador") }
+        val one = o.lines.firstOrNull { it.text.trim() == "1" && it.yc < 0.3f }
+        val anchored = label != null || one != null
+        val dx = label?.let { it.xc - 0.52f } ?: one?.let { it.xc - 0.52f } ?: 0f
+        val dy = label?.let { it.yc - 0.03f } ?: one?.let { it.yc - 0.12f } ?: 0f
         for (slot in 1..4) {
             val col = if (slot % 2 == 1) 0 else 1
             val row = if (slot <= 2) 0 else 1
-            val x0 = if (col == 0) 0.47f else 0.69f
-            val x1 = if (col == 0) 0.69f else 0.90f
-            val y0 = if (row == 0) 0.04f else 0.50f
-            val y1 = if (row == 0) 0.495f else 0.97f
+            val x0 = (if (col == 0) 0.47f else 0.69f) + dx
+            val x1 = (if (col == 0) 0.69f else 0.90f) + dx
+            val y0 = (if (row == 0) 0.04f else 0.50f) + dy
+            val y1 = (if (row == 0) 0.495f else 0.97f) + dy
             var done: Int? = null
             var total: Int? = null
             val rest = ArrayList<OcrLine>()
@@ -61,6 +69,8 @@ object Parsers {
             val names = rest.filter { it.yc >= minY && Txt.letters(it.text) >= 3 }.sortedBy { it.yc }
             // card sem competição: "+ COMEÇAR NOVA LIGA" (slot livre) ou "BATALHA … A PROCURAR ADVERSÁRIO" (esperando começar)
             val all = Txt.norm(rest.joinToString(" ") { it.text })
+            // sem a referência da grade, só vale card com "x/y JORNADA" (nada de estado nem título solto)
+            if (!anchored && done == null) continue
             if (done == null && (all.contains("comecar nova liga") || all.contains("nova liga") && all.contains("comecar"))) {
                 cards.add(HubCard(slot, "", "", null, null, "vazio"))
                 continue

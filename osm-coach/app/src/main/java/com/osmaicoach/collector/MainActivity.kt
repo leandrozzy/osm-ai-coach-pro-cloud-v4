@@ -66,6 +66,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -1219,7 +1220,7 @@ private suspend fun loadToday(ctx: Context): TodayData {
         val name = when (state) {
             "vazio" -> "Slot livre"
             "procurando" -> known(f, K.COMPETITION) ?: "Batalha"
-            "preepoca" -> known(f, K.TEAM) ?: known(f, K.HUB_TITLE)
+            "preepoca" -> known(f, K.HUB_TITLE) ?: known(f, K.TEAM)
             else -> known(f, K.TEAM) ?: known(f, K.HUB_TITLE)
         }
         list.add(
@@ -4436,6 +4437,61 @@ private fun SettingsTab() {
                 modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
             ) { Text("📥 Exportar diagnóstico completo") }
             if (exportMsg.isNotBlank()) Text(exportMsg, fontSize = 12.sp, color = if (exported?.zipUri != null) C.OK else C.WARN)
+            // desfazer perda de dados: volta elenco, calendário, campos e planos de um diagnóstico salvo
+            var restoreRoot by remember { mutableStateOf<JSONObject?>(null) }
+            var restoreMsg by remember { mutableStateOf("") }
+            val pickDiag = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+                if (uri != null) {
+                    exportScope.launch {
+                        val r = withContext(Dispatchers.IO) { runCatching { DiagRestore.read(ctx, uri) }.getOrNull() }
+                        if (r == null || DiagRestore.slotsIn(r).isEmpty()) restoreMsg = "Esse arquivo não é um diagnóstico do OSM Coach."
+                        else restoreRoot = r
+                    }
+                }
+            }
+            OutlinedButton(
+                onClick = { pickDiag.launch(arrayOf("application/json", "application/zip", "*/*")) },
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+            ) { Text("♻ Restaurar dados de um diagnóstico") }
+            if (restoreMsg.isNotBlank()) Text(restoreMsg, fontSize = 12.sp, color = if (restoreMsg.startsWith("Restaurado")) C.OK else C.WARN)
+            restoreRoot?.let { root ->
+                val infos = remember(root) { DiagRestore.slotsIn(root) }
+                val chosen = remember(root) { mutableStateMapOf<Int, Boolean>().apply { for (i in infos) put(i.slot, i.players > 0 || i.matches > 0) } }
+                val fmtD = SimpleDateFormat("dd/MM HH:mm", Locale.getDefault())
+                AlertDialog(
+                    onDismissRequest = { restoreRoot = null },
+                    title = { Text("Restaurar do diagnóstico de ${fmtD.format(Date(root.optLong("at")))}") },
+                    text = {
+                        Column {
+                            Text("Escolha os slots. O que foi lido depois desse diagnóstico continua valendo.", fontSize = 12.sp, color = C.MUTED)
+                            for (i in infos) {
+                                Row(
+                                    Modifier.fillMaxWidth().clickable { chosen[i.slot] = !(chosen[i.slot] ?: false) }.padding(vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Switch(checked = chosen[i.slot] ?: false, onCheckedChange = { chosen[i.slot] = it })
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("S${i.slot} ${i.team} • ${i.players} jogadores • ${i.matches} jogos", fontSize = 13.sp)
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            val sel = chosen.filterValues { it }.keys
+                            restoreRoot = null
+                            restoreMsg = "Restaurando…"
+                            exportScope.launch {
+                                restoreMsg = withContext(Dispatchers.IO) {
+                                    runCatching { DiagRestore.restore(ctx, root, sel) }.getOrElse { "Erro ao restaurar: " + (it.message ?: "?") }
+                                }
+                                UiBus.version++
+                            }
+                        }) { Text("Restaurar") }
+                    },
+                    dismissButton = { TextButton(onClick = { restoreRoot = null }) { Text("Cancelar") } }
+                )
+            }
             exported?.let { r ->
                 OutlinedButton(onClick = { DiagExport.share(ctx, r) }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
                     Text("📤 Compartilhar o arquivo")

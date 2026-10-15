@@ -319,3 +319,117 @@ object DiagExport {
         } else "Não consegui salvar no celular; o arquivo ficou no app ($size). Use Compartilhar para enviar."
     }
 }
+
+/**
+ * Restaura os dados dos slots a partir de um diagnóstico exportado (elenco, calendário, campos e planos).
+ * Serve para desfazer uma perda de dados: o que foi lido DEPOIS do diagnóstico (mais novo) é mantido.
+ */
+object DiagRestore {
+    data class SlotInfo(val slot: Int, val team: String, val players: Int, val matches: Int)
+
+    /** Lê o diagnóstico escolhido: o .json direto ou o .json de dentro do .zip exportado. */
+    fun read(ctx: Context, uri: Uri): JSONObject? {
+        val bytes = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return null
+        val text = if (bytes.size > 2 && bytes[0] == 'P'.code.toByte() && bytes[1] == 'K'.code.toByte()) {
+            java.util.zip.ZipInputStream(bytes.inputStream()).use { z ->
+                var e = z.nextEntry
+                var found: String? = null
+                while (e != null && found == null) {
+                    if (e.name.endsWith(".json")) found = z.readBytes().toString(Charsets.UTF_8)
+                    e = z.nextEntry
+                }
+                found
+            }
+        } else bytes.toString(Charsets.UTF_8)
+        return text?.let { runCatching { JSONObject(it) }.getOrNull() }
+    }
+
+    fun slotsIn(root: JSONObject): List<SlotInfo> {
+        val arr = root.optJSONArray("slots") ?: return emptyList()
+        val out = ArrayList<SlotInfo>()
+        for (i in 0 until arr.length()) {
+            val s = arr.optJSONObject(i) ?: continue
+            val f = s.optJSONObject("fields")
+            val team = f?.optJSONObject(K.TEAM)?.optString("v")?.ifBlank { null }
+                ?: f?.optJSONObject(K.HUB_TITLE)?.optString("v") ?: "?"
+            out.add(SlotInfo(s.optInt("slot"), team, s.optJSONArray("players")?.length() ?: 0, s.optJSONArray("matches")?.length() ?: 0))
+        }
+        return out.filter { it.slot in 1..4 }
+    }
+
+    private fun str(o: JSONObject, k: String): String? = if (!o.has(k) || o.isNull(k)) null else o.optString(k)
+    private fun int(o: JSONObject, k: String): Int? = if (!o.has(k) || o.isNull(k)) null else o.optInt(k)
+    private fun bool(o: JSONObject, k: String): Boolean? = if (!o.has(k) || o.isNull(k)) null else o.optBoolean(k)
+
+    suspend fun restore(ctx: Context, root: JSONObject, slots: Set<Int>): String {
+        val dao = Repo(ctx).dao
+        val diagAt = root.optLong("at", System.currentTimeMillis())
+        val arr = root.optJSONArray("slots") ?: return "Arquivo sem slots: escolha um diagnóstico do OSM Coach (.json)."
+        val parts = ArrayList<String>()
+        for (i in 0 until arr.length()) {
+            val s = arr.optJSONObject(i) ?: continue
+            val slot = s.optInt("slot")
+            if (slot !in slots) continue
+            var nf = 0
+            var np = 0
+            var nm = 0
+            var nl = 0
+            val cur = dao.fieldsOf(slot).associateBy { it.fkey }
+            val fields = s.optJSONObject("fields") ?: JSONObject()
+            for (k in fields.keys()) {
+                val o = fields.optJSONObject(k) ?: continue
+                val v = str(o, "v") ?: continue
+                val at = o.optLong("at", diagAt)
+                val c = cur[k]
+                // mantém o que foi lido depois do diagnóstico, menos o que veio da central (foi a central que apagou)
+                if (c != null && c.updatedAt > at && c.source != "hub") continue
+                dao.putField(FieldEntity(slot, k, v, o.optDouble("conf", 0.8), at, str(o, "src") ?: "restaurado"))
+                nf++
+            }
+            // estado do slot que não existia no diagnóstico (veio da leitura errada da central) sai
+            for (k in listOf(K.SLOT_STATE, K.SLOT_PENDING)) if (!fields.has(k)) dao.deleteField(slot, k)
+            val players = s.optJSONArray("players") ?: JSONArray()
+            for (j in 0 until players.length()) {
+                val p = players.optJSONObject(j) ?: continue
+                val key = str(p, "key") ?: continue
+                dao.putPlayer(
+                    PlayerEntity(
+                        slot, str(p, "owner") ?: "MY", key, str(p, "name") ?: key, int(p, "age"), str(p, "pos"), str(p, "cat"),
+                        int(p, "str"), str(p, "value"), bool(p, "training"), bool(p, "forSale"), p.optLong("updatedAt", diagAt)
+                    )
+                )
+                np++
+            }
+            val ms = s.optJSONArray("matches") ?: JSONArray()
+            for (j in 0 until ms.length()) {
+                val m = ms.optJSONObject(j) ?: continue
+                val key = str(m, "key") ?: continue
+                val sc = str(m, "score")?.split("-")
+                dao.putMatch(
+                    MatchEntity(
+                        slot, key, str(m, "label") ?: key, int(m, "round"), str(m, "date"), str(m, "time"), bool(m, "home"),
+                        sc?.getOrNull(0)?.trim()?.toIntOrNull(), sc?.getOrNull(1)?.trim()?.toIntOrNull(), str(m, "result"),
+                        str(m, "opp"), str(m, "nick"), m.optLong("at", diagAt)
+                    )
+                )
+                nm++
+            }
+            // arquivos criados pela perda (depois do diagnóstico) saem; os planos do diagnóstico voltam
+            val tag = Regex("X(\\d{9,11})")
+            for (p in dao.plansOf(slot)) {
+                val t = tag.find(p.kind)?.groupValues?.get(1)?.toLongOrNull() ?: continue
+                if (t * 1000L > diagAt) dao.deletePlan(slot, p.kind)
+            }
+            val plans = s.optJSONObject("plans") ?: JSONObject()
+            val have = dao.plansOf(slot).map { it.kind }.toSet()
+            for (k in plans.keys()) {
+                if (k in have) continue
+                val v = plans.opt(k) ?: continue
+                dao.putPlan(PlanEntity(slot, k, v.toString(), diagAt))
+                nl++
+            }
+            parts.add("S$slot: $np jogadores, $nm jogos, $nf campos, $nl planos")
+        }
+        return if (parts.isEmpty()) "Nada restaurado." else "Restaurado — " + parts.joinToString(" • ")
+    }
+}

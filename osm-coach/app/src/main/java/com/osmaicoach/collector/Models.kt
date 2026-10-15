@@ -126,6 +126,8 @@ object K {
     const val HUB_TITLE = "hubTitle"
     /** Estado do slot na central do OSM: "vazio", "procurando" ou "ativo". */
     const val SLOT_STATE = "slot.state"
+    /** Estado visto uma vez na central, esperando a 2ª leitura para valer ("estado|hora"). */
+    const val SLOT_PENDING = "slot.pending"
     const val COMPETITION = "competition"
     const val COMP_TYPE = "competitionType"
     const val ROUND = "round"
