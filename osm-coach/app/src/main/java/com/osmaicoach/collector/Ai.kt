@@ -752,8 +752,8 @@ object AiClient {
      * Ordem: o último provedor que respondeu vem primeiro (aprendido), depois o preferido nos Ajustes e o resto.
      * Só entram os que têm chave. Gemini sem cota hoje em nenhuma chave vai para o fim (e nem é chamado).
      */
-    /** Todos os provedores, na ordem padrão (gratuitos primeiro; Claude é pago). */
-    val ALL = listOf("gemini", "compat", "mistral", "openrouter", "claude")
+    /** Todos os provedores, na ordem padrão (gratuitos primeiro; Mistral e Claude só com plano pago). */
+    val ALL = listOf("gemini", "openrouter", "compat", "mistral", "claude")
 
     fun label(p: String): String = when (p) {
         "gemini" -> "Gemini"

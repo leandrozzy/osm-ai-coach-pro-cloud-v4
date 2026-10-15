@@ -4433,9 +4433,6 @@ private fun SettingsTab() {
                     KV("Chamadas hoje", AiClient.usedToday(ctx).toString())
                 }
             }
-            AiProviderCard("mistral", "🌀", "Mistral", "grátis • lê imagem", "console.mistral.ai › API Keys (plano Experiment, grátis)", mKey, tick) {
-                OutlinedTextField(mKey, { mKey = it }, label = { Text("Chave da Mistral") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-            }
             AiProviderCard("compat", "⚡", "Groq", "grátis • rápido • busca na internet", "console.groq.com › API Keys", cKey, tick) {
                 OutlinedTextField(cKey, { cKey = it }, label = { Text("Chave do Groq") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
                 Fold("⚙", "Avançado (xAI ou outro)") {
@@ -4443,10 +4440,13 @@ private fun SettingsTab() {
                     OutlinedTextField(cModel, { cModel = it }, label = { Text("Modelo de texto (auto = detecta sozinho)") }, modifier = Modifier.fillMaxWidth())
                 }
             }
-            AiProviderCard("openrouter", "🔀", "OpenRouter", "grátis (modelos :free) • lê imagem", "openrouter.ai › Keys (50 chamadas grátis/dia)", oKey, tick) {
+            AiProviderCard("openrouter", "🔀", "OpenRouter", "grátis (modelos :free) • lê imagem", "openrouter.ai/settings/keys (limite de crédito 0) • em Settings › Privacy ligue \"Allow free endpoints that train on request data\"", oKey, tick) {
                 OutlinedTextField(oKey, { oKey = it }, label = { Text("Chave do OpenRouter") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
             }
-            Text("Paga", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = C.GOLD, modifier = Modifier.padding(top = 10.dp, bottom = 2.dp))
+            Text("Pagas (opcionais)", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = C.GOLD, modifier = Modifier.padding(top = 10.dp, bottom = 2.dp))
+            AiProviderCard("mistral", "🌀", "Mistral", "pago • o plano Free não libera chave de API", "console.mistral.ai › API Keys (só com plano pago)", mKey, tick) {
+                OutlinedTextField(mKey, { mKey = it }, label = { Text("Chave da Mistral") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+            }
             AiProviderCard("claude", "🅲", "Claude (Anthropic)", "pago • só com créditos no Console", "console.anthropic.com (a assinatura Pro/Max não inclui a API)", clKey, tick) {
                 OutlinedTextField(clKey, { clKey = it }, label = { Text("Chave do Console da Anthropic") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(clModel, { clModel = it }, label = { Text("Modelo") }, modifier = Modifier.fillMaxWidth())
