@@ -59,6 +59,17 @@ object Parsers {
             }
             val minY = y0 + (y1 - y0) * 0.55f
             val names = rest.filter { it.yc >= minY && Txt.letters(it.text) >= 3 }.sortedBy { it.yc }
+            // card sem competição: "+ COMEÇAR NOVA LIGA" (slot livre) ou "BATALHA … A PROCURAR ADVERSÁRIO" (esperando começar)
+            val all = Txt.norm(rest.joinToString(" ") { it.text })
+            if (done == null && (all.contains("comecar nova liga") || all.contains("nova liga") && all.contains("comecar"))) {
+                cards.add(HubCard(slot, "", "", null, null, "vazio"))
+                continue
+            }
+            if (done == null && all.contains("procurar advers")) {
+                val title = names.firstOrNull { !Txt.norm(it.text).contains("procurar") }?.text?.trim() ?: "Batalha"
+                cards.add(HubCard(slot, "", title, null, null, "procurando"))
+                continue
+            }
             if (names.isEmpty()) continue
             cards.add(HubCard(slot, names[0].text.trim(), names.getOrNull(1)?.text?.trim() ?: "", done, total))
         }

@@ -856,7 +856,7 @@ object AiClient {
                 cooldownUntil.remove(p)
                 learn(ctx, jpeg != null, p, true)
                 AiStatus.set("")
-                return r
+                return r.copy(by = r.by ?: label(p))
             }
             learn(ctx, jpeg != null, p, false)
             cool(p, 180000L)
@@ -1253,6 +1253,32 @@ object Processor {
             "overloaded", "unable to resolve host", "timeout", "failed to connect").any { e.contains(it) }
     }
 
+    /**
+     * Tela da fila que não precisa mais da IA (devolve o motivo): sem slot há mais de um dia, pré-jogo de um jogo que
+     * já passou ou que o OCR completou depois, tela de "relatório?" quando o rival já está lido.
+     */
+    private suspend fun obsolete(repo: Repo, s: ScreenEntity, now: Long): String? {
+        val age = now - s.at
+        if (s.slotId == 0) return if (age > 24L * 3600000L) "sem slot identificado (antiga)" else null
+        val f = repo.fieldMap(s.slotId)
+        fun has(k: String) = FieldMerge.known(f[k]?.value)
+        return when (runCatching { ScreenType.valueOf(s.type) }.getOrDefault(ScreenType.OTHER_OSM)) {
+            ScreenType.PREGAME -> when {
+                age > 8L * 3600000L -> "pré-jogo de um jogo que já passou"
+                has(K.RIVAL_TEAM) && (has(K.MY_STRENGTH) || has(K.MY_BONUS)) && (f[K.RIVAL_TEAM]?.updatedAt ?: 0L) > s.at ->
+                    "o OCR já completou este pré-jogo"
+                else -> null
+            }
+            ScreenType.SQUAD -> if (age > 3L * 24 * 3600000L) "elenco antigo (já relido)" else null
+            ScreenType.REPORT -> if (age > 12L * 3600000L) "relatório de um jogo que já passou" else null
+            else -> when {
+                has(K.RIVAL_FORMATION) && has(K.RIVAL_PLAN) -> "o relatório do rival já está lido"
+                age > 12L * 3600000L -> "tela antiga sem dados úteis"
+                else -> null
+            }
+        }
+    }
+
     private suspend fun readScreen(ctx: Context, repo: Repo, s: ScreenEntity): ReadResult {
         if (!AiClient.hasAnyKey(ctx)) return ReadResult("skipped", 0, "sem chave de IA (Ajustes › Inteligência artificial)")
         if (s.slotId == 0) return ReadResult("pending", 0, "aguardando identificação de slot")
@@ -1301,7 +1327,17 @@ object Processor {
         val repo = Repo(ctx)
         val dao = repo.dao
         val unassignedN = dao.unassignedWithImage(40).size
-        val pending = dao.pendingAi(8)
+        // fila: mais novas primeiro; o que não serve mais sai antes de gastar a IA
+        val pending = ArrayList<ScreenEntity>()
+        var dropped = 0
+        val nowMs = System.currentTimeMillis()
+        for (s in dao.pendingAi(60)) {
+            val why = obsolete(repo, s, nowMs)
+            if (why != null) {
+                dao.updateScreenAi(s.id, "skipped", s.extracted, why)
+                dropped++
+            } else if (pending.size < 25) pending.add(s)
+        }
         ProcessState.begin("Reprocessando telas sem slot…", unassignedN + pending.size)
         val fixed = FramePipeline.get(ctx).reprocessUnassigned(40) { ProcessState.tick() }
         var applied = 0
@@ -1338,7 +1374,8 @@ object Processor {
         ProcessState.finish(
             listOfNotNull(
                 "Telas reprocessadas: $fixed",
-                if (pending.isEmpty()) "IA: nada pendente" else "IA: $applied campos aplicados",
+                if (pending.isEmpty()) "IA: nada pendente" else "IA: ${pending.size - waiting} lida(s), $applied campo(s) novo(s)",
+                if (dropped > 0) "$dropped tela(s) que não precisavam mais da IA saíram da fila" else null,
                 if (noData > 0) "$noData tela(s) sem relatório do rival" else null,
                 if (failed > 0) "$failed não lida(s) pela IA (${lastFail.take(90)})" else null,
                 if (waiting > 0) "$waiting tela(s) guardada(s) para ler quando a IA voltar (${lastFail.take(90)})" else null,
@@ -1528,6 +1565,19 @@ object MetaRefresh {
             val merged = JSONObject()
             if (old != null) for (k in old.keys()) merged.put(k, old.get(k))
             for (k in clean.keys()) merged.put(k, clean.get(k))
+            // faltou alguma relação de força (mais fraco / parelho / mais forte)? pede só ela, uma vez
+            val names = mapOf("U" to "meu time MAIS FRACO (U)", "E" to "forças parecidas (E)", "F" to "meu time MAIS FORTE (F)")
+            val missing = names.keys.filter { rel -> merged.keys().asSequence().none { it.startsWith("$rel|") } }
+            if (missing.isNotEmpty()) {
+                val extra = prompt() + " IMPORTANTE: traga AGORA somente as situações que faltaram: " +
+                    missing.joinToString(", ") { names[it] ?: it } + " (pelo menos a regra geral \"X|?\" de cada uma)."
+                val r3 = AiClient.askGrounded(ctx, extra).takeIf { it.ok } ?: AiClient.ask(ctx, extra, null, 90000L)
+                AiClient.parseJson(r3.text)?.let { j3 ->
+                    val c3 = cleanRules(j3, if (r3.by?.contains("busca") == true || r3.by?.contains("Google") == true) "" else " • sem busca")
+                    for (k in c3.keys()) if (!merged.has(k)) merged.put(k, c3.get(k))
+                    log.put("filledMissing", c3.length())
+                }
+            }
             repo.dao.putPlan(PlanEntity(0, KIND, JSONObject().put("at", now).put("rules", merged).toString(), now))
             return "modelo da comunidade atualizado: ${clean.length()} situação(ões) da pesquisa, ${merged.length()} no total" +
                 (if (viaSearch) " (pesquisa na internet)" else " (a busca estava sem cota: usei o conhecimento da IA; tento a busca de novo na semana)")
@@ -1584,7 +1634,10 @@ object MetaRefresh {
     )
 
     /** Situação da pesquisa: regras em uso, quando foi, se buscou na internet e o problema em palavras simples. */
-    data class View(val rules: List<RuleView>, val at: Long?, val active: Boolean, val lastAt: Long?, val searched: Boolean?, val problem: String?)
+    data class View(
+        val rules: List<RuleView>, val at: Long?, val active: Boolean, val lastAt: Long?, val searched: Boolean?, val problem: String?,
+        val running: Boolean = false
+    )
 
     suspend fun view(repo: Repo): View {
         val r = remote(repo)
@@ -1629,7 +1682,8 @@ object MetaRefresh {
                 else -> null
             }
         }
-        return View(out, at, active, lastAt, searched, problem)
+        // enquanto pesquisa, o aviso da tentativa anterior não vale (pode já estar resolvido)
+        return View(out, at, active, lastAt, searched, if (running) null else problem, running)
     }
 
     /** Erro técnico -> frase curta. */

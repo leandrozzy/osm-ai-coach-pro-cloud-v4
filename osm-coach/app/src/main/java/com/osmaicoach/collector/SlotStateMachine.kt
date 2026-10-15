@@ -68,7 +68,7 @@ class SlotStateMachine {
     }
 
     fun onHub(cards: List<HubCard>): Assignment {
-        hubIdentities = cards.map {
+        hubIdentities = cards.filter { it.state == null }.map {
             SlotIdentity(it.slot, setOf(Txt.key(it.team)), it.roundDone?.plus(1))
         }
         current = null

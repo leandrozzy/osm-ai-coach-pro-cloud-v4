@@ -158,6 +158,12 @@ interface CoachDao {
     @Query("DELETE FROM plans WHERE slotId = :slot AND kind = :kind")
     suspend fun deletePlan(slot: Int, kind: String)
 
+    @Query("DELETE FROM players WHERE slotId = :slot")
+    suspend fun deletePlayersOf(slot: Int)
+
+    @Query("DELETE FROM fields WHERE slotId = :slot")
+    suspend fun deleteFieldsOf(slot: Int)
+
     @Query("DELETE FROM players WHERE slotId = :slot AND owner = 'RIVAL'")
     suspend fun deleteRivalPlayers(slot: Int)
 
@@ -212,7 +218,7 @@ interface CoachDao {
     @Query("UPDATE screens SET slotId = :slot, slotConf = :conf, extracted = :extracted, note = :note WHERE id = :id")
     suspend fun updateScreenSlot(id: Long, slot: Int, conf: Double, extracted: Int, note: String)
 
-    @Query("SELECT * FROM screens WHERE aiState = 'pending' ORDER BY at ASC LIMIT :limit")
+    @Query("SELECT * FROM screens WHERE aiState = 'pending' ORDER BY at DESC LIMIT :limit")
     suspend fun pendingAi(limit: Int): List<ScreenEntity>
 
     @Query("SELECT * FROM screens WHERE slotId = 0 AND imagePath IS NOT NULL AND aiState != 'done' ORDER BY at ASC LIMIT :limit")

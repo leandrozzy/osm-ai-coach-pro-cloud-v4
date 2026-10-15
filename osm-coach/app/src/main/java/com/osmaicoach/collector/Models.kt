@@ -73,7 +73,8 @@ data class ListingRead(
     val sellerNick: String?
 )
 
-data class HubCard(val slot: Int, val team: String, val subtitle: String, val roundDone: Int?, val roundTotal: Int?)
+/** state: null = competição em andamento; "vazio" = "+ Começar nova liga"; "procurando" = batalha procurando adversário. */
+data class HubCard(val slot: Int, val team: String, val subtitle: String, val roundDone: Int?, val roundTotal: Int?, val state: String? = null)
 
 data class MatchReportRead(
     val round: Int? = null,
@@ -123,6 +124,8 @@ data class TraineeRead(val role: String, val name: String?, val state: String)
 object K {
     const val TEAM = "team"
     const val HUB_TITLE = "hubTitle"
+    /** Estado do slot na central do OSM: "vazio", "procurando" ou "ativo". */
+    const val SLOT_STATE = "slot.state"
     const val COMPETITION = "competition"
     const val COMP_TYPE = "competitionType"
     const val ROUND = "round"
