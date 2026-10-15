@@ -1215,10 +1215,11 @@ private suspend fun loadToday(ctx: Context): TodayData {
         val tplan = repo.dao.plan(slot, "tactic")?.json?.let { try { JSONObject(it) } catch (e: Exception) { null } }
         val market = repo.dao.snapshots("TRANSFER", slot).isNotEmpty()
         val c = Completeness.compute(f, players, matches, market, f[K.ROUND_TOTAL]?.value?.toIntOrNull())
-        val state = known(f, K.SLOT_STATE)?.takeIf { it == "vazio" || it == "procurando" }
+        val state = known(f, K.SLOT_STATE)?.takeIf { it == "vazio" || it == "procurando" || it == "preepoca" }
         val name = when (state) {
             "vazio" -> "Slot livre"
             "procurando" -> known(f, K.COMPETITION) ?: "Batalha"
+            "preepoca" -> known(f, K.TEAM) ?: known(f, K.HUB_TITLE)
             else -> known(f, K.TEAM) ?: known(f, K.HUB_TITLE)
         }
         list.add(
@@ -1499,7 +1500,9 @@ private fun SlotCard(s: SlotSummary, onClick: () -> Unit, onTactic: () -> Unit, 
                             maxLines = 1, overflow = TextOverflow.Ellipsis
                         )
                     }
+                    val kindIcon = when (s.compType) { "Batalha" -> "⚔ Batalha"; "Copa" -> "🏆 Copa"; "Liga" -> "🏟 Liga"; else -> null }
                     val sub = listOfNotNull(
+                        kindIcon,
                         s.competition,
                         if (s.roundDone != null && s.roundTotal != null) "${s.roundDone}/${s.roundTotal}" else null
                     ).joinToString(" • ")
@@ -1522,15 +1525,18 @@ private fun SlotCard(s: SlotSummary, onClick: () -> Unit, onTactic: () -> Unit, 
                         .background((if (empty) C.PRIMARY else C.GOLD).copy(alpha = 0.14f)).padding(10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(if (empty) "➕" else "🔎", fontSize = 22.sp)
+                    val pre = s.state == "preepoca"
+                    val kind = if (s.compType == "Batalha") "batalha" else if (s.compType == "Copa") "copa" else "liga"
+                    Text(if (empty) "➕" else if (pre) "🗓" else "🔎", fontSize = 22.sp)
                     Spacer(Modifier.width(8.dp))
                     Column(Modifier.weight(1f)) {
                         Text(
-                            if (empty) "Sem liga ou batalha" else "Procurando adversário",
+                            if (empty) "Sem liga ou batalha" else if (pre) "Pré-época: a $kind nova começa em breve" else "Procurando adversário",
                             fontSize = 13.sp, fontWeight = FontWeight.Bold
                         )
                         Text(
                             if (empty) "Comece uma nova liga ou batalha no OSM; o app acompanha sozinho."
+                            else if (pre) "Monte o elenco e treine pelo Diretor. Quando aparecer a 1ª jornada, abra o pré-jogo para a tática."
                             else "A batalha ainda não começou. Quando aparecer a jornada, o slot volta ao normal.",
                             fontSize = 11.sp, color = C.MUTED
                         )

@@ -8,6 +8,27 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ParsersTest {
+    @Test fun hubCardStatesFromTheRealCentral() {
+        // central real de 15/10: S4 numa batalha nova em pré-época ("UZIM VS UFN" é o OCR de "UZM VS UFN")
+        val base = Fx.hubLines().filter { it.yc < 0.5f || it.xc < 0.69f }
+        val pre = Parsers.hub(Fx.ocr(*(base + listOf(
+            Fx.line("4", 0.73f, 0.57f), Fx.line("UZIM VS UFN", 0.80f, 0.85f, 0.09f),
+            Fx.line("BATALHA DE GRUPOS", 0.80f, 0.87f, 0.13f), Fx.line("PRÉ-ÉPOCA", 0.87f, 0.52f, 0.08f)
+        )).toTypedArray())).hubCards.first { it.slot == 4 }
+        assertEquals("preepoca", pre.state)
+        assertEquals("UZIM VS UFN", pre.team)
+        assertEquals("BATALHA DE GRUPOS", pre.subtitle)
+        val empty = Parsers.hub(Fx.ocr(*(base + listOf(Fx.line("COMEÇAR NOVA LIGA", 0.79f, 0.85f, 0.15f))).toTypedArray()))
+            .hubCards.first { it.slot == 4 }
+        assertEquals("vazio", empty.state)
+        val search = Parsers.hub(Fx.ocr(*(base + listOf(
+            Fx.line("BATALHA DE GRUPOS", 0.79f, 0.84f, 0.13f), Fx.line("A PROCURAR ADVERSÁRIO...", 0.79f, 0.87f, 0.15f)
+        )).toTypedArray())).hubCards.first { it.slot == 4 }
+        assertEquals("procurando", search.state)
+        // os outros três seguem normais
+        assertTrue(Fx.hubCards().all { it.state == null })
+    }
+
     @Test fun hubReadsFourCardsWithPositionRoundAndNames() {
         val cards = Fx.hubCards()
         assertEquals(4, cards.size)

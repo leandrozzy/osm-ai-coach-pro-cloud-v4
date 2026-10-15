@@ -626,6 +626,7 @@ object Director {
         when (f[K.SLOT_STATE]?.value) {
             "vazio" -> return Outcome(false, null, "Slot livre: comece uma liga ou batalha no OSM e abra o pré-jogo para eu montar a tática.")
             "procurando" -> return Outcome(false, null, "A batalha ainda está procurando adversário: quando começar, abra o pré-jogo e gere a tática.")
+            "preepoca" -> return Outcome(false, null, "Pré-época: a competição nova ainda não começou. Quando aparecer a 1ª jornada, abra o pré-jogo e gere a tática.")
         }
         val inp = tacticInput(repo, slot)
         val squad = inp.players.count { it.strength != null }
