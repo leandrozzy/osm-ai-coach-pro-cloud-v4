@@ -53,7 +53,18 @@ class EngineTest {
         assertTrue(r.tactic.pressure <= 36)
         assertTrue(r.tactic.tempo >= 60)
         assertEquals("Não", r.tactic.offside)
-        assertTrue(r.tactic.notes.first().startsWith("Modelo de referência"))
+        assertTrue(r.tactic.notes.first().startsWith("Base da comunidade"))
+    }
+
+    @Test fun underdogTacticChangesWithTheRivalAndTheGap() {
+        // pouco mais fraco contra um rival que também se fecha: não repete o contra-ataque da regra
+        val closed = TacticEngine.recommend(input(84, 91).copy(rivalFormation = "5-4-1 A", rivalStyle = "Contra-ataque"))!!
+        // muito mais fraco contra um rival que vem para cima: contra-ataque em bloco baixo
+        val open = TacticEngine.recommend(input(70, 90).copy(rivalFormation = "4-3-3 A", rivalStyle = "Jogo de passe"))!!
+        assertTrue(closed.tactic.playStyle != "Contra-ataque")
+        assertEquals("Contra-ataque", open.tactic.playStyle)
+        assertTrue(closed.tactic.mentality > open.tactic.mentality)
+        assertTrue(closed.tactic.notes.first().contains("Ajustada para este jogo"))
     }
 
     @Test fun favouriteAttacksWideAgainstFourFourTwo() {

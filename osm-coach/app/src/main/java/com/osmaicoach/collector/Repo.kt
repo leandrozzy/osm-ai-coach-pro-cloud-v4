@@ -140,6 +140,32 @@ class Repo(private val ctx: Context) {
     private suspend fun applyHub(ex: Extraction, now: Long): Int {
         var changed = 0
         for (c in ex.hubCards) {
+            val prev = dao.fieldsOf(c.slot).firstOrNull { it.fkey == K.SLOT_STATE }?.fvalue
+            if (c.state != null) {
+                // slot livre ou batalha procurando adversário: a competição anterior acabou de vez (arquiva uma vez)
+                if (prev != c.state) {
+                    val hadClub = dao.fieldsOf(c.slot).any { it.fkey == K.TEAM || it.fkey == K.HUB_TITLE }
+                    if (hadClub && prev != "vazio" && prev != "procurando") {
+                        archiveSeason(c.slot, now, true)
+                        learn(
+                            c.slot, "temporada",
+                            if (c.state == "vazio") "Slot livre no OSM: a competição anterior foi arquivada (o aprendizado das táticas continua)."
+                            else "Nova batalha procurando adversário: a competição anterior foi arquivada.", now
+                        )
+                    }
+                    dao.putField(FieldEntity(c.slot, K.SLOT_STATE, c.state, 0.9, now, "hub"))
+                    changed++
+                }
+                if (c.state == "procurando" && c.subtitle.isNotBlank()) {
+                    changed += putFields(
+                        c.slot,
+                        linkedMapOf(K.COMPETITION to Reading(Txt.titleCase(c.subtitle), 0.8), K.COMP_TYPE to Reading("Batalha", 0.8)),
+                        "hub", now
+                    )
+                }
+                continue
+            }
+            if (prev != null && prev != "ativo") dao.putField(FieldEntity(c.slot, K.SLOT_STATE, "ativo", 0.9, now, "hub"))
             val r = LinkedHashMap<String, Reading>()
             r[K.HUB_TITLE] = Reading(Txt.titleCase(c.team), 0.8)
             if (c.subtitle.isNotBlank()) r[K.COMPETITION] = Reading(Txt.titleCase(c.subtitle), 0.8)
@@ -167,6 +193,17 @@ class Repo(private val ctx: Context) {
         val r = roundRead ?: return false
         val done = Fixtures.lastDone(dao.matchesOf(slot), scoredRounds(slot)) ?: return false
         if (r > 3 || done < r + 5) return false
+        archiveSeason(slot, now, false)
+        learn(slot, "temporada", "Competição nova (rodada $r depois da $done): calendário e relatórios antigos arquivados; o aprendizado das táticas continua.", now)
+        return true
+    }
+
+    /**
+     * Arquiva a competição do slot: calendário, relatórios, tática e temporada (os registros de tática com resultado
+     * ficam, renomeados, para o aprendizado). Com clearClub (slot livre ou batalha nova com outro clube) apaga também
+     * os campos e o elenco do clube antigo.
+     */
+    private suspend fun archiveSeason(slot: Int, now: Long, clearClub: Boolean) {
         val tag = "X" + (now / 1000)
         dao.deleteMatches(slot)
         for (p in dao.matchReports(slot)) {
@@ -184,8 +221,11 @@ class Repo(private val ctx: Context) {
             dao.deletePlan(slot, "season")
         }
         for (k in listOf(K.ROUND, K.ROUND_DONE, K.MATCH_AT)) dao.deleteField(slot, k)
-        learn(slot, "temporada", "Competição nova (rodada $r depois da $done): calendário e relatórios antigos arquivados; o aprendizado das táticas continua.", now)
-        return true
+        if (clearClub) {
+            dao.deleteFieldsOf(slot)
+            dao.deletePlayersOf(slot)
+            for (k in listOf("trainscreen", "trainov", "board", "market")) dao.deletePlan(slot, k)
+        }
     }
 
     private suspend fun applyPregame(slot: Int, ex: Extraction, source: String, now: Long): Int {

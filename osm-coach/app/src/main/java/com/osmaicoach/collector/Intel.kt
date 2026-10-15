@@ -457,7 +457,8 @@ object WinModel {
             }
             (i.meta ?: Meta.template(edgeM, i.home, i.rivalFormation))?.let { tpl ->
                 if (Meta.follows(tpl, p.formation, p.style, p.pressure, p.mentality, p.tempo)) {
-                    t.add(Term("Modelo de referência do OSM (${tpl.label})", 0.07, -0.04))
+                    // bônus pequeno: a regra é base, não pode ganhar sozinha a escolha (antes ela se auto-confirmava)
+                    t.add(Term("Base da comunidade do OSM", 0.03, -0.02))
                 }
             }
             // Antídotos ao estilo do rival (o que mais pesa contra humanos, que escolhem o estilo a dedo).

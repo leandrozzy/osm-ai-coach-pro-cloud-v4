@@ -467,6 +467,13 @@ class FramePipeline private constructor(private val ctx: Context) {
                     (!ex.fields.containsKey(K.MY_STRENGTH) && !ex.fields.containsKey(K.MY_BONUS))
                 ) && now - (pregameAiAt[asg.slot ?: 0] ?: 0L) > 120000L
             if (pregameGap) pregameAiAt[asg.slot ?: 0] = now
+            // Só vale gastar a IA com tela que tem cara de relatório E quando ainda falta a formação/estilo do rival
+            // (antes qualquer tela citando o rival ia para a fila: escritório, menus…)
+            val rivalKnown = asg.slot?.let { sl ->
+                val rf = repo.fieldMap(sl)
+                FieldMerge.known(rf[K.RIVAL_FORMATION]?.value) && FieldMerge.known(rf[K.RIVAL_PLAN]?.value)
+            } ?: true
+            val reportForAi = reportHint && Parsers.hasReportHint(ocr) && !rivalKnown
             var path: String? = null
             if (((unassigned && dataType) || ex.needsAi || reportHint || pregameGap || diagTactic || diagCalendar || diagResult || diagPregame || diagSquad || diagSeason) &&
                 imagesThisSession < 90
@@ -486,7 +493,7 @@ class FramePipeline private constructor(private val ctx: Context) {
                     sessionId = sessionId, at = now, type = type.name, slotId = asg.slot ?: 0,
                     slotConf = asg.confidence, hash = FrameHash.toText(h), imagePath = path,
                     ocrChars = ocr.fullText.length, extracted = changed,
-                    aiState = if ((ex.needsAi || reportHint || pregameGap) && path != null) "pending" else "none", note = asg.reason
+                    aiState = if ((ex.needsAi || reportForAi || pregameGap) && path != null) "pending" else "none", note = asg.reason
                 )
             )
         }

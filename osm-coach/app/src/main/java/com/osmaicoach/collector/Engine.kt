@@ -146,7 +146,9 @@ object TacticEngine {
         /** Táticas usadas com resultado nos 4 slots (o modelo aprende com elas). */
         val metaLogs: List<org.json.JSONObject> = emptyList(),
         /** Modelo da comunidade atualizado pela internet. */
-        val metaRemote: org.json.JSONObject? = null
+        val metaRemote: org.json.JSONObject? = null,
+        /** Estilo de jogo do rival lido no relatório (Contra-ataque, Jogo de passe…). */
+        val rivalStyle: String? = null
     )
 
     private data class Sliders(val mentality: Int, val pressure: Int, val tempo: Int, val bucket: String)
@@ -418,15 +420,24 @@ object TacticEngine {
         var offF = offside
         var fname: String? = null
         if (meta != null) {
+            // A regra da comunidade é o PONTO DE PARTIDA: depois a tática se ajusta ao seu elenco, ao tamanho da
+            // diferença de força e ao rival deste jogo (antes a regra trocava tudo e dois rivais diferentes davam a
+            // mesma tática).
+            val adjust = ArrayList<String>()
             val mb = Formations.base(meta.formation)
             val st = Learning.stats(inp.history).firstOrNull { Formations.base(it.formation) == mb }
             val failing = st != null && st.d - st.v >= 2
             val lu = if (!failing) lineup(mb, inp.players, inp.fitness) else null
-            if (lu != null) {
+            // a formação da regra só fica se o seu elenco rende quase o mesmo nela (até 3% abaixo da melhor)
+            val metaScore = scored.firstOrNull { it.first == mb }?.third
+            val fits = metaScore != null && metaScore >= best.third - Math.abs(best.third) * 0.03
+            if (lu != null && fits) {
                 fF = mb
                 rowsF = lu.first
                 fname = meta.formation
                 notes.removeAll { it.startsWith("Formação ") || it.startsWith("Segunda opção") }
+            } else if (lu != null) {
+                adjust.add("formação $formation no lugar de $mb: o seu elenco rende mais nela")
             }
             if (styleNote == null) styleF = meta.style
             val adj = inp.lessons?.let { 3 * it.atkNeed - 5 * it.defNeed } ?: 0
@@ -438,10 +449,51 @@ object TacticEngine {
             aD = meta.def
             markF = meta.marking
             offF = meta.offside
+            val d = diff ?: 0
+            // tamanho da diferença: um pouco mais fraco joga em bloco médio; muito mais fraco, bloco baixo
+            if (d in -9..-3) {
+                mF = (mF + 10).coerceIn(0, 100)
+                pF = (pF + 8).coerceIn(0, 100)
+                adjust.add("diferença de só ${-d}: bloco médio (estilo +10, pressão +8)")
+            } else if (d <= -15) {
+                mF = (mF - 8).coerceIn(0, 100)
+                pF = (pF - 5).coerceIn(0, 100)
+                adjust.add("diferença de ${-d}: bloco baixo (estilo −8)")
+            } else if (d in 3..9) {
+                mF = (mF - 6).coerceIn(0, 100)
+                adjust.add("vantagem curta de $d: sem se expor (estilo −6)")
+            } else if (d >= 15) {
+                mF = (mF + 6).coerceIn(0, 100)
+                adjust.add("vantagem de $d: pressão total (estilo +6)")
+            }
+            // rival que também se fecha: contra-ataque não tem espaço; troca pelo que o seu meio ou as alas dão
+            val rLines = inp.rivalFormation?.let { Formations.lines(it) }
+            val rStyle = Osm.style(inp.rivalStyle)
+            val rivalClosed = rStyle == "Contra-ataque" || (rLines != null && (rLines.first() >= 5 || rLines.last() <= 1))
+            if (styleNote == null && styleF == "Contra-ataque" && rivalClosed) {
+                val midOk = inp.myMid != null && inp.rivalMid != null && inp.myMid >= inp.rivalMid
+                styleF = if (midOk || rLines == null || rLines.first() < 5) "Jogo de passe" else "Jogar pelas alas"
+                adjust.add("rival fechado (${listOfNotNull(inp.rivalFormation, rStyle).joinToString(" • ")}): $styleF em vez de contra-ataque")
+            } else if (styleNote == null && styleF != "Contra-ataque" && d <= -5 && rStyle != null && rStyle != "Contra-ataque" &&
+                (rLines?.last() ?: 2) >= 3
+            ) {
+                styleF = "Contra-ataque"
+                adjust.add("rival vem para cima (${inp.rivalFormation ?: ""} ${rStyle}): contra-ataque nas costas dele")
+            }
+            // setor fraco: defesa abaixo do ataque dele pede marcação individual; ataque acima da defesa dele, mais gente na frente
+            if (inp.rivalAtk != null && inp.myDef != null && inp.rivalAtk - inp.myDef >= 5 && markF != "Homem-a-homem") {
+                markF = "Homem-a-homem"
+                adjust.add("ataque dele ${inp.rivalAtk} x sua defesa ${inp.myDef}: marcação homem a homem")
+            }
+            if (inp.myAtk != null && inp.rivalDef != null && inp.myAtk - inp.rivalDef >= 5 && aA != "Atacar apenas") {
+                aA = "Atacar apenas"
+                adjust.add("seu ataque ${inp.myAtk} x defesa dele ${inp.rivalDef}: avançados só atacam")
+            }
             notes.add(
                 0,
-                "Modelo de referência do OSM (${meta.label}): ${meta.formation} • ${meta.style} • pressão ${meta.pressure} / estilo ${meta.mentality} / ritmo ${meta.tempo}" +
-                    (if (lu == null) " — a formação $mb já perdeu demais aqui, mantive ${Formations.variant(formation, styleF)}." else ".")
+                "Base da comunidade (${meta.label}): ${meta.formation} • ${meta.style} • pressão ${meta.pressure} / estilo ${meta.mentality} / ritmo ${meta.tempo}" +
+                    (if (failing) " — a formação $mb já perdeu demais aqui, mantive ${Formations.variant(formation, styleF)}." else ".") +
+                    (if (adjust.isNotEmpty()) " Ajustada para este jogo: " + adjust.joinToString("; ") + "." else "")
             )
         }
         // Contra-ataque: ritmo alto para a transição e pressão baixa para atrair o rival (comunidade do OSM).

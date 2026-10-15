@@ -1072,7 +1072,9 @@ data class SlotSummary(
     /** Campos do próximo jogo ainda não lidos (mesmo critério para todos os slots). */
     val missingNames: List<String> = emptyList(),
     /** Todas as rodadas da competição jogadas e nenhum jogo marcado: aguardando a próxima competição. */
-    val ended: Boolean = false
+    val ended: Boolean = false,
+    /** Central do OSM: "vazio" (+ começar nova liga) ou "procurando" (batalha procurando adversário). */
+    val state: String? = null
 )
 
 data class TodayData(val active: Boolean = false, val slots: List<SlotSummary> = emptyList())
@@ -1213,10 +1215,15 @@ private suspend fun loadToday(ctx: Context): TodayData {
         val tplan = repo.dao.plan(slot, "tactic")?.json?.let { try { JSONObject(it) } catch (e: Exception) { null } }
         val market = repo.dao.snapshots("TRANSFER", slot).isNotEmpty()
         val c = Completeness.compute(f, players, matches, market, f[K.ROUND_TOTAL]?.value?.toIntOrNull())
-        val name = known(f, K.TEAM) ?: known(f, K.HUB_TITLE)
+        val state = known(f, K.SLOT_STATE)?.takeIf { it == "vazio" || it == "procurando" }
+        val name = when (state) {
+            "vazio" -> "Slot livre"
+            "procurando" -> known(f, K.COMPETITION) ?: "Batalha"
+            else -> known(f, K.TEAM) ?: known(f, K.HUB_TITLE)
+        }
         list.add(
             SlotSummary(
-                slot = slot, title = name ?: "Slot $slot ainda não lido", known = name != null,
+                slot = slot, title = name ?: "Slot $slot ainda não lido", known = name != null, state = state,
                 competition = known(f, K.COMPETITION), compType = known(f, K.COMP_TYPE),
                 roundDone = known(f, K.ROUND_DONE), roundTotal = known(f, K.ROUND_TOTAL),
                 rival = known(f, K.RIVAL_TEAM), human = known(f, K.RIVAL_HUMAN),
@@ -1508,7 +1515,28 @@ private fun SlotCard(s: SlotSummary, onClick: () -> Unit, onTactic: () -> Unit, 
                     Text("dados lidos", fontSize = 9.sp, color = C.MUTED)
                 }
             }
-            if (s.ended) {
+            if (s.state != null) {
+                val empty = s.state == "vazio"
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 10.dp).clip(RoundedCornerShape(14.dp))
+                        .background((if (empty) C.PRIMARY else C.GOLD).copy(alpha = 0.14f)).padding(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(if (empty) "➕" else "🔎", fontSize = 22.sp)
+                    Spacer(Modifier.width(8.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            if (empty) "Sem liga ou batalha" else "Procurando adversário",
+                            fontSize = 13.sp, fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            if (empty) "Comece uma nova liga ou batalha no OSM; o app acompanha sozinho."
+                            else "A batalha ainda não começou. Quando aparecer a jornada, o slot volta ao normal.",
+                            fontSize = 11.sp, color = C.MUTED
+                        )
+                    }
+                }
+            } else if (s.ended) {
                 Row(
                     Modifier.fillMaxWidth().padding(top = 10.dp).clip(RoundedCornerShape(14.dp)).background(Color(0x22FFC83D)).padding(10.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -1706,7 +1734,7 @@ private fun SavedScreens(tick: Int) {
     val hasKey = AiClient.hasAnyKey(ctx)
     val waiting = ai.count { it.aiState == "pending" }
     val done = ai.count { it.aiState == "done" }
-    val failed = ai.count { it.aiState == "failed" || it.aiState == "skipped" }
+    val failed = ai.count { it.aiState == "failed" }
     Title("🤖 Leitura com IA")
     if (!hasKey) AlertCard("⚠ Sem chave de IA: coloque a chave do Gemini (grátis) em Ajustes para a IA ler essas telas.")
     Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1722,7 +1750,7 @@ private fun SavedScreens(tick: Int) {
                     try {
                         // as que deram erro voltam para a fila
                         val dao = Repo(app).dao
-                        for (s in dao.aiScreens(30)) if (s.aiState == "failed" || s.aiState == "skipped") dao.updateScreenAi(s.id, "pending", s.extracted, s.note)
+                        for (s in dao.aiScreens(30)) if (s.aiState == "failed" || (s.aiState == "skipped" && s.note.contains("chave"))) dao.updateScreenAi(s.id, "pending", s.extracted, s.note)
                         Processor.run(app, "manual")
                     } catch (e: Exception) {
                         ProcessState.finish("Erro: " + (e.message ?: "?"))
@@ -1735,15 +1763,17 @@ private fun SavedScreens(tick: Int) {
         modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
     ) { Text("🤖 Ler com IA agora (${waiting + failed})") }
     Hint(
-        "Telas que a leitura automática não resolveu sozinha (relatório do rival, pré-jogo incompleto, plantel difícil) vão para a fila. " +
-            "Ao encerrar a captura a IA lê até 8 de cada vez; sem cota hoje, elas esperam e são lidas depois. Tela sem slot espera a central dos 4 times."
+        "O OCR do celular lê quase tudo sozinho. A IA só entra no que ele não conseguiu: pré-jogo sem força/bônus/rival, " +
+            "relatório do rival sem formação ou estilo e plantel com nomes ilegíveis. As mais novas são lidas primeiro; telas que " +
+            "já não precisam (o OCR completou depois, jogo que já passou) são dispensadas sem gastar a cota.",
+        "para que serve"
     )
     if (ai.isEmpty()) Text("Nenhuma tela na fila da IA.", color = C.MUTED, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
     for (s in ai.take(12)) {
         val (icon, label, col) = when (s.aiState) {
             "done" -> Triple("✅", if (s.extracted > 0) "lida pela IA" else "lida (sem dado novo)", C.OK)
             "pending" -> Triple("⏳", if (s.slotId == 0) "espera o slot" else "na fila", C.GOLD)
-            "skipped" -> Triple("⏭", "não lida (sem chave)", C.WARN)
+            "skipped" -> Triple("⏭", if (s.note.contains("chave")) "não lida (sem chave)" else "dispensada", C.MUTED)
             else -> Triple("⚠", "erro na IA", C.LOSS)
         }
         Panel {
@@ -3333,7 +3363,7 @@ private fun SlotTactic(slot: Int, d: SlotData) {
                 "vs ${j.optString("rival")}" + (if (forRound > 0) " • Jornada $forRound" else "") + " • gerada ${ago(plan.at)}",
                 fontSize = 12.sp, color = Color(0xCCFFFFFF), modifier = Modifier.padding(top = 10.dp)
             )
-            if (j.optBoolean("refined")) Box(Modifier.padding(top = 6.dp)) { Pill("🤖 refinada pela IA", true) }
+            AiDecision(j)
             Box(Modifier.fillMaxWidth().padding(top = 12.dp).height(1.dp).background(Color(0x22FFFFFF)))
             Spacer(Modifier.height(10.dp))
             WinCard(d.win)
@@ -4142,7 +4172,12 @@ private fun CommunityView(v: MetaRefresh.View?) {
         StatTile("🔎", if (v.searched == true) "sim" else if (v.searched == false) "não" else "?", "buscou na web", if (v.searched == true) C.OK else C.WARN, Modifier.weight(1f))
     }
     if (v.at != null) Text("Regras de ${fmt.format(Date(v.at))}" + (v.lastAt?.let { " • última pesquisa ${fmt.format(Date(it))}" } ?: ""), fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 6.dp))
+    if (v.running) AlertCard("🔵 Pesquisando agora na internet… " + AiStatus.stage.ifBlank { "aguarde" })
     v.problem?.let { AlertCard("⚠ $it") }
+    val missing = listOf("U" to "mais fraco", "E" to "parelho", "F" to "mais forte").filter { (k, _) -> v.rules.none { it.rel == k } }
+    if (v.rules.isNotEmpty() && missing.isNotEmpty() && !v.running) {
+        AlertCard("⚠ Falta a situação: " + missing.joinToString(", ") { it.second } + ". Toque em Atualizar para a IA pesquisar só ela.")
+    }
     if (v.rules.isEmpty()) {
         Text("Nenhuma regra da comunidade ainda: a tática usa o modelo do app e os seus resultados.", fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 6.dp))
     }
@@ -4186,6 +4221,28 @@ private fun CommunityView(v: MetaRefresh.View?) {
 }
 
 /** Para que serve a IA no app (bloquinho com desenho). */
+/** Quem decidiu a tática: a IA (com o motivo) ou só o cálculo (com o porquê de a IA não ter entrado). */
+@Composable
+private fun AiDecision(j: JSONObject) {
+    val ai = j.optJSONObject("ai")
+    val used = ai?.optBoolean("used") == true
+    val col = if (used) C.OK else C.WARN
+    Column(
+        Modifier.fillMaxWidth().padding(top = 8.dp).clip(RoundedCornerShape(12.dp)).background(col.copy(alpha = 0.14f)).padding(10.dp)
+    ) {
+        val head = when {
+            used -> "🤖 Decidida pela IA" + (ai?.optString("by")?.takeIf { it.isNotBlank() }?.let { " ($it, ${ai.optDouble("secs", 0.0)}s)" } ?: "")
+            ai == null -> "📐 Só pelo cálculo: gere de novo com uma IA configurada em Ajustes"
+            else -> "📐 Só pelo cálculo"
+        }
+        Text(head, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = col)
+        val why = ai?.optString("why")?.takeIf { it.isNotBlank() }
+        if (used && why != null) Text(why, fontSize = 11.sp, color = Color(0xDDFFFFFF), modifier = Modifier.padding(top = 3.dp))
+        val problem = ai?.optString("problem")?.takeIf { it.isNotBlank() }
+        if (!used && problem != null) Text("Motivo: $problem", fontSize = 11.sp, color = Color(0xCCFFFFFF), modifier = Modifier.padding(top = 3.dp))
+    }
+}
+
 @Composable
 private fun AiUseTile(icon: String, title: String, sub: String, modifier: Modifier) {
     Column(
@@ -4307,11 +4364,12 @@ private fun SettingsTab() {
             CommunityView(mv)
             OutlinedButton(
                 onClick = {
-                    metaMsg = "Pesquisando…"
+                    metaMsg = ""
                     exportScope.launch { metaMsg = withContext(Dispatchers.IO) { MetaRefresh.refresh(ctx) } }
                 },
+                enabled = !MetaRefresh.running,
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
-            ) { Text("🌐 Atualizar agora pela internet") }
+            ) { Text(if (MetaRefresh.running) "🔎 Pesquisando…" else "🌐 Atualizar agora pela internet") }
             if (metaMsg.isNotBlank()) Text(metaMsg, fontSize = 12.sp, color = C.WARN)
             Hint(
                 "A IA pesquisa (fórum do OSM, osmnextlevel, osmcoach, YouTube…) qual tática a comunidade usa em cada situação: quando você é mais fraco, " +
