@@ -8,6 +8,24 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ParsersTest {
+    @Test fun stadiumOfANewBattleClubReadsLevelZero() {
+        // tela real do estádio do S4 (Moreirense, 15/10): tudo no nível 0, nenhuma estrela acesa
+        val o = Fx.ocr(
+            Fx.line("Capacidade", 0.20f, 0.31f), Fx.line("Nível1", 0.20f, 0.63f), Fx.line("Começar melhoramento", 0.20f, 0.80f, 0.12f),
+            Fx.line("760K + 18h", 0.20f, 0.84f), Fx.line("1", 0.29f, 0.74f, 0.01f),
+            Fx.line("Relvado", 0.50f, 0.31f), Fx.line("0", 0.40f, 0.74f, 0.01f), Fx.line("16h 05m 47s", 0.51f, 0.67f),
+            Fx.line("Não autorizado", 0.53f, 0.80f), Fx.line("1", 0.60f, 0.74f, 0.01f),
+            Fx.line("Treino", 0.80f, 0.31f), Fx.line("Nível 1", 0.80f, 0.62f), Fx.line("0", 0.71f, 0.74f, 0.01f),
+            Fx.line("Começar melhoramento", 0.80f, 0.80f, 0.12f), Fx.line("665K + 18h", 0.81f, 0.84f), Fx.line("1", 0.90f, 0.74f, 0.01f)
+        )
+        val img = PixelProbe.Img(100, 100, IntArray(100 * 100) { 0xFF102040.toInt() })
+        val f = Parsers.stadium(o, img).fields
+        assertEquals("0", f[K.MY_STAD_CAP]?.value)
+        assertEquals("0", f[K.MY_STAD_PITCH]?.value)
+        assertEquals("0", f[K.MY_STAD_TRAIN]?.value)
+        assertNotNull(f[K.MY_STADIUM])
+    }
+
     @Test fun hubShiftedToTheLeftKeepsEachCardInItsSlot() {
         // quadro real de 15/10 08:56: a grade inteira 0,24 mais à esquerda (antes Levski virava o slot 1 e os dados sumiam)
         val shifted = Fx.hubLines().map { Fx.line(it.text, (it.l + it.r) / 2 - 0.24f, (it.t + it.b) / 2, it.r - it.l, it.b - it.t) }
