@@ -531,11 +531,14 @@ object Director {
      * horário (uma tática do jogo anterior não pode aparecer como pronta só porque a rodada não foi relida).
      */
     fun tacticValid(j: JSONObject, planAt: Long, f: Map<String, StoredField>, now: Long): Boolean {
-        val round = f[K.ROUND]?.value?.toIntOrNull() ?: return false
-        if (j.optInt("forRound", -1) != round) return false
         val curAt = f[K.MATCH_AT]?.value?.toLongOrNull()
         if (curAt != null && curAt <= now) return false
         val planMatch = if (j.has("matchAt") && !j.isNull("matchAt")) j.optLong("matchAt") else null
+        // mesmo horário de jogo (ainda no futuro): é o mesmo jogo, mesmo que a rodada tenha sido relida diferente
+        // ou apagada por uma tela de outro slot
+        if (planMatch != null && curAt != null && Math.abs(planMatch - curAt) <= 3L * 3600000L) return true
+        val round = f[K.ROUND]?.value?.toIntOrNull() ?: return false
+        if (j.optInt("forRound", -1) != round) return false
         if (planMatch != null && curAt != null && Math.abs(planMatch - curAt) > 3L * 3600000L) return false
         if (planMatch == null && curAt != null && planAt < curAt - 18L * 3600000L) return false
         return true

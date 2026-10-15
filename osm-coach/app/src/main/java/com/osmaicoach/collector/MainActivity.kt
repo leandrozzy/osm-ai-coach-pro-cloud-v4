@@ -932,33 +932,52 @@ private fun SeasonEndCard(d: SlotData) {
     }
 }
 
-/** Etapas do jogo no slot: dados → tática → jogo → resultado (cor = feito/pendente). */
+/**
+ * Etapas do jogo no slot como uma barra de 4 trechos: verde = feito, cor forte = o que fazer agora,
+ * cinza = depois. Dados incompletos ficam em amarelo com a % (não travam a tática). Embaixo, uma frase só.
+ */
 @Composable
 private fun Steps(s: SlotSummary) {
-    val st = listOf(
-        Triple("📋", "dados", if (s.missing == 0) 2 else 1),
-        Triple("⚡", "tática", if (s.tacticReady) 2 else 1),
-        Triple("⚽", "jogo", if (s.needsResult) 2 else if (s.nextAt != null) 1 else 0),
-        Triple("📊", "resultado", if (s.needsResult) 1 else 0)
-    )
-    Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        for ((i, t) in st.withIndex()) {
-            val col = when (t.third) {
-                2 -> C.OK
-                1 -> if (i == 3) C.GOLD else if (i == 2) C.PRIMARY else C.WARN
+    val dataOk = s.missing == 0
+    val done = listOf(dataOk, s.tacticReady, s.needsResult, false)
+    // o "agora" é a primeira etapa de ação pendente (dados não travam: dá para gerar a tática com o que foi lido)
+    val now = when {
+        s.needsResult -> 3
+        !s.tacticReady -> 1
+        else -> 2
+    }
+    val labels = listOf("📋 dados", "⚡ tática", "⚽ jogo", "📊 resultado")
+    val nowCol = when (now) { 1 -> C.WARN; 3 -> C.GOLD; else -> C.PRIMARY }
+    Row(Modifier.fillMaxWidth().padding(top = 10.dp)) {
+        for (i in 0..3) {
+            val col = when {
+                i == 0 && !dataOk -> C.WARN.copy(alpha = 0.55f)
+                done[i] -> C.OK
+                i == now -> nowCol
                 else -> C.SURFACE2
             }
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Box(
-                    Modifier.size(30.dp).clip(RoundedCornerShape(50)).background(col.copy(alpha = if (t.third == 0) 1f else 0.25f))
-                        .border(2.dp, col, RoundedCornerShape(50)),
-                    contentAlignment = Alignment.Center
-                ) { Text(if (t.third == 2) "✓" else t.first, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White) }
-                Text(t.second, fontSize = 9.sp, color = if (t.third == 0) C.MUTED else col)
+            Column(Modifier.weight(1f).padding(horizontal = 2.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Box(Modifier.fillMaxWidth().height(if (i == now) 8.dp else 6.dp).clip(RoundedCornerShape(50)).background(col))
+                val text = when {
+                    i == 0 && !dataOk -> "📋 ${s.pct}%"
+                    done[i] -> "✓ " + labels[i].substringAfter(' ')
+                    else -> labels[i]
+                }
+                Text(
+                    text, fontSize = 10.sp, maxLines = 1,
+                    fontWeight = if (i == now) FontWeight.Bold else FontWeight.Normal,
+                    color = when { i == now -> nowCol; done[i] -> C.OK; i == 0 -> C.WARN; else -> C.MUTED },
+                    modifier = Modifier.padding(top = 4.dp)
+                )
             }
-            if (i < st.size - 1) Box(Modifier.weight(1f).padding(horizontal = 3.dp, vertical = 0.dp).padding(bottom = 12.dp).height(2.dp).background(if (t.third == 2) C.OK else C.SURFACE2))
         }
     }
+    val msg = when (now) {
+        3 -> "👉 Agora: registrar o resultado do jogo"
+        1 -> "👉 Agora: gerar a tática" + if (!dataOk) " · faltam ${s.missing} dado${if (s.missing > 1) "s" else ""}" else ""
+        else -> "✓ Tática pronta: aplique no OSM antes do jogo"
+    }
+    Text(msg, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = nowCol, modifier = Modifier.padding(top = 6.dp))
 }
 
 /** Sequência de resultados (bolinhas V/E/D). */
@@ -1521,7 +1540,6 @@ private fun SlotCard(s: SlotSummary, onClick: () -> Unit, onTactic: () -> Unit, 
                 Steps(s)
                 FlowRow(Modifier.padding(top = 6.dp)) {
                     if (s.nextAt != null || s.needsResult) ActionPill(s, onTactic, onResult)
-                    if (s.missing > 0) Pill("📋 faltam ${s.missing} dados")
                 }
             }
             Text(
