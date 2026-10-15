@@ -649,8 +649,22 @@ object Parsers {
         val parts = ArrayList<String>()
         for ((word, key, label) in cards) {
             val ln = o.lines.firstOrNull { Txt.norm(it.text) == word && it.yc in 0.20f..0.45f } ?: continue
-            val lvl = PixelProbe.starLevel(img, ln.xc, ln.yc + 0.074f)
-            if (lvl in 1..3) {
+            val stars = PixelProbe.starLevel(img, ln.xc, ln.yc + 0.074f)
+            // Clube novo (batalha) começa no nível 0: sem estrela nenhuma. Antes o nível 0 era descartado e o estádio
+            // do slot nunca era lido. Confirma pelo número da esquerda da barra (nível atual → próximo) ou pelo
+            // "Nível N" do próximo melhoramento.
+            val left = o.lines.firstOrNull {
+                it.yc in 0.70f..0.78f && it.xc in (ln.xc - 0.14f)..(ln.xc - 0.04f) && it.text.trim().matches(Regex("\\d"))
+            }?.text?.trim()?.toIntOrNull()
+            val next = o.lines.firstOrNull { abs(it.xc - ln.xc) <= 0.12f && it.yc in 0.55f..0.70f }
+                ?.let { Regex("n[iı]vel\\s*(\\d)").find(Txt.norm(it.text))?.groupValues?.get(1)?.toIntOrNull() }
+            val lvl = when {
+                stars in 1..3 -> stars
+                left != null && left in 0..5 -> left
+                next != null -> next - 1
+                else -> null
+            }
+            if (lvl != null && lvl in 0..5) {
                 f[key] = Reading(lvl.toString(), 0.85)
                 parts.add("$label $lvl")
             }
