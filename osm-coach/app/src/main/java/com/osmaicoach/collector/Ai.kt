@@ -22,6 +22,12 @@ object Settings {
 
     /** Versões antigas gravaram nomes de modelo que travam ou não existem mais: volta para detecção automática. */
     fun migrate(ctx: Context) {
+        // IA principal: o antigo padrão "gemini" vira "automático" (a ordem passa a seguir o teste de cada IA)
+        if (get(ctx, "settings_v4", "") != "1") {
+            if (get(ctx, PREFERRED, "gemini") == "gemini") put(ctx, PREFERRED, "auto")
+            put(ctx, COMPAT_VISION, "")
+            put(ctx, "settings_v4", "1")
+        }
         if (get(ctx, "settings_v3", "") == "1") return
         if (get(ctx, "gemini_model", "") == "gemini-flash-latest") put(ctx, "gemini_model", "auto")
         if (get(ctx, "compat_model", "") == "llama-3.3-70b-versatile") put(ctx, "compat_model", "auto")
@@ -49,6 +55,11 @@ object Settings {
     const val COMPAT_VISION = "compat_vision_resolved"
     const val CLAUDE_KEY = "claude_key"
     const val CLAUDE_MODEL = "claude_model"
+    const val MISTRAL_KEY = "mistral_key"
+    const val MISTRAL_BASE = "https://api.mistral.ai/v1"
+    const val OPENROUTER_KEY = "openrouter_key"
+    const val OPENROUTER_BASE = "https://openrouter.ai/api/v1"
+    /** "auto" = ordem pelo último teste e por quem respondeu por último; ou o id do provedor escolhido. */
     const val PREFERRED = "preferred_provider"
     const val DAILY_CAP = "daily_cap"
 
@@ -77,6 +88,52 @@ object ModelPicker {
      * Ordem aprendida: quem respondeu por último vai para a frente (lista "winners", mais recente primeiro);
      * o resto mantém a ordem base. Só reordena itens que existem na base.
      */
+    /** Modelo listado pelo provedor: visão e gratuidade quando a API informa (OpenRouter e Mistral informam). */
+    data class ModelInfo(val id: String, val vision: Boolean? = null, val free: Boolean? = null)
+
+    fun parseModels(body: String): List<ModelInfo> {
+        val arr = JSONObject(body).optJSONArray("data") ?: return emptyList()
+        val out = ArrayList<ModelInfo>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val id = o.optString("id")
+            if (id.isBlank()) continue
+            var vision: Boolean? = null
+            val mods = o.optJSONObject("architecture")?.optJSONArray("input_modalities")
+            if (mods != null) vision = (0 until mods.length()).any { mods.optString(it) == "image" }
+            val caps = o.optJSONObject("capabilities")
+            if (caps != null && caps.has("vision")) vision = caps.optBoolean("vision")
+            var free: Boolean? = null
+            val price = o.optJSONObject("pricing")
+            if (price != null) free = (price.optString("prompt").toDoubleOrNull() ?: 1.0) == 0.0 && (price.optString("completion").toDoubleOrNull() ?: 1.0) == 0.0
+            if (id.endsWith(":free")) free = true
+            out.add(ModelInfo(id, vision, free))
+        }
+        return out
+    }
+
+    /** No OpenRouter só valem os modelos gratuitos (a chave sem crédito não paga os outros). */
+    private fun usable(models: List<ModelInfo>, base: String): List<ModelInfo> =
+        if (base.contains("openrouter")) models.filter { it.free == true } else models
+
+    /** Modelos com visão a tentar, do melhor para o pior: marcados pela API, de nome conhecido e os conhecidos do provedor. */
+    fun compatVisionCandidates(models: List<ModelInfo>, base: String): List<String> {
+        val use = usable(models, base)
+        val flagged = use.filter { it.vision == true }.map { it.id }
+        val unknown = use.filter { it.vision == null }.map { it.id }
+        val ids = models.map { it.id }.toSet()
+        val known = knownVision(base).filter { models.isEmpty() || it in ids }
+        return (rankCompatVision(flagged) + flagged + rankCompatVision(unknown) + known).distinct()
+    }
+
+    fun pickCompatText(models: List<ModelInfo>, base: String): String? = pickCompat(usable(models, base).map { it.id })
+
+    fun defaultText(base: String): String = when {
+        base.contains("mistral.ai") -> "mistral-small-latest"
+        base.contains("openrouter") -> "meta-llama/llama-3.3-70b-instruct:free"
+        else -> "openai/gpt-oss-120b"
+    }
+
     fun learnedOrder(base: List<String>, winners: List<String>): List<String> {
         val first = winners.filter { it in base }.distinct()
         return first + base.filter { it !in first }
@@ -110,7 +167,7 @@ object ModelPicker {
     fun rankCompatVision(ids: List<String>): List<String> {
         val prefs = listOf(
             "llama-4-maverick", "llama-4-scout", "llama-4", "gpt-4.1", "gpt-4o", "gpt-5", "grok-4", "vision", "pixtral",
-            "-vl", "gemma-3", "llava"
+            "mistral-medium", "mistral-small", "-vl", "qwen3.9", "qwen3.8", "qwen3.7", "qwen3.6", "qwen3.5", "gemma-4", "gemma-3", "llava"
         )
         val bad = listOf("guard", "embed", "tts", "whisper", "audio", "image-gen", "dall-e", "realtime", "transcribe")
         val ok = ids.filter { id -> bad.none { id.contains(it, ignoreCase = true) } }
@@ -126,9 +183,11 @@ object ModelPicker {
     fun knownVision(base: String): List<String> {
         val b = base.lowercase()
         return when {
-            b.contains("groq.com") -> listOf("meta-llama/llama-4-scout-17b-16e-instruct", "meta-llama/llama-4-maverick-17b-128e-instruct")
+            // o Groq tirou o Llama 4 do plano gratuito (jun/2026); o Qwen 3.x de 27B lê imagem
+            b.contains("groq.com") -> listOf("qwen/qwen3.6-27b", "qwen/qwen3.8-27b", "meta-llama/llama-4-scout-17b-16e-instruct", "meta-llama/llama-4-maverick-17b-128e-instruct")
+            b.contains("mistral.ai") -> listOf("mistral-small-latest", "mistral-medium-latest", "pixtral-12b-2409")
             b.contains("x.ai") -> listOf("grok-4", "grok-2-vision-1212", "grok-2-vision-latest")
-            b.contains("openrouter") -> listOf("meta-llama/llama-4-scout:free", "google/gemma-3-27b-it:free", "qwen/qwen2.5-vl-72b-instruct:free")
+            b.contains("openrouter") -> listOf("google/gemma-3-27b-it:free", "meta-llama/llama-4-maverick:free", "qwen/qwen2.5-vl-72b-instruct:free", "mistralai/mistral-small-3.2-24b-instruct:free")
             b.contains("openai.com") -> listOf("gpt-4.1-mini", "gpt-4o-mini")
             else -> emptyList()
         }
@@ -146,10 +205,13 @@ object ModelPicker {
 
     /** Escolhe um modelo de texto grande entre os que o provedor (Groq/xAI/OpenAI-compatível) lista. */
     fun pickCompat(ids: List<String>): String? {
-        val bad = listOf("whisper", "tts", "guard", "embed", "playai", "orpheus", "distil", "moderation", "image")
+        val bad = listOf("whisper", "tts", "guard", "embed", "playai", "orpheus", "distil", "moderation", "image", "ocr", "codestral", "devstral", "voxtral", "saba")
         val ok = ids.filter { id -> bad.none { id.contains(it, ignoreCase = true) } }
         // modelo que "pensa" antes (melhor para tática) primeiro; os demais como reserva
-        val prefs = listOf("gpt-oss-120b", "qwen3", "llama-3.3-70b", "llama-3.1-70b", "gpt-oss-20b", "qwen", "grok", "llama-3.1-8b", "llama")
+        val prefs = listOf(
+            "gpt-oss-120b", "qwen3", "llama-3.3-70b", "llama-3.1-70b", "gpt-oss-20b", "deepseek", "qwen", "grok",
+            "mistral-medium-latest", "mistral-small-latest", "mistral-large-latest", "mistral-medium", "mistral-small", "gemma-3-27b", "llama-3.1-8b", "llama"
+        )
         for (p in prefs) {
             val hit = ok.firstOrNull { it.contains(p, ignoreCase = true) }
             if (hit != null) return hit
@@ -159,7 +221,7 @@ object ModelPicker {
 }
 
 object AiClient {
-    data class Reply(val ok: Boolean, val text: String?, val error: String?)
+    data class Reply(val ok: Boolean, val text: String?, val error: String?, val by: String? = null)
 
     private class HttpResult(val code: Int, val body: String)
 
@@ -361,13 +423,10 @@ object AiClient {
         return out
     }
 
-    private fun listCompat(base: String, key: String): List<String> {
+    private fun listCompat(base: String, key: String): List<ModelPicker.ModelInfo> {
         val r = request("GET", "$base/models", mapOf("Authorization" to "Bearer $key"), null)
         if (r.code !in 200..299) return emptyList()
-        val arr = JSONObject(r.body).optJSONArray("data") ?: return emptyList()
-        val out = ArrayList<String>()
-        for (i in 0 until arr.length()) arr.optJSONObject(i)?.optString("id")?.let { out.add(it) }
-        return out
+        return ModelPicker.parseModels(r.body)
     }
 
     /** Modelo fixo dos Ajustes (se houver) + descobertos pela chave + reservas do plano gratuito. */
@@ -391,16 +450,15 @@ object AiClient {
         return pairs.filter { (busyUntil[it.second] ?: 0L) <= now } + pairs.filter { (busyUntil[it.second] ?: 0L) > now }
     }
 
-    private suspend fun compatModel(ctx: Context, base: String, key: String, forceDiscover: Boolean): String {
-        val setting = Settings.get(ctx, Settings.COMPAT_MODEL, Settings.DEFAULT_COMPAT_MODEL)
+    /** Modelo de texto do provedor: o fixo dos Ajustes (só Groq), o já descoberto ou o melhor que a chave lista. */
+    private suspend fun compatModel(ctx: Context, p: Compat, base: String, key: String, forceDiscover: Boolean): String {
+        val setting = p.modelPref?.let { Settings.get(ctx, it, Settings.DEFAULT_COMPAT_MODEL) } ?: "auto"
         if (setting.isNotBlank() && !setting.equals("auto", true) && !forceDiscover) return setting
-        val cached = Settings.get(ctx, Settings.COMPAT_RESOLVED, "")
+        val cached = Settings.get(ctx, p.resolvedPref, "")
         if (cached.isNotBlank() && !forceDiscover) return cached
-        val picked = withContext(Dispatchers.IO) {
-            try { ModelPicker.pickCompat(listCompat(base, key)) } catch (e: Exception) { null }
-        }
-        if (picked != null) Settings.put(ctx, Settings.COMPAT_RESOLVED, picked)
-        return picked ?: cached.ifBlank { "llama-3.3-70b-versatile" }
+        val picked = ModelPicker.pickCompatText(compatModels(base, key, forceDiscover), base)
+        if (picked != null) Settings.put(ctx, p.resolvedPref, picked)
+        return picked ?: cached.ifBlank { ModelPicker.defaultText(base) }
     }
 
     // ---------------------------------------------------------------- provedores
@@ -539,72 +597,105 @@ object AiClient {
         }
     }
 
-    /** Lista de modelos do provedor alternativo guardada por 12 h (evita uma consulta a cada imagem). */
-    @Volatile private var compatList: Pair<Long, List<String>>? = null
-
     /**
-     * Modelos com visão a tentar: o que já respondeu antes, os que o provedor lista e os conhecidos do provedor.
-     * Uma lista que falhou NÃO vira "sem visão" (antes isso bloqueava a leitura de imagem por 12 h).
+     * Provedores no formato OpenAI (chat/completions): Groq (URL editável, serve também para xAI), Mistral e
+     * OpenRouter. Cada um com a sua chave e os seus modelos descobertos.
      */
-    private suspend fun compatVisionModels(ctx: Context, base: String, key: String): List<String> {
-        val cached = Settings.get(ctx, Settings.COMPAT_VISION, "").takeIf { it.isNotBlank() && !it.startsWith("none") }
-        val now = System.currentTimeMillis()
-        val listed = compatList?.takeIf { now - it.first < 12L * 3600000L }?.second ?: withContext(Dispatchers.IO) {
-            try { listCompat(base, key) } catch (e: Exception) { emptyList<String>() }
-        }.also { if (it.isNotEmpty()) compatList = Pair(now, it) }
-        val known = ModelPicker.knownVision(base).filter { listed.isEmpty() || it in listed }
-        return (listOfNotNull(cached) + ModelPicker.rankCompatVision(listed) + known).distinct().take(4)
+    class Compat(
+        val id: String, val label: String, val keyPref: String, private val fixedBase: String?,
+        val modelPref: String?, val resolvedPref: String, val visionPref: String
+    ) {
+        fun base(ctx: Context): String = (fixedBase ?: Settings.get(ctx, Settings.COMPAT_BASE, Settings.DEFAULT_COMPAT_BASE)).trim().trimEnd('/')
+        fun key(ctx: Context): String = Settings.get(ctx, keyPref, "")
     }
 
-    private fun compatBody(model: String, prompt: String, jpeg: ByteArray?): String {
+    val COMPATS = listOf(
+        Compat("compat", "Groq", Settings.COMPAT_KEY, null, Settings.COMPAT_MODEL, Settings.COMPAT_RESOLVED, Settings.COMPAT_VISION),
+        Compat("mistral", "Mistral", Settings.MISTRAL_KEY, Settings.MISTRAL_BASE, null, "mistral_model_resolved", "mistral_vision_resolved"),
+        Compat("openrouter", "OpenRouter", Settings.OPENROUTER_KEY, Settings.OPENROUTER_BASE, null, "openrouter_model_resolved", "openrouter_vision_resolved")
+    )
+
+    fun compatOf(id: String): Compat? = COMPATS.firstOrNull { it.id == id }
+
+    /** Lista de modelos de cada provedor guardada por 12 h (evita uma consulta a cada imagem). */
+    private val compatLists = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, List<ModelPicker.ModelInfo>>>()
+
+    private suspend fun compatModels(base: String, key: String, force: Boolean = false): List<ModelPicker.ModelInfo> {
+        val now = System.currentTimeMillis()
+        val ck = base + "|" + key.takeLast(6)
+        if (!force) compatLists[ck]?.takeIf { now - it.first < 12L * 3600000L }?.let { return it.second }
+        val list = withContext(Dispatchers.IO) { try { listCompat(base, key) } catch (e: Exception) { emptyList() } }
+        if (list.isNotEmpty()) compatLists[ck] = Pair(now, list)
+        return list
+    }
+
+    /**
+     * Modelos com visão a tentar: o que já respondeu antes, os marcados com visão pelo provedor, os de nome
+     * conhecido e os conhecidos do provedor. Uma lista que falhou NÃO vira "sem visão".
+     */
+    private suspend fun compatVisionModels(ctx: Context, p: Compat, base: String, key: String): List<String> {
+        val cached = Settings.get(ctx, p.visionPref, "").takeIf { it.isNotBlank() && !it.startsWith("none") }
+        val listed = compatModels(base, key)
+        return (listOfNotNull(cached) + ModelPicker.compatVisionCandidates(listed, base)).distinct().take(5)
+    }
+
+    private fun compatBody(model: String, prompt: String, jpeg: ByteArray?, base: String): String {
         val messages = JSONArray()
         if (jpeg != null) {
             val content = JSONArray()
             content.put(JSONObject().put("type", "text").put("text", prompt))
-            content.put(
-                JSONObject().put("type", "image_url").put(
-                    "image_url", JSONObject().put("url", "data:image/jpeg;base64," + Base64.encodeToString(jpeg, Base64.NO_WRAP))
-                )
-            )
+            val url = "data:image/jpeg;base64," + Base64.encodeToString(jpeg, Base64.NO_WRAP)
+            // Mistral recebe a imagem como texto direto; os demais no formato da OpenAI ({"url": ...})
+            val img: Any = if (base.contains("mistral.ai")) url else JSONObject().put("url", url)
+            content.put(JSONObject().put("type", "image_url").put("image_url", img))
             messages.put(JSONObject().put("role", "user").put("content", content))
         } else {
             messages.put(JSONObject().put("role", "user").put("content", prompt))
         }
         val req = JSONObject().put("model", model).put("temperature", 0.2).put("messages", messages)
-        if (jpeg == null) req.put("response_format", JSONObject().put("type", "json_object"))
+        // modelos gratuitos do OpenRouter nem sempre aceitam o modo JSON: o texto já pede só JSON
+        if (jpeg == null && !base.contains("openrouter")) req.put("response_format", JSONObject().put("type", "json_object"))
         return req.toString()
     }
 
-    private suspend fun compat(ctx: Context, prompt: String, jpeg: ByteArray?, deadline: Long): Reply = withContext(Dispatchers.IO) {
-        val key = Settings.get(ctx, Settings.COMPAT_KEY, "")
-        if (key.isBlank()) return@withContext Reply(false, null, "chave alternativa não configurada")
-        val base = Settings.get(ctx, Settings.COMPAT_BASE, Settings.DEFAULT_COMPAT_BASE).trimEnd('/')
+    private fun compatHeaders(base: String, key: String): Map<String, String> =
+        if (base.contains("openrouter")) mapOf("Authorization" to "Bearer $key", "X-Title" to "OSM Coach")
+        else mapOf("Authorization" to "Bearer $key")
+
+    private suspend fun compat(ctx: Context, p: Compat, prompt: String, jpeg: ByteArray?, deadline: Long): Reply = withContext(Dispatchers.IO) {
+        val key = p.key(ctx)
+        if (key.isBlank()) return@withContext Reply(false, null, "chave do ${p.label} não configurada")
+        val base = p.base(ctx)
+        val headers = compatHeaders(base, key)
         if (jpeg != null) {
-            val models = compatVisionModels(ctx, base, key)
+            val models = compatVisionModels(ctx, p, base, key)
             if (models.isEmpty()) {
-                return@withContext Reply(false, null, "o provedor alternativo não oferece hoje nenhum modelo que leia imagem para esta chave")
+                return@withContext Reply(false, null, "o ${p.label} não oferece hoje nenhum modelo que leia imagem para esta chave")
             }
             var lastErr = "falha desconhecida"
             for (model in models) {
                 if (System.currentTimeMillis() > deadline) break
-                AiStatus.set("Provedor alternativo ($model) com imagem")
+                AiStatus.set("${p.label} ($model) com imagem")
                 Diag.aiCalls.incrementAndGet()
                 try {
-                    val r = request("POST", "$base/chat/completions", mapOf("Authorization" to "Bearer $key"), compatBody(model, prompt, jpeg))
+                    val r = request("POST", "$base/chat/completions", headers, compatBody(model, prompt, jpeg, base))
                     if (r.code in 200..299) {
                         val t = JSONObject(r.body).optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content")
                         if (!t.isNullOrBlank()) {
-                            Settings.put(ctx, Settings.COMPAT_VISION, model)
+                            Settings.put(ctx, p.visionPref, model)
                             return@withContext Reply(true, t, null)
                         }
                         lastErr = "$model: resposta vazia"
                     } else {
                         lastErr = "$model: HTTP ${r.code} " + short(r.body)
                         // modelo que não existe / não aceita imagem: esquece o guardado e tenta o próximo
-                        if ((r.code == 404 || r.code == 400) && Settings.get(ctx, Settings.COMPAT_VISION, "") == model) {
-                            Settings.put(ctx, Settings.COMPAT_VISION, "")
+                        if ((r.code == 404 || r.code == 400) && Settings.get(ctx, p.visionPref, "") == model) {
+                            Settings.put(ctx, p.visionPref, "")
                         }
-                        if (r.code == 401 || r.code == 403) break
+                        if (r.code == 401 || r.code == 403) {
+                            lastErr = "chave do ${p.label} recusada (HTTP ${r.code})"
+                            break
+                        }
                     }
                 } catch (e: SocketTimeoutException) {
                     lastErr = "$model: tempo esgotado (${READ_MS / 1000}s)"
@@ -614,23 +705,24 @@ object AiClient {
             }
             return@withContext Reply(false, null, lastErr)
         }
-        var model = compatModel(ctx, base, key, false)
+        var model = compatModel(ctx, p, base, key, false)
         var rediscovered = false
         var lastErr = "falha desconhecida"
         for (attempt in 1..2) {
             if (System.currentTimeMillis() > deadline) break
-            AiStatus.set("Provedor alternativo ($model)")
+            AiStatus.set("${p.label} ($model)")
             Diag.aiCalls.incrementAndGet()
             try {
-                val r = request("POST", "$base/chat/completions", mapOf("Authorization" to "Bearer $key"), compatBody(model, prompt, null))
+                val r = request("POST", "$base/chat/completions", headers, compatBody(model, prompt, null, base))
                 if (r.code in 200..299) {
                     val t = JSONObject(r.body).optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content")
                     return@withContext if (t.isNullOrBlank()) Reply(false, null, "resposta vazia") else Reply(true, t, null)
                 }
                 lastErr = "$model: HTTP ${r.code} " + short(r.body)
+                if (r.code == 401 || r.code == 403) return@withContext Reply(false, null, "chave do ${p.label} recusada (HTTP ${r.code})")
                 if ((r.code == 404 || r.code == 400) && !rediscovered) {
                     rediscovered = true
-                    model = compatModel(ctx, base, key, true)
+                    model = compatModel(ctx, p, base, key, true)
                     continue
                 }
                 if (r.code != 429 && r.code < 500) break
@@ -660,14 +752,74 @@ object AiClient {
      * Ordem: o último provedor que respondeu vem primeiro (aprendido), depois o preferido nos Ajustes e o resto.
      * Só entram os que têm chave. Gemini sem cota hoje em nenhuma chave vai para o fim (e nem é chamado).
      */
+    /** Todos os provedores, na ordem padrão (gratuitos primeiro; Claude é pago). */
+    val ALL = listOf("gemini", "compat", "mistral", "openrouter", "claude")
+
+    fun label(p: String): String = when (p) {
+        "gemini" -> "Gemini"
+        "claude" -> "Claude"
+        else -> compatOf(p)?.label ?: "Alternativo"
+    }
+
+    fun hasKey(ctx: Context, p: String): Boolean = when (p) {
+        "gemini" -> Settings.geminiKeys(ctx).isNotEmpty()
+        "claude" -> Settings.get(ctx, Settings.CLAUDE_KEY, "").isNotBlank()
+        else -> compatOf(p)?.key(ctx)?.isNotBlank() == true
+    }
+
+    fun hasAnyKey(ctx: Context): Boolean = ALL.any { hasKey(ctx, it) }
+
+    // ---------------------------------------------------------------- resultado do último teste
+
+    /** Resultado do teste de um provedor: lê imagem, responde texto, segundos e o erro (se houve). */
+    data class TestResult(val image: Boolean, val text: Boolean, val secs: Double, val error: String?, val model: String?, val at: Long)
+
+    private fun testPrefs(ctx: Context) = ctx.getSharedPreferences("ai_test", Context.MODE_PRIVATE)
+
+    fun lastTest(ctx: Context, p: String): TestResult? {
+        val raw = testPrefs(ctx).getString(p, null) ?: return null
+        return try {
+            val j = JSONObject(raw)
+            TestResult(j.optBoolean("img"), j.optBoolean("txt"), j.optDouble("secs", 0.0), j.optString("err").ifBlank { null }, j.optString("model").ifBlank { null }, j.optLong("at"))
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun saveTest(ctx: Context, p: String, r: TestResult) {
+        val j = JSONObject().put("img", r.image).put("txt", r.text).put("secs", r.secs).put("err", r.error ?: "").put("model", r.model ?: "").put("at", r.at)
+        testPrefs(ctx).edit().putString(p, j.toString()).apply()
+    }
+
+    /** Busca na internet: quem respondeu no último teste (ou o erro). */
+    fun lastWebTest(ctx: Context): Pair<Boolean, String>? {
+        val raw = testPrefs(ctx).getString("web", null) ?: return null
+        return try { JSONObject(raw).let { Pair(it.optBoolean("ok"), it.optString("text")) } } catch (e: Exception) { null }
+    }
+
+    /**
+     * Ordem automática a partir do teste: quem leu a imagem (mais rápido primeiro), depois quem só respondeu texto,
+     * depois os não testados e por fim os que falharam no teste.
+     */
+    fun autoOrder(have: List<String>, tests: Map<String, TestResult?>, hasImage: Boolean): List<String> {
+        fun score(p: String): Double {
+            val t = tests[p] ?: return 2000.0
+            val ok = if (hasImage) t.image else t.text || t.image
+            return if (ok) t.secs else if (t.text || t.image) 1000.0 + t.secs else 3000.0
+        }
+        return have.withIndex().sortedWith(compareBy<IndexedValue<String>> { score(it.value) }.thenBy { it.index }).map { it.value }
+    }
+
+    /**
+     * Ordem: no automático, a do último teste com quem respondeu por último na frente; com uma IA escolhida, ela
+     * primeiro e as demais como reserva. Só entram os que têm chave. Gemini sem cota hoje vai para o fim.
+     */
     fun providerOrder(ctx: Context, hasImage: Boolean): List<String> {
-        val have = ArrayList<String>()
-        if (Settings.geminiKeys(ctx).isNotEmpty()) have.add("gemini")
-        if (Settings.get(ctx, Settings.CLAUDE_KEY, "").isNotBlank()) have.add("claude")
-        if (Settings.get(ctx, Settings.COMPAT_KEY, "").isNotBlank()) have.add("compat")
-        val pref = Settings.get(ctx, Settings.PREFERRED, "gemini")
-        val base = if (pref in have) listOf(pref) + have.filter { it != pref } else have
-        val ordered = ModelPicker.learnedOrder(base, winners(ctx, hasImage))
+        val have = ALL.filter { hasKey(ctx, it) }
+        val pref = Settings.get(ctx, Settings.PREFERRED, "auto")
+        val auto = autoOrder(have, have.associateWith { lastTest(ctx, it) }, hasImage)
+        val ordered = if (pref in have) listOf(pref) + ModelPicker.learnedOrder(auto.filter { it != pref }, winners(ctx, hasImage))
+        else ModelPicker.learnedOrder(auto, winners(ctx, hasImage))
         // quem acabou de falhar vai para o fim da fila (evita esperar de novo um provedor sobrecarregado)
         val now = System.currentTimeMillis()
         val geminiOut = "gemini" in ordered && !geminiAvailable(ctx)
@@ -679,23 +831,14 @@ object AiClient {
         when (provider) {
             "gemini" -> gemini(ctx, prompt, jpeg, deadline)
             "claude" -> claude(ctx, prompt, jpeg)
-            else -> compat(ctx, prompt, jpeg, deadline)
+            else -> compat(ctx, compatOf(provider) ?: COMPATS.first(), prompt, jpeg, deadline)
         }
-
-    private fun label(p: String): String = when (p) {
-        "gemini" -> "Gemini"
-        "claude" -> "Claude"
-        else -> "Alternativo"
-    }
-
-    fun hasAnyKey(ctx: Context): Boolean =
-        listOf(Settings.GEMINI_KEY, Settings.CLAUDE_KEY, Settings.COMPAT_KEY).any { Settings.get(ctx, it, "").isNotBlank() }
 
     /** Tenta cada provedor com chave, em ordem, com orçamento total de tempo. Nunca fica preso. */
     suspend fun ask(ctx: Context, prompt: String, jpeg: ByteArray?, budgetMs: Long = 150000L): Reply {
         val deadline = System.currentTimeMillis() + budgetMs
         val order = providerOrder(ctx, jpeg != null)
-        if (order.isEmpty()) return Reply(false, null, "Nenhuma chave de IA configurada. Abra Ajustes e cole a chave do Google AI Studio.")
+        if (order.isEmpty()) return Reply(false, null, "Nenhuma chave de IA configurada. Abra Ajustes › Inteligência artificial e cole uma chave gratuita.")
         val errors = ArrayList<String>()
         for (p in order) {
             if (System.currentTimeMillis() > deadline) {
@@ -725,27 +868,80 @@ object AiClient {
         return Reply(false, null, all)
     }
 
-    /** Teste rápido de cada provedor configurado: mostra se responde e quanto tempo leva. */
+    /** Imagem de teste: um número grande que a IA precisa ler (prova que o modelo enxerga imagem de verdade). */
+    private fun testImage(n: Int): ByteArray {
+        val bmp = android.graphics.Bitmap.createBitmap(320, 160, android.graphics.Bitmap.Config.ARGB_8888)
+        val c = android.graphics.Canvas(bmp)
+        c.drawColor(android.graphics.Color.rgb(20, 40, 70))
+        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.WHITE
+            textSize = 72f
+            isFakeBoldText = true
+        }
+        c.drawText("FORÇA $n", 20f, 105f, paint)
+        val out = java.io.ByteArrayOutputStream()
+        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+        bmp.recycle()
+        return out.toByteArray()
+    }
+
+    private fun modelOf(ctx: Context, p: String, image: Boolean): String? = when (p) {
+        "gemini" -> Settings.get(ctx, Settings.GEMINI_RESOLVED, "").substringBefore(",").ifBlank { null }
+        "claude" -> Settings.get(ctx, Settings.CLAUDE_MODEL, Settings.DEFAULT_CLAUDE_MODEL)
+        else -> compatOf(p)?.let { Settings.get(ctx, if (image) it.visionPref else it.resolvedPref, "").takeIf { m -> m.isNotBlank() && !m.startsWith("none") } }
+    }
+
+    /**
+     * Testa cada provedor com chave: lê uma imagem com um número (o que importa para as telas do OSM), responde texto
+     * (tática e Diretor) e, por fim, a busca na internet (táticas da comunidade). Guarda o resultado para a ordem
+     * automática e para a tela de Ajustes.
+     */
     suspend fun test(ctx: Context): String {
-        val order = providerOrder(ctx, false)
-        if (order.isEmpty()) return "Nenhuma chave configurada."
+        val have = ALL.filter { hasKey(ctx, it) }
+        if (have.isEmpty()) return "Nenhuma chave configurada."
         val lines = ArrayList<String>()
-        for (p in order) {
+        for (p in have) {
             if (p == "gemini" && !geminiAvailable(ctx)) {
-                lines.add("✘ Gemini: " + exhaustedMsg(ctx))
+                val msg = exhaustedMsg(ctx)
+                saveTest(ctx, p, TestResult(false, false, 0.0, msg, null, System.currentTimeMillis()))
+                lines.add("✘ Gemini: $msg")
                 continue
             }
+            val n = 40 + (System.currentTimeMillis() % 50).toInt()
+            AiStatus.set("Testando ${label(p)}: leitura de imagem…")
             val t0 = System.currentTimeMillis()
-            val r = askProvider(ctx, p, "Responda somente com o JSON {\"ok\": true}", null)
+            val ri = askProvider(ctx, p, "Leia o número escrito na imagem. Responda somente com o JSON {\"n\": numero}", testImage(n), t0 + 60000L)
             val secs = (System.currentTimeMillis() - t0) / 100 / 10.0
-            val model = when (p) {
-                "gemini" -> Settings.get(ctx, Settings.GEMINI_RESOLVED, "").substringBefore(",").ifBlank { Settings.get(ctx, Settings.GEMINI_MODEL, "auto") }
-                "claude" -> Settings.get(ctx, Settings.CLAUDE_MODEL, Settings.DEFAULT_CLAUDE_MODEL)
-                else -> Settings.get(ctx, Settings.COMPAT_RESOLVED, "").ifBlank { Settings.get(ctx, Settings.COMPAT_MODEL, "auto") }
+            val imgOk = ri.ok && (ri.text ?: "").contains(n.toString())
+            var txtOk = imgOk
+            var err: String? = when {
+                imgOk -> null
+                ri.ok -> "respondeu, mas não leu o número da imagem"
+                else -> ri.error
             }
-            lines.add(if (r.ok) "✔ ${label(p)} ($model): respondeu em ${secs}s" else "✘ ${label(p)} ($model): ${r.error}")
+            if (!imgOk) {
+                AiStatus.set("Testando ${label(p)}: texto…")
+                val rt = askProvider(ctx, p, "Responda somente com o JSON {\"ok\": true}", null, System.currentTimeMillis() + 45000L)
+                txtOk = rt.ok
+                if (!rt.ok) err = (err ?: "") + (if (err != null) " • texto: " else "") + (rt.error ?: "erro")
+            }
+            val model = modelOf(ctx, p, imgOk)
+            saveTest(ctx, p, TestResult(imgOk, txtOk, secs, err, model, System.currentTimeMillis()))
+            val m = model?.let { " ($it)" } ?: ""
+            lines.add(
+                when {
+                    imgOk -> "✔ ${label(p)}$m: lê imagem e texto em ${secs}s"
+                    txtOk -> "◐ ${label(p)}$m: só texto (não leu a imagem: ${err ?: "?"})"
+                    else -> "✘ ${label(p)}$m: ${err ?: "erro"}"
+                }
+            )
         }
-        if ("gemini" in order) lines.add("Gemini: " + geminiStatus(ctx))
+        AiStatus.set("Testando a busca na internet…")
+        val w = askGrounded(ctx, "Pesquise na internet e responda em uma linha: qual é o site oficial do jogo Online Soccer Manager?")
+        val webText = if (w.ok) "✔ Busca na internet: ${w.by ?: "ok"}" else "✘ Busca na internet: ${w.error ?: "erro"}"
+        testPrefs(ctx).edit().putString("web", JSONObject().put("ok", w.ok).put("text", webText).put("at", System.currentTimeMillis()).toString()).apply()
+        lines.add(webText)
+        if ("gemini" in have) lines.add("Gemini: " + geminiStatus(ctx))
         AiStatus.set("")
         return lines.joinToString("\n")
     }
@@ -778,7 +974,7 @@ object AiClient {
                         val t = JSONObject(r.body).optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content")
                         if (!t.isNullOrBlank()) {
                             AiStatus.set("")
-                            return@withContext Reply(true, t, null)
+                            return@withContext Reply(true, t, null, "Groq $model + busca")
                         }
                         errs.add("Groq $model (busca): resposta vazia")
                     } else errs.add("Groq $model (busca): HTTP ${r.code} " + short(r.body))
@@ -797,7 +993,7 @@ object AiClient {
                         val t = JSONObject(r.body).optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content")
                         if (!t.isNullOrBlank()) {
                             AiStatus.set("")
-                            return@withContext Reply(true, t, null)
+                            return@withContext Reply(true, t, null, "Groq $model")
                         }
                         errs.add("Groq $model: resposta vazia")
                     } else errs.add("Groq $model: HTTP ${r.code} " + short(r.body))
@@ -834,7 +1030,7 @@ object AiClient {
                     if (parts != null) for (i in 0 until parts.length()) sb.append(parts.optJSONObject(i)?.optString("text") ?: "")
                     if (sb.isNotBlank()) {
                         AiStatus.set("")
-                        return Reply(true, sb.toString(), null)
+                        return Reply(true, sb.toString(), null, "Gemini $model + Google")
                     }
                     lastErr = "resposta vazia ($tag)"
                 } else {
@@ -1058,9 +1254,7 @@ object Processor {
     }
 
     private suspend fun readScreen(ctx: Context, repo: Repo, s: ScreenEntity): ReadResult {
-        val hasVision = Settings.get(ctx, Settings.GEMINI_KEY, "").isNotBlank() || Settings.get(ctx, Settings.CLAUDE_KEY, "").isNotBlank() ||
-            Settings.get(ctx, Settings.COMPAT_KEY, "").isNotBlank()
-        if (!hasVision) return ReadResult("skipped", 0, "sem chave de IA com leitura de imagem (Gemini, Claude ou Groq)")
+        if (!AiClient.hasAnyKey(ctx)) return ReadResult("skipped", 0, "sem chave de IA (Ajustes › Inteligência artificial)")
         if (s.slotId == 0) return ReadResult("pending", 0, "aguardando identificação de slot")
         val path = s.imagePath
         val bytes = if (path != null) File(path).takeIf { it.exists() }?.readBytes() else null
