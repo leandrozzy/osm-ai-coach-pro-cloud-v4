@@ -73,7 +73,7 @@ data class ListingRead(
     val sellerNick: String?
 )
 
-/** state: null = competição em andamento; "vazio" = "+ Começar nova liga"; "procurando" = batalha procurando adversário. */
+/** state: null = competição em andamento; "vazio" = "+ Começar nova liga"; "procurando" = batalha procurando adversário; "preepoca" = competição nova antes da 1ª jornada. */
 data class HubCard(val slot: Int, val team: String, val subtitle: String, val roundDone: Int?, val roundTotal: Int?, val state: String? = null)
 
 data class MatchReportRead(

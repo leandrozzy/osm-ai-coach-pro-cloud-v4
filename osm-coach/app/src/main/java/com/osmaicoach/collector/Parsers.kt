@@ -65,6 +65,14 @@ object Parsers {
                 cards.add(HubCard(slot, "", "", null, null, "vazio"))
                 continue
             }
+            // competição nova que ainda não começou: "PRÉ-ÉPOCA" no lugar de "x/y JORNADA"
+            if (done == null && Regex("pre\\W?epoca|pretemporada|pre-temporada").containsMatchIn(all)) {
+                val nm = names.filter { !Regex("epoca|temporada").containsMatchIn(Txt.norm(it.text)) }
+                if (nm.isNotEmpty()) {
+                    cards.add(HubCard(slot, nm[0].text.trim(), nm.getOrNull(1)?.text?.trim() ?: "", null, null, "preepoca"))
+                    continue
+                }
+            }
             if (done == null && all.contains("procurar advers")) {
                 val title = names.firstOrNull { !Txt.norm(it.text).contains("procurar") }?.text?.trim() ?: "Batalha"
                 cards.add(HubCard(slot, "", title, null, null, "procurando"))

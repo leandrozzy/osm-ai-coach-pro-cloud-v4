@@ -140,11 +140,12 @@ class Repo(private val ctx: Context) {
     private suspend fun applyHub(ex: Extraction, now: Long): Int {
         var changed = 0
         for (c in ex.hubCards) {
-            val prev = dao.fieldsOf(c.slot).firstOrNull { it.fkey == K.SLOT_STATE }?.fvalue
-            if (c.state != null) {
+            val rows = dao.fieldsOf(c.slot).associateBy { it.fkey }
+            val prev = rows[K.SLOT_STATE]?.fvalue
+            if (c.state == "vazio" || c.state == "procurando") {
                 // slot livre ou batalha procurando adversário: a competição anterior acabou de vez (arquiva uma vez)
                 if (prev != c.state) {
-                    val hadClub = dao.fieldsOf(c.slot).any { it.fkey == K.TEAM || it.fkey == K.HUB_TITLE }
+                    val hadClub = rows.containsKey(K.TEAM) || rows.containsKey(K.HUB_TITLE)
                     if (hadClub && prev != "vazio" && prev != "procurando") {
                         archiveSeason(c.slot, now, true)
                         learn(
@@ -157,31 +158,62 @@ class Repo(private val ctx: Context) {
                     changed++
                 }
                 if (c.state == "procurando" && c.subtitle.isNotBlank()) {
-                    changed += putFields(
-                        c.slot,
-                        linkedMapOf(K.COMPETITION to Reading(Txt.titleCase(c.subtitle), 0.8), K.COMP_TYPE to Reading("Batalha", 0.8)),
-                        "hub", now
-                    )
+                    hubPut(c.slot, K.COMPETITION, Txt.titleCase(c.subtitle), now)
+                    hubPut(c.slot, K.COMP_TYPE, "Batalha", now)
                 }
                 continue
             }
-            if (prev != null && prev != "ativo") dao.putField(FieldEntity(c.slot, K.SLOT_STATE, "ativo", 0.9, now, "hub"))
-            val r = LinkedHashMap<String, Reading>()
-            r[K.HUB_TITLE] = Reading(Txt.titleCase(c.team), 0.8)
-            if (c.subtitle.isNotBlank()) r[K.COMPETITION] = Reading(Txt.titleCase(c.subtitle), 0.8)
-            c.roundDone?.let { r[K.ROUND_DONE] = Reading(it.toString(), 0.8) }
-            c.roundTotal?.let { r[K.ROUND_TOTAL] = Reading(it.toString(), 0.8) }
+            // Card com competição (em andamento ou em pré-época). A central é a fonte do que está no slot AGORA:
+            // título/competição diferentes = competição nova (antes o título antigo ficava para sempre).
+            val oldTitle = rows[K.HUB_TITLE]?.fvalue
+            val titleChanged = oldTitle != null && c.team.isNotBlank() && Txt.key(c.team).length >= 3 &&
+                Txt.sim(Txt.key(oldTitle), Txt.key(c.team)) < 0.75
+            val oldDone = rows[K.ROUND_DONE]?.fvalue?.toIntOrNull()
+            val restarted = c.roundDone != null && oldDone != null && c.roundDone + 3 <= oldDone
+            val enteredPre = c.state == "preepoca" && prev != "preepoca"
+            if (titleChanged || restarted || enteredPre) {
+                val sub = Txt.norm(c.subtitle)
+                // batalha nova ou outro clube: o elenco antigo não vale; temporada nova da mesma liga: mantém o clube
+                val clearClub = titleChanged || sub.contains("batalha")
+                val hadComp = rows.containsKey(K.ROUND_DONE) || dao.matchesOf(c.slot).isNotEmpty() || rows.containsKey(K.TEAM)
+                if (hadComp) {
+                    archiveSeason(c.slot, now, clearClub)
+                    learn(
+                        c.slot, "temporada",
+                        "Competição nova na central (${Txt.titleCase(c.team)}${if (c.subtitle.isNotBlank()) " • " + Txt.titleCase(c.subtitle) else ""}): " +
+                            "a anterior foi arquivada" + (if (clearClub) " junto com o elenco antigo" else "") + "; o aprendizado das táticas continua.", now
+                    )
+                    changed++
+                }
+            }
+            val st = c.state ?: "ativo"
+            if (prev != st) {
+                dao.putField(FieldEntity(c.slot, K.SLOT_STATE, st, 0.9, now, "hub"))
+                changed++
+            }
+            if (c.team.isNotBlank()) changed += hubPut(c.slot, K.HUB_TITLE, Txt.titleCase(c.team), now)
+            if (c.subtitle.isNotBlank()) changed += hubPut(c.slot, K.COMPETITION, Txt.titleCase(c.subtitle), now)
+            c.roundDone?.let { changed += hubPut(c.slot, K.ROUND_DONE, it.toString(), now) }
+            c.roundTotal?.let { changed += hubPut(c.slot, K.ROUND_TOTAL, it.toString(), now) }
             val sub = Txt.norm(c.subtitle)
             val type = when {
-                sub.contains("batalha") -> "Batalha"
-                sub.contains("copa") -> "Copa"
+                sub.contains("batalha") || Txt.norm(c.team).contains(" vs ") -> "Batalha"
+                sub.contains("copa") || sub.contains("taca") -> "Copa"
                 else -> "Liga"
             }
-            r[K.COMP_TYPE] = Reading(type, 0.7)
-            if (type == "Batalha") r[K.RIVAL_HUMAN] = Reading("Sim", 0.9)
-            changed += putFields(c.slot, r, "hub", now)
+            changed += hubPut(c.slot, K.COMP_TYPE, type, now)
+            if (type == "Batalha") changed += putFields(c.slot, mapOf(K.RIVAL_HUMAN to Reading("Sim", 0.9)), "hub", now)
         }
         return changed
+    }
+
+    /** Campo vindo da central: vale o que está na tela agora (troca mesmo com a mesma confiança). */
+    private suspend fun hubPut(slot: Int, key: String, value: String, now: Long): Int {
+        val old = dao.fieldsOf(slot).firstOrNull { it.fkey == key }
+        if (old != null && old.fvalue == value) return 0
+        if (old?.source == "manual") return 0
+        dao.putField(FieldEntity(slot, key, value, 0.8, now, "hub"))
+        return 1
     }
 
     /**
