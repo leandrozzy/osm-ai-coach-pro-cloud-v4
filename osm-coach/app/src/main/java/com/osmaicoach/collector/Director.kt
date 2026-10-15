@@ -270,7 +270,8 @@ object Director {
 
     /** Jogos do slot para o treinador: táticas usadas + análises do jogo lidas. */
     suspend fun coachGames(repo: Repo, slot: Int): List<Coach.Game> = Coach.games(
-        repo.dao.tacticLogs(slot).mapNotNull { runCatching { JSONObject(it.json) }.getOrNull() },
+        // só os jogos da competição atual (os arquivados "tlog_X…" continuam no aprendizado da IA pelos 4 slots)
+        repo.dao.tacticLogs(slot).filter { it.kind.startsWith("tlog_R") }.mapNotNull { runCatching { JSONObject(it.json) }.getOrNull() },
         repo.dao.matchReports(slot).mapNotNull { p ->
             runCatching { JSONObject(p.json).also { j -> if (!j.has("round")) p.kind.removePrefix("mr_R").toIntOrNull()?.let { j.put("round", it) } } }.getOrNull()
         }
@@ -626,7 +627,9 @@ object Director {
         when (f[K.SLOT_STATE]?.value) {
             "vazio" -> return Outcome(false, null, "Slot livre: comece uma liga ou batalha no OSM e abra o pré-jogo para eu montar a tática.")
             "procurando" -> return Outcome(false, null, "A batalha ainda está procurando adversário: quando começar, abra o pré-jogo e gere a tática.")
-            "preepoca" -> return Outcome(false, null, "Pré-época: a competição nova ainda não começou. Quando aparecer a 1ª jornada, abra o pré-jogo e gere a tática.")
+            "preepoca" -> if (!FieldMerge.known(f[K.RIVAL_TEAM]?.value)) {
+                return Outcome(false, null, "Pré-época: a competição nova ainda não começou. Quando aparecer a 1ª jornada, abra o pré-jogo e gere a tática.")
+            }
         }
         val inp = tacticInput(repo, slot)
         val squad = inp.players.count { it.strength != null }
