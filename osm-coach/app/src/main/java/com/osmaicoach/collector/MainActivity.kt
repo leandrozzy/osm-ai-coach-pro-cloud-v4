@@ -45,6 +45,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -1701,8 +1703,7 @@ private fun SavedScreens(tick: Int) {
     val ctx = LocalContext.current
     val ai = rememberLoaded(emptyList<ScreenEntity>(), tick, UiBus.version) { Repo(ctx).dao.aiScreens(30) }
     val archive = rememberLoaded(emptyList<ScreenEntity>(), tick, UiBus.version) { Repo(ctx).dao.savedScreens(12) }
-    val hasKey = Settings.get(ctx, Settings.GEMINI_KEY, "").isNotBlank() || Settings.get(ctx, Settings.COMPAT_KEY, "").isNotBlank() ||
-        Settings.get(ctx, Settings.CLAUDE_KEY, "").isNotBlank()
+    val hasKey = AiClient.hasAnyKey(ctx)
     val waiting = ai.count { it.aiState == "pending" }
     val done = ai.count { it.aiState == "done" }
     val failed = ai.count { it.aiState == "failed" || it.aiState == "skipped" }
@@ -4184,6 +4185,100 @@ private fun CommunityView(v: MetaRefresh.View?) {
     }
 }
 
+/** Para que serve a IA no app (bloquinho com desenho). */
+@Composable
+private fun AiUseTile(icon: String, title: String, sub: String, modifier: Modifier) {
+    Column(
+        modifier.clip(RoundedCornerShape(12.dp)).background(C.SURFACE2).padding(8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(icon, fontSize = 20.sp)
+        Text(title, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        Text(sub, fontSize = 9.sp, color = C.MUTED, textAlign = TextAlign.Center)
+    }
+}
+
+/** Um menu só para a IA principal: automático (pelo teste) ou uma escolhida. */
+@Composable
+private fun AiPrimaryPicker(pref: String, tick: Int, onPick: (String) -> Unit) {
+    val ctx = LocalContext.current
+    var open by remember { mutableStateOf(false) }
+    val opts = listOf("auto" to "🤖 Automático (pelo teste)") + AiClient.ALL.map { it to AiClient.label(it) }
+    val cur = opts.firstOrNull { it.first == pref }?.second ?: opts.first().second
+    Column(Modifier.fillMaxWidth()) {
+        Text("IA principal", fontSize = 12.sp, color = C.MUTED)
+        Box {
+            OutlinedButton(onClick = { open = true }, modifier = Modifier.fillMaxWidth()) {
+                Text(cur, modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                Text("▾")
+            }
+            DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                for ((id, name) in opts) {
+                    val t = if (id == "auto") null else AiClient.lastTest(ctx, id)
+                    val st = when {
+                        id == "auto" -> ""
+                        !AiClient.hasKey(ctx, id) -> "  • sem chave"
+                        t == null -> "  • não testada"
+                        t.image -> "  ✔"
+                        t.text -> "  ◐ só texto"
+                        else -> "  ✘"
+                    }
+                    DropdownMenuItem(text = { Text(name + st) }, onClick = { open = false; onPick(id) })
+                }
+            }
+        }
+        val order = if (tick >= 0) AiClient.providerOrder(ctx, true) else emptyList()
+        Text(
+            if (order.isEmpty()) "⚠ Nenhuma IA com chave: cole pelo menos uma chave grátis abaixo."
+            else "Ordem para ler telas agora: " + order.joinToString(" → ") { AiClient.label(it) } + ". Se uma falhar, passa para a próxima.",
+            fontSize = 11.sp, color = if (order.isEmpty()) C.WARN else C.MUTED, modifier = Modifier.padding(top = 4.dp)
+        )
+    }
+}
+
+/** Cartão de uma IA: luz de status do último teste; a chave e o resto aparecem ao tocar. */
+@Composable
+private fun AiProviderCard(id: String, icon: String, title: String, tag: String, where: String, key: String, tick: Int, content: @Composable () -> Unit) {
+    val ctx = LocalContext.current
+    var open by rememberSaveable("ai_$id") { mutableStateOf(false) }
+    val t = if (tick >= 0) AiClient.lastTest(ctx, id) else null
+    val saved = AiClient.hasKey(ctx, id)
+    val (col, status) = when {
+        key.isBlank() -> C.MUTED to "sem chave"
+        !saved -> C.WARN to "toque em Salvar"
+        t == null -> C.MUTED to "não testada"
+        t.image -> C.OK to "✔ lê imagem • ${t.secs}s"
+        t.text -> C.GOLD to "◐ só texto"
+        else -> C.LOSS to "✘ não respondeu"
+    }
+    Column(
+        Modifier.fillMaxWidth().padding(vertical = 3.dp).clip(RoundedCornerShape(14.dp)).background(C.SURFACE2)
+            .border(1.dp, col.copy(alpha = 0.5f), RoundedCornerShape(14.dp))
+    ) {
+        Row(Modifier.fillMaxWidth().clickable { open = !open }.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(icon, fontSize = 18.sp)
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Text(tag, fontSize = 10.sp, color = C.MUTED)
+            }
+            Box(Modifier.clip(RoundedCornerShape(50)).background(col.copy(alpha = 0.18f)).padding(horizontal = 8.dp, vertical = 3.dp)) {
+                Text(status, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = col, maxLines = 1)
+            }
+            Text(if (open) " ▲" else " ▼", fontSize = 11.sp, color = C.MUTED)
+        }
+        if (open) Column(Modifier.padding(start = 10.dp, end = 10.dp, bottom = 10.dp)) {
+            Text("🔑 Chave em: $where", fontSize = 11.sp, color = C.PRIMARY)
+            if (t != null && !t.image && t.error != null && key.isNotBlank()) {
+                Text("Último teste: ${t.error}", fontSize = 11.sp, color = C.WARN, modifier = Modifier.padding(top = 4.dp))
+            }
+            if (t?.model != null) Text("Modelo usado: ${t.model}", fontSize = 10.sp, color = C.MUTED, modifier = Modifier.padding(top = 2.dp))
+            Spacer(Modifier.height(4.dp))
+            content()
+        }
+    }
+}
+
 @Composable
 private fun SettingsTab() {
     val ctx = LocalContext.current
@@ -4195,8 +4290,10 @@ private fun SettingsTab() {
     var cKey by remember { mutableStateOf(Settings.get(ctx, Settings.COMPAT_KEY, "")) }
     var cBase by remember { mutableStateOf(Settings.get(ctx, Settings.COMPAT_BASE, Settings.DEFAULT_COMPAT_BASE)) }
     var cModel by remember { mutableStateOf(Settings.get(ctx, Settings.COMPAT_MODEL, Settings.DEFAULT_COMPAT_MODEL)) }
+    var mKey by remember { mutableStateOf(Settings.get(ctx, Settings.MISTRAL_KEY, "")) }
+    var oKey by remember { mutableStateOf(Settings.get(ctx, Settings.OPENROUTER_KEY, "")) }
     var cap by remember { mutableStateOf(Settings.get(ctx, Settings.DAILY_CAP, "80")) }
-    var pref by remember { mutableStateOf(Settings.get(ctx, Settings.PREFERRED, "gemini")) }
+    var pref by remember { mutableStateOf(Settings.get(ctx, Settings.PREFERRED, "auto")) }
     var saved by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
         Text("Ajustes", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
@@ -4299,60 +4396,73 @@ private fun SettingsTab() {
                 modifier = Modifier.fillMaxWidth()
             ) { Text("Bateria: não otimizar este app") }
         }
-        Fold("🤖", "Inteligência artificial", if (gKey.isBlank() && cKey.isBlank() && clKey.isBlank()) "sem chave" else null, startOpen = gKey.isBlank() && cKey.isBlank()) {
-            Hint("Gemini (plano gratuito, com limite diário) é o padrão. Groq também tem plano gratuito e lê imagem: vale ter as duas chaves. Claude é pago.", "qual escolher")
-            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                for ((id, name) in listOf("gemini" to "Gemini", "claude" to "Claude", "compat" to "Groq/xAI")) {
-                    val pick = { pref = id; Settings.put(ctx, Settings.PREFERRED, id) }
-                    if (pref == id) Button(onClick = pick, modifier = Modifier.weight(1f)) { Text(name, fontSize = 12.sp) }
-                    else OutlinedButton(onClick = pick, modifier = Modifier.weight(1f)) { Text(name, fontSize = 12.sp) }
+        val anyKey = listOf(gKey, cKey, mKey, oKey, clKey).any { it.isNotBlank() }
+        Fold("🤖", "Inteligência artificial", if (!anyKey) "sem chave" else null, startOpen = !anyKey) {
+            val saveAll = {
+                Settings.put(ctx, Settings.GEMINI_KEY, gKey)
+                Settings.put(ctx, Settings.GEMINI_MODEL, gModel.ifBlank { Settings.DEFAULT_GEMINI_MODEL })
+                Settings.put(ctx, Settings.CLAUDE_KEY, clKey)
+                Settings.put(ctx, Settings.CLAUDE_MODEL, clModel.ifBlank { Settings.DEFAULT_CLAUDE_MODEL })
+                Settings.put(ctx, Settings.COMPAT_KEY, cKey)
+                Settings.put(ctx, Settings.COMPAT_BASE, cBase.ifBlank { Settings.DEFAULT_COMPAT_BASE })
+                Settings.put(ctx, Settings.COMPAT_MODEL, cModel.ifBlank { Settings.DEFAULT_COMPAT_MODEL })
+                Settings.put(ctx, Settings.MISTRAL_KEY, mKey)
+                Settings.put(ctx, Settings.OPENROUTER_KEY, oKey)
+                Settings.put(ctx, Settings.DAILY_CAP, cap.ifBlank { "80" })
+            }
+            // o que cada IA faz no app: ler as telas (imagem), pensar a tática (texto) e pesquisar na internet
+            Row(Modifier.fillMaxWidth().padding(bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                AiUseTile("📷", "Ler telas", "OCR do celular + IA com imagem", Modifier.weight(1f))
+                AiUseTile("🧠", "Tática", "IA de texto", Modifier.weight(1f))
+                AiUseTile("🌐", "Internet", "Gemini ou Groq", Modifier.weight(1f))
+            }
+            AiPrimaryPicker(pref, tick) { pref = it; Settings.put(ctx, Settings.PREFERRED, it) }
+            Text("Gratuitas", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = C.OK, modifier = Modifier.padding(top = 10.dp, bottom = 2.dp))
+            AiProviderCard("gemini", "✨", "Gemini (Google)", "grátis • lê imagem • busca no Google", "aistudio.google.com › Get API key", gKey, tick) {
+                OutlinedTextField(gKey, { gKey = it }, label = { Text("Chave(s) do Google AI Studio") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+                KV("Cota hoje", AiClient.geminiStatus(ctx))
+                Hint(
+                    "Limite DIÁRIO por modelo e por projeto do Google. Pode colar várias chaves separadas por vírgula (cada uma de um PROJETO " +
+                        "diferente): quando a cota de uma acaba, o app usa a próxima. \"Sobrecarregado (503)\" é o Google cheio naquele momento: " +
+                        "o app pula para a próxima IA.",
+                    "cota e várias chaves"
+                )
+                Fold("⚙", "Avançado") {
+                    OutlinedTextField(gModel, { gModel = it }, label = { Text("Modelo (auto = detecta sozinho)") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(cap, { cap = it }, label = { Text("Teto diário de chamadas") }, modifier = Modifier.fillMaxWidth())
+                    KV("Chamadas hoje", AiClient.usedToday(ctx).toString())
                 }
             }
-            val prefName = when (pref) { "claude" -> "Claude"; "compat" -> "Groq/xAI"; else -> "Gemini" }
-            val prefKey = when (pref) { "claude" -> clKey; "compat" -> cKey; else -> gKey }
-            Text(
-                "Primeira IA a ser usada: $prefName. Se ela falhar ou estiver sem cota, o app tenta as outras que tiverem chave." +
-                    (if (prefKey.isBlank()) " ⚠ $prefName está sem chave: preencha abaixo e toque em Salvar." else ""),
-                fontSize = 11.sp, color = if (prefKey.isBlank()) C.WARN else C.MUTED, modifier = Modifier.padding(bottom = 6.dp)
-            )
-            OutlinedTextField(gKey, { gKey = it }, label = { Text("Chave(s) Google AI Studio (Gemini)") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-            Hint(
-                "O plano gratuito do Gemini tem limite DIÁRIO por modelo e por projeto do Google. Pode colar várias chaves separadas por " +
-                    "vírgula (cada uma de um PROJETO diferente no AI Studio): quando a cota de uma acaba, o app usa a próxima e não " +
-                    "tenta de novo a que esgotou até a cota renovar.",
-                "várias chaves"
-            )
-            KV("Gemini agora", AiClient.geminiStatus(ctx))
-            OutlinedTextField(gModel, { gModel = it }, label = { Text("Modelo Gemini (auto = detecta sozinho)") }, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(clKey, { clKey = it }, label = { Text("Chave Claude (Console da Anthropic)") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(clModel, { clModel = it }, label = { Text("Modelo Claude") }, modifier = Modifier.fillMaxWidth())
-            Hint("A assinatura do Claude (Pro/Max) não inclui a API: para usar o Claude aqui é preciso uma chave e créditos no Console da Anthropic, com cobrança separada.", "Claude")
-            OutlinedTextField(cKey, { cKey = it }, label = { Text("Chave Groq/xAI (formato OpenAI)") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(cBase, { cBase = it }, label = { Text("URL base (Groq ou xAI)") }, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(cModel, { cModel = it }, label = { Text("Modelo (auto = detecta sozinho)") }, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(cap, { cap = it }, label = { Text("Teto diário de chamadas do Gemini") }, modifier = Modifier.fillMaxWidth())
-            KV("Chamadas ao Gemini hoje", AiClient.usedToday(ctx).toString())
+            AiProviderCard("mistral", "🌀", "Mistral", "grátis • lê imagem", "console.mistral.ai › API Keys (plano Experiment, grátis)", mKey, tick) {
+                OutlinedTextField(mKey, { mKey = it }, label = { Text("Chave da Mistral") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+            }
+            AiProviderCard("compat", "⚡", "Groq", "grátis • rápido • busca na internet", "console.groq.com › API Keys", cKey, tick) {
+                OutlinedTextField(cKey, { cKey = it }, label = { Text("Chave do Groq") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+                Fold("⚙", "Avançado (xAI ou outro)") {
+                    OutlinedTextField(cBase, { cBase = it }, label = { Text("URL base") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(cModel, { cModel = it }, label = { Text("Modelo de texto (auto = detecta sozinho)") }, modifier = Modifier.fillMaxWidth())
+                }
+            }
+            AiProviderCard("openrouter", "🔀", "OpenRouter", "grátis (modelos :free) • lê imagem", "openrouter.ai › Keys (50 chamadas grátis/dia)", oKey, tick) {
+                OutlinedTextField(oKey, { oKey = it }, label = { Text("Chave do OpenRouter") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+            }
+            Text("Paga", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = C.GOLD, modifier = Modifier.padding(top = 10.dp, bottom = 2.dp))
+            AiProviderCard("claude", "🅲", "Claude (Anthropic)", "pago • só com créditos no Console", "console.anthropic.com (a assinatura Pro/Max não inclui a API)", clKey, tick) {
+                OutlinedTextField(clKey, { clKey = it }, label = { Text("Chave do Console da Anthropic") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(clModel, { clModel = it }, label = { Text("Modelo") }, modifier = Modifier.fillMaxWidth())
+            }
             Button(
                 onClick = {
-                    Settings.put(ctx, Settings.GEMINI_KEY, gKey)
-                    Settings.put(ctx, Settings.GEMINI_MODEL, gModel.ifBlank { Settings.DEFAULT_GEMINI_MODEL })
-                    Settings.put(ctx, Settings.CLAUDE_KEY, clKey)
-                    Settings.put(ctx, Settings.CLAUDE_MODEL, clModel.ifBlank { Settings.DEFAULT_CLAUDE_MODEL })
-                    Settings.put(ctx, Settings.COMPAT_KEY, cKey)
-                    Settings.put(ctx, Settings.COMPAT_BASE, cBase.ifBlank { Settings.DEFAULT_COMPAT_BASE })
-                    Settings.put(ctx, Settings.COMPAT_MODEL, cModel.ifBlank { Settings.DEFAULT_COMPAT_MODEL })
-                    Settings.put(ctx, Settings.DAILY_CAP, cap.ifBlank { "80" })
-                    saved = "Salvo."
+                    saveAll()
+                    saved = "Salvo. Testando cada IA…"
+                    startAiTest(ctx)
                 },
-                modifier = Modifier.fillMaxWidth()
-            ) { Text("Salvar") }
-            if (saved.isNotBlank()) Text(saved, color = C.OK)
-            OutlinedButton(
-                onClick = { startAiTest(ctx) },
                 enabled = !AiTest.running,
-                modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
-            ) { Text(if (AiTest.running) "Testando…" else "Testar a IA agora (mostra o tempo)") }
-            if (AiTest.result.isNotBlank()) Text(AiTest.result, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+                modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
+            ) { Text(if (AiTest.running) "Testando… (${AiStatus.stage.ifBlank { "aguarde" }})" else "💾 Salvar e testar as IAs") }
+            if (saved.isNotBlank() && !AiTest.running) Text(saved.removeSuffix(" Testando cada IA…"), color = C.OK, fontSize = 12.sp)
+            if (AiTest.result.isNotBlank() && !AiTest.running) Text(AiTest.result, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+            else AiClient.lastWebTest(ctx)?.let { (ok, text) -> StatusLight(ok, text.removePrefix("✔ ").removePrefix("✘ ")) }
         }
     }
 }
