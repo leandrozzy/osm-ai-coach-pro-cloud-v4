@@ -601,9 +601,10 @@ private fun Ring(pct: Int, size: Dp, color: Color, center: String, sub: String? 
 private fun WinMini(p: WinModel.Prob) {
     Column(Modifier.width(116.dp), horizontalAlignment = Alignment.End) {
         Row(verticalAlignment = Alignment.Bottom) {
-            Text("${p.win}%", fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = winColor(p.win))
+            Text("${p.win}%", fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
             Text(" vitória", fontSize = 10.sp, color = C.MUTED, modifier = Modifier.padding(bottom = 2.dp))
         }
+        Box(Modifier.padding(top = 2.dp)) { VerdictChip(p) }
         Box(Modifier.padding(top = 3.dp)) { WinBar(p, 7.dp) }
         Row(Modifier.fillMaxWidth().padding(top = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
             Text("V${p.win}", fontSize = 9.sp, color = C.WIN, fontWeight = FontWeight.Bold)
@@ -651,48 +652,45 @@ private fun RivalShield(name: String?, size: Dp) {
     }
 }
 
-private fun refLevel(v: String?): Int? = when (v) {
-    "Brando" -> 0
-    "Médio" -> 1
-    "Rigoroso" -> 2
-    else -> null
-}
+private val REF_COLORS = listOf(Color(0xFF2F8CFF), Color(0xFF3DDC84), Color(0xFFFFD43B), Color(0xFFFF9F1A), Color(0xFFE5484D))
 
-/** Termômetro do árbitro igual ao do jogo: verde, laranja e vermelho, com o ponteiro no nível lido. */
+/**
+ * Termômetro do árbitro igual ao do jogo, 5 cores (azul, verde, amarelo, laranja, vermelho), com o nível lido em
+ * destaque e o desarme que ele pede.
+ */
 @Composable
 private fun RefereeMeter(value: String?, compact: Boolean = false) {
-    val lvl = refLevel(value)
-    val cols = listOf(Color(0xFF3DDC84), Color(0xFFFFA726), Color(0xFFE5484D))
+    val lvl = Referee.level(value)
+    val name = Referee.norm(value)
     Column(Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("🟨", fontSize = if (compact) 13.sp else 16.sp)
-            Text(" Árbitro: ", fontSize = 12.sp, color = C.MUTED)
-            Text(value ?: "não lido", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = if (lvl == null) C.WARN else cols[lvl])
+            Text("🌡", fontSize = if (compact) 13.sp else 16.sp)
+            Text(" Árbitro ", fontSize = 12.sp, color = C.MUTED)
+            Text(name ?: "não lido", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = if (lvl == null) C.WARN else REF_COLORS[lvl])
             Spacer(Modifier.weight(1f))
-            if (lvl != null) Text(
-                "desarme " + (if (lvl == 0) "livre" else "Cuidadoso"), fontSize = 11.sp, color = C.MUTED
-            )
+            if (lvl != null) {
+                Box(Modifier.clip(RoundedCornerShape(50)).background(REF_COLORS[lvl].copy(alpha = 0.22f)).padding(horizontal = 8.dp, vertical = 2.dp)) {
+                    Text("desarme " + Referee.TACKLES[lvl], fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                }
+            }
         }
-        Canvas(Modifier.fillMaxWidth().height(if (compact) 16.dp else 22.dp).padding(top = 4.dp)) {
-            val w = size.width
-            val h = size.height
-            val seg = w / 3f
-            val r = h / 2f
-            for (i in 0..2) {
-                val a = if (lvl == null || lvl == i) 1f else 0.28f
-                drawRoundRect(
-                    cols[i].copy(alpha = a), topLeft = Offset(i * seg + (if (i == 0) 0f else 2f), 0f),
-                    size = Size(seg - 2f, h), cornerRadius = CornerRadius(r, r)
+        Row(Modifier.fillMaxWidth().padding(top = 5.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+            for (i in 0..4) {
+                val on = lvl == i
+                Box(
+                    Modifier.weight(1f).height(if (compact) 10.dp else 14.dp).clip(RoundedCornerShape(50))
+                        .background(REF_COLORS[i].copy(alpha = if (lvl == null || on) 1f else 0.22f))
+                        .then(if (on) Modifier.border(2.dp, Color.White, RoundedCornerShape(50)) else Modifier)
                 )
             }
-            if (lvl != null) {
-                val cx = lvl * seg + seg / 2f
-                drawCircle(Color.White, radius = r * 0.9f, center = Offset(cx, h / 2f))
-                drawCircle(cols[lvl], radius = r * 0.55f, center = Offset(cx, h / 2f))
-            }
         }
-        if (!compact) Row(Modifier.fillMaxWidth().padding(top = 2.dp)) {
-            for (t in listOf("Brando", "Médio", "Rigoroso")) Text(t, fontSize = 10.sp, color = C.MUTED, textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
+        if (!compact) Row(Modifier.fillMaxWidth().padding(top = 3.dp)) {
+            for ((i, t) in Referee.LEVELS.withIndex()) {
+                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(t.replace("Muito ", "Muito\n"), fontSize = 9.sp, color = if (lvl == i) Color.White else C.MUTED, textAlign = TextAlign.Center, fontWeight = if (lvl == i) FontWeight.Bold else FontWeight.Normal, lineHeight = 10.sp)
+                    Text(Referee.TACKLES[i], fontSize = 8.sp, color = if (lvl == i) REF_COLORS[i] else C.MUTED.copy(alpha = 0.7f), textAlign = TextAlign.Center)
+                }
+            }
         }
     }
 }
@@ -841,9 +839,16 @@ private fun Medal(rank: Int?, size: Dp) {
     }
 }
 
-/** Fim da competição: posição, pontos, gols, valor, campeão e o que a direção disse. */
+/**
+ * Fim da competição: posição final, campanha (V/E/D, pontos de quantos possíveis, gols), meta da temporada, valor do
+ * elenco, campeão e a fala mais importante da direção.
+ */
 @Composable
-private fun SeasonEndCard(info: SeasonCard.Info?) {
+private fun SeasonEndCard(d: SlotData) {
+    val info = SeasonCard.from(d.season, d.board, d.fields)
+    val rec = SeasonCard.record(d.matches, known(d.fields, K.ROUND_TOTAL)?.toIntOrNull())
+    val goal = known(d.fields, K.MY_OBJECTIVE)?.toIntOrNull()
+    val rank = info?.rank
     Box(
         Modifier.fillMaxWidth().padding(vertical = 6.dp).clip(RoundedCornerShape(22.dp))
             .background(Brush.linearGradient(listOf(Color(0xFF3A2A06), Color(0xFF1A1F33), Color(0xFF0E2A5A))))
@@ -851,22 +856,56 @@ private fun SeasonEndCard(info: SeasonCard.Info?) {
     ) {
         Column(Modifier.fillMaxWidth()) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Medal(info?.rank, 76.dp)
+                Medal(rank, 76.dp)
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
                     Text("🏁 COMPETIÇÃO ENCERRADA", fontSize = 11.sp, color = C.GOLD, fontWeight = FontWeight.Bold)
-                    Text(
-                        if (info?.rank != null) "Terminou em ${info.rank}º lugar" else "Aguardando a próxima",
-                        fontSize = 20.sp, fontWeight = FontWeight.ExtraBold
-                    )
+                    Text(if (rank != null) "Terminou em ${rank}º lugar" else "Aguardando a próxima", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold)
                     if (info?.champion != null) Text("🏆 Campeão: ${info.champion}", fontSize = 12.sp, color = Color(0xCCFFFFFF), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
-            if (info != null && (info.points != null || info.goals != null || info.value != null)) {
+            // campanha
+            if (rec != null || info?.points != null) {
                 Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (info.points != null) StatTile("⭐", info.points.toString(), "pontos", C.GOLD, Modifier.weight(1f))
-                    if (info.goals != null) StatTile("⚽", info.goals, "gols", C.OK, Modifier.weight(1f))
-                    if (info.value != null) StatTile("💰", info.value, if (info.valueRank != null) "valor • ${info.valueRank}º" else "valor", C.PRIMARY, Modifier.weight(1f))
+                    if (rec != null) {
+                        Column(
+                            Modifier.weight(1.3f).clip(RoundedCornerShape(14.dp)).background(Color(0x22FFFFFF)).padding(vertical = 8.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text("CAMPANHA", fontSize = 9.sp, color = C.MUTED, fontWeight = FontWeight.Bold)
+                            Row(Modifier.padding(top = 4.dp)) {
+                                CountPill("${rec.v}V", C.WIN)
+                                CountPill("${rec.e}E", C.DRAW)
+                                CountPill("${rec.d}D", C.LOSS)
+                            }
+                            Text("${rec.games} jogos", fontSize = 10.sp, color = C.MUTED, modifier = Modifier.padding(top = 3.dp))
+                        }
+                    }
+                    val pts = info?.points ?: rec?.let { it.v * 3 + it.e }
+                    if (pts != null) {
+                        StatTile("⭐", if (rec != null) "$pts/${rec.maxPoints}" else "$pts", "pontos feitos", C.GOLD, Modifier.weight(1f))
+                    }
+                    val gf = rec?.gf
+                    val ga = rec?.ga
+                    if (gf != null && ga != null) StatTile("⚽", "$gf×$ga", "gols pró×contra", if (gf >= ga) C.OK else C.LOSS, Modifier.weight(1f))
+                    else if (info?.goals != null) StatTile("⚽", info.goals, "gols", C.OK, Modifier.weight(1f))
+                }
+            }
+            // meta e valor, em frases curtas
+            if (goal != null && rank != null) {
+                val ok = rank <= goal
+                Text(
+                    if (ok) "🎯 Meta top $goal: cumprida ✔" else "🎯 Meta top $goal: ficou ${rank - goal} posição(ões) abaixo",
+                    fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = if (ok) C.OK else C.WARN, modifier = Modifier.padding(top = 10.dp)
+                )
+            }
+            if (info?.value != null) {
+                Text(
+                    "💰 Elenco vale ${info.value}" + (if (info.valueRank != null) " — ${info.valueRank}º mais valioso da liga" else ""),
+                    fontSize = 12.sp, color = Color(0xCCFFFFFF), modifier = Modifier.padding(top = 4.dp)
+                )
+                if (info.valueRank != null && rank != null && rank > info.valueRank + 1) {
+                    Text("Ficou abaixo do que o elenco vale: dá para render mais com tática e treino.", fontSize = 11.sp, color = C.MUTED)
                 }
             }
             val said = info?.board
@@ -885,7 +924,10 @@ private fun SeasonEndCard(info: SeasonCard.Info?) {
                 }
                 if (info.fired) Box(Modifier.padding(top = 8.dp)) { Pill("⚠ risco de demissão: o slot pode mudar de clube", false) }
             }
-            Text("Sem próximo jogo: nada de tática até a nova competição.", fontSize = 11.sp, color = Color(0xB3FFFFFF), modifier = Modifier.padding(top = 8.dp))
+            Text(
+                "Sem próximo jogo. Até a nova competição: use o Diretor deste slot para treinos, vendas e compras.",
+                fontSize = 11.sp, color = Color(0xB3FFFFFF), modifier = Modifier.padding(top = 8.dp)
+            )
         }
     }
 }
@@ -1639,26 +1681,84 @@ private fun Thumb(path: String?) {
 @Composable
 private fun SavedScreens(tick: Int) {
     val ctx = LocalContext.current
-    val list = rememberLoaded(emptyList<ScreenEntity>(), tick, UiBus.version) { Repo(ctx).dao.savedScreens(12) }
-    Title("Telas guardadas para a IA ler")
-    Hint("Telas que o app não leu sozinho (por exemplo, o relatório do rival) ficam aqui. Toque em “Ler com IA” para extrair os dados.")
-    if (list.isEmpty()) Text("🗂 Nenhuma tela guardada", color = C.MUTED, modifier = Modifier.padding(top = 8.dp))
-    for (s in list) {
+    val ai = rememberLoaded(emptyList<ScreenEntity>(), tick, UiBus.version) { Repo(ctx).dao.aiScreens(30) }
+    val archive = rememberLoaded(emptyList<ScreenEntity>(), tick, UiBus.version) { Repo(ctx).dao.savedScreens(12) }
+    val hasKey = Settings.get(ctx, Settings.GEMINI_KEY, "").isNotBlank() || Settings.get(ctx, Settings.COMPAT_KEY, "").isNotBlank() ||
+        Settings.get(ctx, Settings.CLAUDE_KEY, "").isNotBlank()
+    val waiting = ai.count { it.aiState == "pending" }
+    val done = ai.count { it.aiState == "done" }
+    val failed = ai.count { it.aiState == "failed" || it.aiState == "skipped" }
+    Title("🤖 Leitura com IA")
+    if (!hasKey) AlertCard("⚠ Sem chave de IA: coloque a chave do Gemini (grátis) em Ajustes para a IA ler essas telas.")
+    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        StatTile("⏳", waiting.toString(), "na fila", C.GOLD, Modifier.weight(1f))
+        StatTile("✅", done.toString(), "lidas", C.OK, Modifier.weight(1f))
+        StatTile("⚠", failed.toString(), "com erro", C.LOSS, Modifier.weight(1f))
+    }
+    Button(
+        onClick = {
+            if (!ProcessState.running) {
+                val app = ctx.applicationContext
+                AppScope.scope.launch(Dispatchers.IO) {
+                    try {
+                        // as que deram erro voltam para a fila
+                        val dao = Repo(app).dao
+                        for (s in dao.aiScreens(30)) if (s.aiState == "failed" || s.aiState == "skipped") dao.updateScreenAi(s.id, "pending", s.extracted, s.note)
+                        Processor.run(app, "manual")
+                    } catch (e: Exception) {
+                        ProcessState.finish("Erro: " + (e.message ?: "?"))
+                    }
+                    withContext(Dispatchers.Main) { UiBus.version++ }
+                }
+            }
+        },
+        enabled = !ProcessState.running && hasKey && (waiting + failed) > 0,
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+    ) { Text("🤖 Ler com IA agora (${waiting + failed})") }
+    Hint(
+        "Telas que a leitura automática não resolveu sozinha (relatório do rival, pré-jogo incompleto, plantel difícil) vão para a fila. " +
+            "Ao encerrar a captura a IA lê até 8 de cada vez; sem cota hoje, elas esperam e são lidas depois. Tela sem slot espera a central dos 4 times."
+    )
+    if (ai.isEmpty()) Text("Nenhuma tela na fila da IA.", color = C.MUTED, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
+    for (s in ai.take(12)) {
+        val (icon, label, col) = when (s.aiState) {
+            "done" -> Triple("✅", if (s.extracted > 0) "lida pela IA" else "lida (sem dado novo)", C.OK)
+            "pending" -> Triple("⏳", if (s.slotId == 0) "espera o slot" else "na fila", C.GOLD)
+            "skipped" -> Triple("⏭", "não lida (sem chave)", C.WARN)
+            else -> Triple("⚠", "erro na IA", C.LOSS)
+        }
         Panel {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Thumb(s.imagePath)
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
                     Text(typeLabel(s.type) + " • " + (if (s.slotId > 0) "S${s.slotId}" else "sem slot"), fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                    Text(fmtTime(s.at) + " • " + s.aiState, fontSize = 11.sp, color = C.MUTED)
-                    if (s.note.isNotBlank()) Text(s.note, fontSize = 11.sp, color = C.MUTED, maxLines = 3)
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+                        Box(Modifier.clip(RoundedCornerShape(50)).background(col.copy(alpha = 0.2f)).padding(horizontal = 8.dp, vertical = 2.dp)) {
+                            Text("$icon $label", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = col)
+                        }
+                        Text("  " + fmtTime(s.at), fontSize = 11.sp, color = C.MUTED)
+                    }
+                    if (s.note.isNotBlank() && s.aiState != "pending") Text(s.note, fontSize = 11.sp, color = C.MUTED, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
                 }
             }
-            OutlinedButton(
-                onClick = { startReadOne(ctx, s.id) },
-                enabled = !ProcessState.running && s.slotId > 0,
-                modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
-            ) { Text(if (s.slotId > 0) "Ler com IA" else "Sem slot — não dá para aplicar") }
+            if (s.slotId > 0 && s.aiState != "pending") {
+                TextButton(onClick = { startReadOne(ctx, s.id) }, enabled = !ProcessState.running && hasKey) { Text("🔁 Ler de novo com IA", fontSize = 12.sp) }
+            }
+        }
+    }
+    Fold("🗂", "Telas guardadas (diagnóstico)", archive.size.toString()) {
+        Text("Imagens guardadas para conferir a leitura e ir no diagnóstico. A IA lê sozinha as que precisam (acima).", fontSize = 11.sp, color = C.MUTED)
+        for (s in archive) {
+            Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Thumb(s.imagePath)
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(typeLabel(s.type) + " • " + (if (s.slotId > 0) "S${s.slotId}" else "sem slot"), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text(fmtTime(s.at), fontSize = 11.sp, color = C.MUTED)
+                }
+                if (s.slotId > 0) TextButton(onClick = { startReadOne(ctx, s.id) }, enabled = !ProcessState.running && hasKey) { Text("IA", fontSize = 12.sp) }
+            }
         }
     }
 }
@@ -1691,7 +1791,7 @@ private fun SessionsTab() {
                 }
             },
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
-        ) { Text("Reprocessar quadros sem slot e fila de IA") }
+        ) { Text("Reprocessar telas sem slot") }
         OutlinedButton(
             onClick = {
                 if (!ProcessState.running) {
@@ -1767,7 +1867,9 @@ data class DirSlot(
     val sellSlots: Int,
     val alerts: List<String> = emptyList(),
     val stadium: String? = null,
-    val goal: String? = null
+    val goal: String? = null,
+    /** A primeira coisa a fazer neste slot para o time evoluir. */
+    val next: String? = null
 )
 
 private suspend fun loadDirector(ctx: Context): List<DirSlot> {
@@ -1807,6 +1909,22 @@ private suspend fun loadDirector(ctx: Context): List<DirSlot> {
         } else null
         if (gp != null && np != null && np > gp) alerts.add("🎯 S${s.slot}: fora da meta da temporada (top $gp, hoje ${np}º).")
         val top = plan?.radar?.maxByOrNull { it.gain }
+        val seats = TrainBoard.seats(
+            repo.dao.plan(s.slot, "trainscreen")?.json?.let { runCatching { JSONObject(it) }.getOrNull() },
+            repo.playersOf(s.slot), System.currentTimeMillis()
+        )
+        val freeSeat = seats.firstOrNull { it.state == "empty" || it.state == "done" }
+        val next = when {
+            s.needsResult -> "registrar o resultado do último jogo"
+            !s.ended && !s.tacticReady && s.nextAt != null -> "gerar a tática do próximo jogo"
+            freeSeat != null -> (if (freeSeat.state == "done") "pegar o treino concluído e " else "") +
+                "ocupar o treinador " + (if (freeSeat.role == "UNI") "universal" else freeSeat.role) +
+                (plan?.train?.firstOrNull { (TRAINER_ROLE[it.trainer] ?: "UNI") == freeSeat.role }?.let { " com ${it.name}" } ?: "")
+            plan != null && plan.sell.isNotEmpty() -> "vender ${plan.sell.first().name} (${plan.sell.size} venda(s) sugerida(s))"
+            plan != null && plan.buy.isNotEmpty() -> "comprar ${plan.buy.first().name}"
+            seats.any { it.state == "unknown" } -> "abrir a tela de Treinamento no jogo"
+            else -> null
+        }
         out.add(
             DirSlot(
                 s = s,
@@ -1819,7 +1937,8 @@ private suspend fun loadDirector(ctx: Context): List<DirSlot> {
                 sellSlots = MarketPlanner.sellSlotsLeft(f[K.SELLING]?.value),
                 alerts = alerts,
                 stadium = stadiumLine,
-                goal = goalLine
+                goal = goalLine,
+                next = next
             )
         )
     }
@@ -1878,6 +1997,20 @@ private fun DirectorTab(onOpen: (Int, Int) -> Unit) {
                 }
                 Spacer(Modifier.height(8.dp))
                 WinCard(d.s.win, compact = true)
+                if (d.next != null) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = 8.dp).clip(RoundedCornerShape(12.dp)).background(C.PRIMARY.copy(alpha = 0.18f))
+                            .clickable { onOpen(d.s.slot, 6) }.padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("👉", fontSize = 18.sp)
+                        Column(Modifier.weight(1f).padding(start = 8.dp)) {
+                            Text("PRÓXIMO PASSO", fontSize = 9.sp, color = C.MUTED, fontWeight = FontWeight.Bold)
+                            Text(d.next.replaceFirstChar { it.uppercase() }, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Text("›", fontSize = 20.sp, color = C.MUTED)
+                    }
+                }
                 Text("⚽ ${d.forecast}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 6.dp))
                 Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     StatTile("💰", d.cash, "caixa", C.OK, Modifier.weight(1f))
@@ -1955,7 +2088,7 @@ private fun SlotSummaryTab(slot: Int, d: SlotData) {
     val c = d.completeness
     val ended = Fixtures.seasonEnded(d.fields, d.matches, System.currentTimeMillis())
     if (ended) {
-        SeasonEndCard(SeasonCard.from(d.season, d.board, d.fields))
+        SeasonEndCard(d)
         if (d.board.size > 1) Fold("💬", "Mensagens da direção", d.board.size.toString()) { BoardLines(d.board) }
     } else {
         MatchupHero(slot, d)
@@ -1968,10 +2101,10 @@ private fun SlotSummaryTab(slot: Int, d: SlotData) {
     val cash = known(d.fields, K.CASH)
     // no fim da competição a posição e os pontos já estão no cartão de cima
     val showPos = !ended && (nowPos != null || pts != null)
-    if (showPos || goalPos != null || cash != null) Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    if (showPos || (goalPos != null && !ended) || cash != null) Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         if (showPos) StatTile("📈", nowPos?.let { "${it}º" } ?: "?", "na liga", C.PRIMARY, Modifier.weight(1f))
         if (showPos) StatTile("⭐", pts ?: "?", "pontos", C.GOLD, Modifier.weight(1f))
-        if (goalPos != null) StatTile(
+        if (goalPos != null && !ended) StatTile(
             "🎯", "top $goalPos",
             if (nowPos != null) (if (nowPos <= goalPos) "meta ✔" else "fora da meta") else "meta",
             if (nowPos != null && nowPos > goalPos) C.LOSS else C.OK, Modifier.weight(1f)
@@ -2060,6 +2193,39 @@ private fun ForceBox(label: String, value: String, color: Color) {
 @Composable
 private fun SlotPregame(slot: Int, d: SlotData) {
     val ctx = LocalContext.current
+    if (Fixtures.seasonEnded(d.fields, d.matches, System.currentTimeMillis())) {
+        // sem próximo jogo: nada de rival, árbitro ou relatório (eram do último jogo)
+        Panel {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("🏁", fontSize = 30.sp)
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Sem próximo jogo", fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
+                    Text("A competição acabou. O pré-jogo volta quando a próxima começar.", fontSize = 12.sp, color = C.MUTED)
+                }
+            }
+        }
+        Panel {
+            Text("💪 Força do seu time hoje", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                for ((lab, k) in listOf("Geral" to K.MY_STRENGTH, "GOL" to K.MY_GOL, "DEF" to K.MY_DEF, "MEI" to K.MY_MID, "ATA" to K.MY_ATK)) {
+                    Column(
+                        Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(C.SURFACE2).padding(vertical = 8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(known(d.fields, k) ?: "?", fontWeight = FontWeight.ExtraBold, fontSize = 17.sp)
+                        Text(lab, fontSize = 10.sp, color = C.MUTED)
+                    }
+                }
+            }
+            val weakest = listOf("GOL" to K.MY_GOL, "DEF" to K.MY_DEF, "MEI" to K.MY_MID, "ATA" to K.MY_ATK)
+                .mapNotNull { (l, k) -> known(d.fields, k)?.toIntOrNull()?.let { l to it } }.minByOrNull { it.second }
+            if (weakest != null) {
+                Text("Setor mais fraco: ${weakest.first} (${weakest.second}). Reforce antes da próxima competição: veja o Diretor.", fontSize = 12.sp, color = C.WARN, modifier = Modifier.padding(top = 8.dp))
+            }
+        }
+        return
+    }
     val at = fv(d, K.MATCH_AT).toLongOrNull()
     // IA sempre no topo
     OutlinedButton(
@@ -2905,10 +3071,26 @@ private fun GenPanel(kind: String, slot: Int, label: String, onStart: () -> Unit
     }
 }
 
+/** Cor do selo da previsão: verde favorito, azul equilibrado, âmbar azarão (o número fica sempre branco). */
 private fun winColor(win: Int): Color = when {
-    win >= 55 -> C.WIN
-    win >= 40 -> C.GOLD
-    else -> C.LOSS
+    win >= 55 -> C.OK
+    win >= 38 -> C.PRIMARY
+    else -> C.GOLD
+}
+
+private fun winIcon(win: Int): String = when {
+    win >= 55 -> "💪"
+    win >= 38 -> "⚖"
+    else -> "🛡"
+}
+
+/** Selo com o veredito da previsão. */
+@Composable
+private fun VerdictChip(p: WinModel.Prob, big: Boolean = false) {
+    val c = winColor(p.win)
+    Box(Modifier.clip(RoundedCornerShape(50)).background(c.copy(alpha = 0.2f)).border(1.dp, c.copy(alpha = 0.6f), RoundedCornerShape(50)).padding(horizontal = 10.dp, vertical = if (big) 4.dp else 2.dp)) {
+        Text(winIcon(p.win) + " " + p.verdict, fontSize = if (big) 13.sp else 10.sp, fontWeight = FontWeight.Bold, color = Color.White, maxLines = 1)
+    }
 }
 
 /** Barra V/E/D em três cores com o rótulo dentro de cada parte (quando cabe). */
@@ -2933,11 +3115,11 @@ private fun WinCard(p: WinModel.Prob?, compact: Boolean = false) {
         }
         return
     }
-    val wc = winColor(p.win)
     if (compact) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("${p.win}%", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = wc)
-            Text(" de vencer • ${p.verdict}", fontSize = 12.sp, color = Color(0xCCFFFFFF), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Text("${p.win}%", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
+            Text(" de vencer ", fontSize = 12.sp, color = Color(0xCCFFFFFF), maxLines = 1)
+            Box(Modifier.weight(1f)) { VerdictChip(p) }
             Text("${p.likely.first}x${p.likely.second}", fontSize = 12.sp, color = C.MUTED, fontWeight = FontWeight.Bold)
         }
         Spacer(Modifier.height(4.dp))
@@ -2946,11 +3128,11 @@ private fun WinCard(p: WinModel.Prob?, compact: Boolean = false) {
     }
     Text("📈 PREVISÃO DO JOGO", fontSize = 11.sp, color = Color(0xB3FFFFFF), fontWeight = FontWeight.Bold)
     Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text("${p.win}%", fontSize = 40.sp, fontWeight = FontWeight.ExtraBold, color = wc)
+        Text("${p.win}%", fontSize = 40.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
             Text("chance de vencer", fontSize = 12.sp, color = Color(0xCCFFFFFF))
-            Text(p.verdict, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = wc)
+            Box(Modifier.padding(top = 3.dp)) { VerdictChip(p, big = true) }
         }
         Column(horizontalAlignment = Alignment.End) {
             Text("placar provável", fontSize = 10.sp, color = Color(0xB3FFFFFF))
@@ -3029,7 +3211,7 @@ private fun LegendDot(color: Color, label: String) {
 private fun SlotTactic(slot: Int, d: SlotData) {
     val ctx = LocalContext.current
     if (Fixtures.seasonEnded(d.fields, d.matches, System.currentTimeMillis())) {
-        SeasonEndCard(SeasonCard.from(d.season, d.board, d.fields))
+        SeasonEndCard(d)
         Hint(Director.ENDED_MSG)
         return
     }
@@ -3257,76 +3439,183 @@ private fun SlotTactic(slot: Int, d: SlotData) {
     }
 }
 
+/** Titulares por setor (para achar o titular mais fraco de cada um). */
+private val CORE_SLOTS = mapOf("GOL" to 1, "DEF" to 4, "MEI" to 4, "ATA" to 3)
+private val TRAINER_ROLE = mapOf("avançados" to "ATA", "médios" to "MEI", "defesas" to "DEF", "guarda-redes" to "GOL", "universal" to "UNI")
+
+private fun fmtM(m: Double?): String = if (m == null) "?" else if (m >= 1.0) "%.1fM".format(m).replace('.', ',') else "%.0fK".format(m * 1000)
+
+/** Número grande de passo (1, 2, 3…) com título. */
+@Composable
+private fun StepHeader(n: Int, icon: String, title: String, badge: String? = null) {
+    Row(Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(28.dp).clip(RoundedCornerShape(50)).background(C.PRIMARY), contentAlignment = Alignment.Center) {
+            Text("$n", fontWeight = FontWeight.ExtraBold, color = Color.White, fontSize = 14.sp)
+        }
+        Text("  $icon $title", fontWeight = FontWeight.ExtraBold, fontSize = 16.sp, modifier = Modifier.weight(1f))
+        if (badge != null) Pill(badge)
+    }
+}
+
+/**
+ * Diretor do slot: um plano para o time evoluir rápido, em passos (treinadores, vendas, compra), começando pelo setor
+ * mais fraco. Em batalha (poucas rodadas) a prioridade é força já.
+ */
 @Composable
 private fun SlotDirector(slot: Int, d: SlotData) {
     val ctx = LocalContext.current
     val plan = d.marketPlan
     if (plan == null) {
-        EmptyState("👕", "Leia o seu elenco primeiro", "No jogo: Plantel do SEU time, role a lista até o fim. Aí o diretor monta vendas, compras e treino.")
+        EmptyState("👕", "Leia o seu elenco primeiro", "No jogo: Plantel do SEU time, role a lista até o fim. Aí o diretor monta treinos, vendas e compras.")
         return
     }
-    // IA sempre no topo
-    GenPanel("market_ai", slot, "🤖 Pedir comentário da IA (opcional)") { startGeneration(ctx, "market_ai", slot) }
-    if (d.marketNote != null) {
-        Panel {
-            Text("🤖 Comentário da IA", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-            Text(d.marketNote, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
-        }
+    val mine = d.players.filter { it.owner == "MY" && it.strength != null }
+    val battle = (known(d.fields, K.COMP_TYPE) ?: "").contains("Batalha", true) || (known(d.fields, K.COMPETITION) ?: "").contains("Batalha", true)
+    // força dos setores: a lida no pré-jogo/plantel ou a média dos titulares
+    val sectors = listOf("GOL" to K.MY_GOL, "DEF" to K.MY_DEF, "MEI" to K.MY_MID, "ATA" to K.MY_ATK).map { (c, k) ->
+        val starters = mine.filter { it.cat == c }.sortedByDescending { it.strength }.take(CORE_SLOTS[c] ?: 3)
+        val v = known(d.fields, k)?.toIntOrNull() ?: starters.mapNotNull { it.strength }.takeIf { it.isNotEmpty() }?.average()?.toInt()
+        Triple(c, v, starters.lastOrNull())
     }
-    Panel {
-        Text("Resumo do diretor", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-        Text(plan.summary, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
-        Hint("Preços de venda são estimados pelo valor do jogador; confirme no jogo.", "preços")
-    }
-    if (plan.sell.isNotEmpty()) {
-        Title("🔴 Vender")
-        Panel {
-            for (s in plan.sell) {
-                Text("${s.name}  •  ${s.cat} ${s.strength ?: "?"}  •  ≈ ${s.valueM?.let { "%.1fM".format(it).replace('.', ',') } ?: NI}", fontWeight = FontWeight.SemiBold)
-                Text(s.reason, fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(bottom = 8.dp))
+    val weakest = sectors.filter { it.second != null }.minByOrNull { it.second!! }
+
+    // ---- onde o time está
+    Box(
+        Modifier.fillMaxWidth().padding(vertical = 6.dp).clip(RoundedCornerShape(22.dp))
+            .background(Brush.linearGradient(listOf(Color(0xFF0E2A5A), Color(0xFF16213D))))
+            .border(1.dp, Color(0x22FFFFFF), RoundedCornerShape(22.dp)).padding(14.dp)
+    ) {
+        Column(Modifier.fillMaxWidth()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("🚀 Plano para evoluir o time", fontWeight = FontWeight.ExtraBold, fontSize = 17.sp, modifier = Modifier.weight(1f))
+                if (battle) Pill("⚔ Batalha", true)
             }
-        }
-    }
-    if (plan.buy.isNotEmpty()) {
-        Title("🟢 Comprar")
-        Panel {
-            for (b in plan.buy) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("${b.name}  •  ${b.cat} ${b.strength}", fontWeight = FontWeight.SemiBold)
-                    CountPill("+${b.gain}", C.WIN)
+            if (battle) {
+                Text(
+                    "Batalha tem poucas rodadas: vale força JÁ. Treine quem joga, venda quem não entra e compre jogador pronto no setor mais fraco.",
+                    fontSize = 12.sp, color = Color(0xCCFFFFFF), modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+            val lo = (sectors.mapNotNull { it.second }.minOrNull() ?: 50) - 8
+            val hi = (sectors.mapNotNull { it.second }.maxOrNull() ?: 90) + 4
+            for ((c, v, _) in sectors) {
+                val isWeak = weakest?.first == c
+                Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.width(44.dp).clip(RoundedCornerShape(8.dp)).background(catColor(c).copy(alpha = 0.3f)).padding(vertical = 2.dp), contentAlignment = Alignment.Center) {
+                        Text(c, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Box(Modifier.weight(1f).height(12.dp).clip(RoundedCornerShape(50)).background(C.SURFACE2)) {
+                        if (v != null) Box(
+                            Modifier.fillMaxWidth(((v - lo).toFloat() / (hi - lo).coerceAtLeast(1)).coerceIn(0.05f, 1f)).height(12.dp)
+                                .clip(RoundedCornerShape(50)).background(if (isWeak) C.WARN else catColor(c))
+                        )
+                    }
+                    Text("  " + (v?.toString() ?: "?"), fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, modifier = Modifier.width(40.dp))
                 }
-                Text("%.1fM".format(b.priceM).replace('.', ',') + " — " + b.reason, fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(bottom = 8.dp))
+            }
+            if (weakest != null) {
+                Text("Foco: ${weakest.first} é o setor mais fraco (${weakest.second}).", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = C.WARN, modifier = Modifier.padding(top = 8.dp))
             }
         }
     }
-    if (plan.train.isNotEmpty()) {
-        Title("🔵 Treino (${plan.trainingActive} de 5 ocupados)")
-        Panel {
-            for (t in plan.train) {
-                Text("${t.name}  →  " + (if (t.trainer == "universal") "treinador universal" else "treinador de ${t.trainer}"), fontWeight = FontWeight.SemiBold)
-                Text(t.reason, fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(bottom = 8.dp))
+
+    // ---- 1. treinadores
+    val seats = TrainBoard.seats(d.trainScreen, d.players, System.currentTimeMillis())
+    val busy = seats.count { it.state == "active" && it.fresh }
+    StepHeader(1, "🏋", "Treinadores", "$busy de 5")
+    TrainingBoardView(seats)
+    val freeRoles = seats.filter { it.state == "empty" || it.state == "done" || it.state == "unknown" }.map { it.role }
+    val sugg = plan.train.filter { (TRAINER_ROLE[it.trainer] ?: "UNI") in freeRoles }
+    if (sugg.isNotEmpty()) {
+        for (t in sugg) {
+            val role = TRAINER_ROLE[t.trainer] ?: "UNI"
+            AlertCard("🔵 Treinador ${if (role == "UNI") "universal" else role}: coloque ${t.name} — ${t.reason}")
+        }
+    } else if (busy >= 5) {
+        Text("✔ Os 5 treinadores estão trabalhando.", fontSize = 12.sp, color = C.OK, modifier = Modifier.padding(top = 4.dp))
+    }
+    if (seats.any { it.state == "unknown" }) Text("? = abra a tela de Treinamento no jogo para eu ver quem está em cada treinador.", fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
+
+    // ---- 2. vendas
+    val proceeds = plan.sell.sumOf { it.valueM ?: 0.0 }
+    StepHeader(2, "💸", "Vender", if (plan.sell.isEmpty()) "nada" else "≈ ${fmtM(proceeds)}")
+    if (plan.sell.isEmpty()) Text("Ninguém sobrando no elenco agora.", fontSize = 12.sp, color = C.MUTED)
+    for (sItem in plan.sell) {
+        Row(
+            Modifier.fillMaxWidth().padding(vertical = 3.dp).clip(RoundedCornerShape(12.dp)).background(C.SURFACE).padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(Modifier.size(38.dp).clip(RoundedCornerShape(10.dp)).background(catColor(sItem.cat).copy(alpha = 0.3f)), contentAlignment = Alignment.Center) {
+                Text(sItem.strength?.toString() ?: "?", fontWeight = FontWeight.ExtraBold)
             }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(sItem.name, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Text(sItem.reason, fontSize = 11.sp, color = C.MUTED, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+            Text("≈ " + fmtM(sItem.valueM), fontWeight = FontWeight.Bold, fontSize = 13.sp, color = C.OK)
+        }
+    }
+
+    // ---- 3. compra
+    StepHeader(3, "🛒", "Reforçar", "verba ${fmtM((plan.cashM ?: 0.0) + proceeds)}")
+    if (plan.buy.isNotEmpty()) {
+        for (b in plan.buy) {
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 3.dp).clip(RoundedCornerShape(12.dp)).background(C.SURFACE).padding(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(Modifier.size(38.dp).clip(RoundedCornerShape(10.dp)).background(catColor(b.cat).copy(alpha = 0.3f)), contentAlignment = Alignment.Center) {
+                    Text(b.strength.toString(), fontWeight = FontWeight.ExtraBold)
+                }
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(b.name + "  +" + b.gain, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Text(b.reason, fontSize = 11.sp, color = C.MUTED, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+                Text(fmtM(b.priceM), fontWeight = FontWeight.Bold, fontSize = 13.sp, color = C.GOLD)
+            }
+        }
+    } else if (weakest != null) {
+        val ref = weakest.third?.strength
+        Panel {
+            Text(
+                "Procure na Lista de transferências: ${weakest.first} com força ${if (ref != null) "${ref + 3} ou mais" else "acima dos seus"}" +
+                    " até ${fmtM((plan.cashM ?: 0.0) + proceeds)}" + (if (battle) ", pronto para jogar (25–30 anos)." else ", de preferência até 26 anos (ainda cresce)."),
+                fontSize = 13.sp, fontWeight = FontWeight.SemiBold
+            )
+            if (ref != null && weakest.third != null) Text("Hoje o titular mais fraco de ${weakest.first} é ${weakest.third!!.name} (${ref}).", fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
+            Text("Role a lista no jogo com a captura ligada: eu leio os jogadores e digo qual comprar.", fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
         }
     }
     if (plan.radar.isNotEmpty()) {
-        Title("📡 Radar de mercado")
-        Panel {
-            Text("Melhor alvo por posição no que já foi lido na lista de transferências:", fontSize = 12.sp, color = C.MUTED)
+        Fold("📡", "Melhores alvos já lidos no mercado", plan.radar.size.toString()) {
             for (r in plan.radar) {
                 Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("${r.cat}: ${r.name} (${r.strength})", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                        Text("%.1fM".format(r.priceM).replace('.', ',') + " • ganho +${r.gain} no setor", fontSize = 11.sp, color = C.MUTED)
+                        Text(fmtM(r.priceM) + " • +${r.gain} no setor", fontSize = 11.sp, color = C.MUTED)
                     }
-                    Pill(if (r.affordable) "cabe no caixa" else "falta caixa", r.affordable)
+                    Pill(if (r.affordable) "cabe na verba" else "falta verba", r.affordable)
                 }
             }
         }
     }
-    val extra = plan.steps.filter { !it.startsWith("Vender") && !it.startsWith("Comprar") && !it.startsWith("Treinar") }
-    if (extra.isNotEmpty()) {
-        Panel { for (e in extra) Text("• $e", fontSize = 12.sp, modifier = Modifier.padding(vertical = 2.dp)) }
+    val stadium = Director.stadiumPlan(d.fields)
+    if (stadium != null) {
+        StepHeader(4, "🏟", "Estádio")
+        Text(stadium, fontSize = 12.sp)
     }
+    Spacer(Modifier.height(10.dp))
+    GenPanel("market_ai", slot, "🤖 Pedir a opinião da IA sobre este plano") { startGeneration(ctx, "market_ai", slot) }
+    if (d.marketNote != null) {
+        Panel {
+            Text("🤖 Opinião da IA", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Text(d.marketNote, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
+        }
+    }
+    Hint("Preços de venda são estimados pelo valor do jogador; confirme no jogo. Metas do elenco: 2 GOL, 6 DEF, 6 MEI e 4 ATA.", "como calculo")
 }
 
 /** Um jogo que já aconteceu (ou já começou): junta tática usada, card do calendário e análise lida do jogo. */
@@ -3586,6 +3875,45 @@ private fun BoardLines(items: List<String>) {
     }
 }
 
+/** Um jogo analisado: placar, tática usada, o que deu errado/certo e os números (abre ao tocar). */
+@Composable
+private fun GameCard(g: Coach.Game, rv: Coach.Review?) {
+    var open by remember { mutableStateOf(false) }
+    val col = when (g.result) { "V" -> C.WIN; "E" -> C.DRAW; "D" -> C.LOSS; else -> C.SURFACE2 }
+    Column(
+        Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(RoundedCornerShape(16.dp)).background(C.SURFACE)
+            .drawBehind { drawRect(col, size = Size(5.dp.toPx(), size.height)) }.clickable { open = !open }
+            .padding(start = 14.dp, end = 12.dp, top = 10.dp, bottom = 10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            ResultBadge(g.result)
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "J${g.round} • " + (if (g.gf != null && g.ga != null) "${g.gf}-${g.ga} " else "") + "vs ${g.rival}",
+                    fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    if (g.formation != null) "Sua tática: ${g.formation}" + (g.style?.let { " • $it" } ?: "") else "Tática não registrada no app",
+                    fontSize = 11.sp, color = if (g.formation != null) C.GOLD else C.MUTED
+                )
+            }
+            Text(if (open) "▲" else "▼", color = C.MUTED, fontSize = 12.sp)
+        }
+        if (rv != null) {
+            for (w in rv.wrong.take(if (open) 9 else 2)) Text("✘ $w", fontSize = 12.sp, color = C.LOSS, modifier = Modifier.padding(top = 3.dp))
+            for (r in rv.right.take(if (open) 9 else 1)) Text("✔ $r", fontSize = 12.sp, color = C.OK, modifier = Modifier.padding(top = 3.dp))
+        }
+        if (open) {
+            if (g.poss != null) Duel("POSSE %", g.poss.toString(), (100 - g.poss).toString())
+            if (g.shots != null || g.oppShots != null) Duel("REMATES", g.shots?.toString(), g.oppShots?.toString())
+            val extra = listOfNotNull(g.fouls?.let { "suas faltas $it" }, g.oppFormation?.let { "formação do rival $it" }).joinToString(" • ")
+            if (extra.isNotBlank()) Text(extra, fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
+            g.advice?.takeIf { it.isNotBlank() }?.let { Text("Analista: “$it”", fontSize = 11.sp, color = C.GOLD, modifier = Modifier.padding(top = 4.dp)) }
+        }
+    }
+}
+
 @Composable
 private fun SlotLearning(slot: Int, d: SlotData) {
     data class Row2(
@@ -3608,178 +3936,96 @@ private fun SlotLearning(slot: Int, d: SlotData) {
         }
     }.sortedByDescending { it.round }
     val hist = rows.map { HistRow(it.formation, it.style, it.result, it.human, it.home) }
-
-    // Treinador: o que vai fazer no próximo jogo, onde errou e o que funcionou em cada jogo.
     val games = Coach.games(
         d.logs.mapNotNull { runCatching { JSONObject(it.json) }.getOrNull() },
         d.reports.mapNotNull { p ->
             runCatching { JSONObject(p.json).also { j -> if (!j.has("round")) p.kind.removePrefix("mr_R").toIntOrNull()?.let { j.put("round", it) } } }.getOrNull()
         }
     )
-    val nextRival = known(d.fields, K.RIVAL_TEAM)
+    val ended = Fixtures.seasonEnded(d.fields, d.matches, System.currentTimeMillis())
+    val nextRival = if (ended) null else known(d.fields, K.RIVAL_TEAM)
     val lessons = Coach.lessons(games, nextRival)
     val logsJ = d.logs.mapNotNull { runCatching { JSONObject(it.json) }.getOrNull() }
     val (hit, graded) = Calib.accuracy(logsJ)
     val calib = Calib.offset(logsJ)
-    if (Fixtures.seasonEnded(d.fields, d.matches, System.currentTimeMillis())) SeasonEndCard(SeasonCard.from(d.season, d.board, d.fields))
+
+    if (ended) SeasonEndCard(d)
     BoardPanel(d.board)
+
+    // ---- 1. o que muda no próximo jogo
     Panel {
-        Text("🧠 Treinador: o que vou fazer no próximo jogo", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+        Text(if (ended) "🧠 Lições para a próxima competição" else "🧠 O que muda no próximo jogo", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 15.sp)
         if (games.isEmpty()) {
             Text("Ainda sem jogos analisados", fontSize = 13.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
             Hint("Depois de cada jogo, abra a análise do jogo no OSM: eu leio posse, remates e faltas e digo onde errou.")
         } else {
-            if (nextRival != null) Text("Próximo: vs $nextRival", fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 2.dp))
-            for (line in lessons.plan) Text("➜ $line", fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
-            Text("Esses ajustes já entram no “Gerar tática”.", fontSize = 10.sp, color = C.MUTED, modifier = Modifier.padding(top = 8.dp))
-        }
-        if (graded > 0) {
-            Text(
-                "🎯 Previsões: acertei o resultado mais provável em $hit de $graded jogo(s) (${hit * 100 / graded}%)." +
-                    (if (calib > 0.01) " O time vem rendendo acima do previsto: já ajustei para cima." else if (calib < -0.01) " O time vem rendendo abaixo do previsto: já ajustei para baixo." else ""),
-                fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 8.dp)
-            )
-        }
-    }
-    val reviews = games.take(5).map { Coach.review(it) }.filter { it.wrong.isNotEmpty() || it.right.isNotEmpty() }
-    if (reviews.isNotEmpty()) {
-        Panel {
-            Text("Onde errou e o que funcionou", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-            for (rv in reviews) {
-                val g = rv.game
-                Column(Modifier.fillMaxWidth().padding(top = 10.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        ResultBadge(g.result)
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            "J${g.round} • " + (if (g.gf != null && g.ga != null) "${g.gf}-${g.ga} " else "") + "vs ${g.rival}" +
-                                (g.formation?.let { " • $it" } ?: "") + (g.style?.let { " • $it" } ?: ""),
-                            fontWeight = FontWeight.Bold, fontSize = 13.sp
-                        )
-                    }
-                    for (w in rv.wrong) Text("✘ $w", fontSize = 12.sp, color = C.LOSS, modifier = Modifier.padding(top = 2.dp))
-                    for (r in rv.right) Text("✔ $r", fontSize = 12.sp, color = C.OK, modifier = Modifier.padding(top = 2.dp))
-                    if (g.formation == null) Text("Tática usada não registrada: gere a tática no app antes do jogo para eu comparar.", fontSize = 11.sp, color = C.MUTED)
-                }
-            }
+            if (nextRival != null) Text("vs $nextRival", fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 2.dp))
+            if (lessons.plan.isEmpty()) Text("Nada a mudar: manter o que vem funcionando.", fontSize = 13.sp, color = C.OK, modifier = Modifier.padding(top = 6.dp))
+            for (line in lessons.plan) AlertCard("🔵 $line")
+            Text("Isso já entra quando você toca em “Gerar tática”.", fontSize = 10.sp, color = C.MUTED, modifier = Modifier.padding(top = 6.dp))
         }
     }
 
-    // Análise dos jogos (tela de resultado do OSM): estatísticas reais de cada partida.
-    if (d.reports.isNotEmpty()) {
+    // ---- 2. como o time vem jogando
+    if (games.isNotEmpty()) {
         Panel {
-            Text("Análise dos jogos (estatísticas lidas)", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-            for (p in d.reports.sortedByDescending { it.at }.take(6)) {
-                val j = try { JSONObject(p.json) } catch (e: Exception) { null } ?: continue
-                val rnd = j.optInt("round", -1).takeIf { it > 0 } ?: p.kind.removePrefix("mr_R").toIntOrNull() ?: continue
-                j.put("round", rnd)
-                // sem placar lido na análise: usa o do calendário; sem nenhum dos dois, não inventa "0-0 vs adversário"
-                if (!j.has("sh") || !j.has("sa")) {
-                    val cm = d.matches.firstOrNull { it.round == rnd && it.scoreMine != null && it.scoreOpp != null } ?: continue
-                    val mh = cm.home ?: j.optBoolean("mineHome", true)
-                    j.put("mineHome", mh).put("sh", if (mh) cm.scoreMine else cm.scoreOpp).put("sa", if (mh) cm.scoreOpp else cm.scoreMine)
-                    Fixtures.opponent(cm)?.let { if (mh) j.put("awayTeam", it) else j.put("homeTeam", it) }
-                }
-                val mineHome = j.optBoolean("mineHome", true)
-                val st = j.optJSONObject("stats")
-                fun fixPct(label: String, v: String): String =
-                    if (label == "posse de bola") Coach.num(v, true)?.let { "$it%" } ?: v else v
-                fun mine(label: String): String = st?.optJSONArray(label)?.optString(if (mineHome) 0 else 1)?.let { fixPct(label, it) } ?: NI
-                fun opp(label: String): String = st?.optJSONArray(label)?.optString(if (mineHome) 1 else 0)?.let { fixPct(label, it) } ?: NI
-                val myGoals = if (mineHome) j.optInt("sh") else j.optInt("sa")
-                val oppGoals = if (mineHome) j.optInt("sa") else j.optInt("sh")
-                val oppName = (if (mineHome) j.optString("awayTeam") else j.optString("homeTeam")).ifBlank {
-                    d.matches.firstOrNull { it.round == rnd }?.let { Fixtures.opponent(it) } ?: "adversário"
-                }
-                val ratings = j.optJSONArray(if (mineHome) "rh" else "ra")
-                var sum = 0
-                var cnt = 0
-                if (ratings != null) {
-                    for (i in 0 until ratings.length()) {
-                        sum += ratings.optJSONArray(i)?.optInt(1) ?: 0
-                        cnt++
-                    }
-                }
-                val res = if (myGoals > oppGoals) "V" else if (myGoals == oppGoals) "E" else "D"
-                Column(Modifier.fillMaxWidth().padding(top = 10.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        ResultBadge(res)
-                        Spacer(Modifier.width(8.dp))
-                        Text("J${j.optInt("round")} • $myGoals-$oppGoals vs $oppName", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    }
-                    for ((lab, sk) in listOf("POSSE %" to "posse de bola", "REMATES" to "remates", "FALTAS" to "faltas", "CANTOS" to "cantos")) {
-                        val a = mine(sk)
-                        val b = opp(sk)
-                        if (a != NI || b != NI) Duel(lab, a.takeIf { it != NI }, b.takeIf { it != NI })
-                    }
-                    val extra = ArrayList<String>()
-                    if (opp("formacao") != NI) extra.add("formação do rival ${opp("formacao")}")
-                    if (j.optString("mom").isNotBlank()) extra.add("homem do jogo ${j.optString("mom")}")
-                    if (cnt > 0) extra.add("nota média do seu time ${"%.1f".format(sum.toDouble() / cnt)}")
-                    if (extra.isNotEmpty()) Text(extra.joinToString(" • "), fontSize = 11.sp, color = C.MUTED)
-                    val adv = j.optString("advice")
-                    if (adv.isNotBlank()) Text("“$adv”", fontSize = 11.sp, color = C.GOLD, modifier = Modifier.padding(top = 2.dp))
-                }
+            Text("📈 Como o time vem jogando", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            val res = games.mapNotNull { it.result }
+            FormGuide(res.take(10).reversed())
+            fun avg(f: (Coach.Game) -> Int?): Int? = games.mapNotNull(f).takeIf { it.isNotEmpty() }?.average()?.toInt()
+            val gf = games.mapNotNull { it.gf }.sum()
+            val ga = games.mapNotNull { it.ga }.sum()
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                StatTile("⚽", "$gf×$ga", "gols pró×contra", if (gf >= ga) C.OK else C.LOSS, Modifier.weight(1f))
+                avg { it.poss }?.let { StatTile("🔄", "$it%", "posse média", if (it >= 50) C.OK else C.WARN, Modifier.weight(1f)) }
+                val sh = avg { it.shots }
+                val osh = avg { it.oppShots }
+                if (sh != null && osh != null) StatTile("🎯", "$sh×$osh", "remates/jogo", if (sh >= osh) C.OK else C.WARN, Modifier.weight(1f))
             }
+            if (graded > 0) {
+                Text(
+                    "🔮 Acertei o resultado mais provável em $hit de $graded jogo(s)." +
+                        (if (calib > 0.01) " O time rende acima do previsto: já ajustei para cima." else if (calib < -0.01) " O time rende abaixo do previsto: já ajustei para baixo." else ""),
+                    fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 8.dp)
+                )
+            }
+        }
+        // ---- 3. jogo a jogo (um cartão por jogo; toque para ver os números)
+        Title("Jogo a jogo")
+        for (g in games.take(8)) GameCard(g, Coach.review(g))
+    }
 
-        }
-    }
-    // Resultados do campeonato (lidos do calendário): é daqui que a IA aprende.
-    val played = d.matches.filter { it.result != null && it.round != null }.sortedBy { it.round }
-    if (played.isNotEmpty()) {
-        val gf = played.fold(0) { acc, m -> acc + (m.scoreMine ?: 0) }
-        val ga = played.fold(0) { acc, m -> acc + (m.scoreOpp ?: 0) }
-        Panel {
-            Text("Resultados lidos do calendário", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-            Row(Modifier.padding(top = 6.dp)) {
-                CountPill("V ${played.count { it.result == "V" }}", C.WIN)
-                CountPill("E ${played.count { it.result == "E" }}", C.DRAW)
-                CountPill("D ${played.count { it.result == "D" }}", C.LOSS)
-                CountPill("gols $gf-$ga", C.SURFACE2)
-            }
-            FormGuide(played.takeLast(10).mapNotNull { it.result })
-        }
-    }
-    Panel {
-        Text("O que o app aprendeu com as suas táticas", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-        if (rows.isEmpty()) {
-            Text("Ainda sem histórico", fontSize = 13.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
-            Hint("Gere a tática antes de cada jogo: quando o resultado aparecer no calendário (ou você informar), ele entra aqui e passa a pesar na escolha da formação e do estilo.")
-        }
-        val groups = listOf(
-            "Por formação" to Learning.stats(hist),
-            "Por estilo de jogo" to Learning.byStyle(hist),
-            "Por contexto" to Learning.byContext(hist)
-        )
-        for ((title, list) in groups) {
-            if (list.isEmpty()) continue
-            Text(title, fontSize = 12.sp, color = C.MUTED, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 10.dp))
-            for (st in list) {
-                Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(st.formation, fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.width(120.dp))
-                    CountPill("${st.v}V", C.WIN)
-                    CountPill("${st.e}E", C.DRAW)
-                    CountPill("${st.d}D", C.LOSS)
-                    Text("${st.games} jogo(s)", fontSize = 11.sp, color = C.MUTED)
+    // ---- 4. o que funciona por formação, estilo e contexto
+    val groups = listOf(
+        "Por formação" to Learning.stats(hist),
+        "Por estilo de jogo" to Learning.byStyle(hist),
+        "Por contexto" to Learning.byContext(hist)
+    ).filter { it.second.isNotEmpty() }
+    if (groups.isNotEmpty()) {
+        Fold("📊", "O que funciona com as suas táticas", rows.count { it.result != null }.toString() + " jogo(s)") {
+            for ((title, list) in groups) {
+                Text(title, fontSize = 12.sp, color = C.MUTED, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 10.dp))
+                for (st in list) {
+                    Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(st.formation, fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.width(120.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        CountPill("${st.v}V", C.WIN)
+                        CountPill("${st.e}E", C.DRAW)
+                        CountPill("${st.d}D", C.LOSS)
+                    }
                 }
             }
         }
     }
-    if (rows.isNotEmpty()) {
-        Panel {
-            Text("Táticas usadas e resultado", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-            for (r in rows.take(12)) {
-                Row(
-                    Modifier.fillMaxWidth().clickable(enabled = r.result == null) { resultFor = r }.padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    ResultBadge(r.result)
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        "J${r.round} • ${r.formation} • ${r.style} vs ${r.rival}" +
-                            (if (r.score.isNotBlank()) " • ${r.score}" else " • toque para informar o resultado"),
-                        fontSize = 12.sp
-                    )
+    // ---- táticas geradas que ainda não têm resultado
+    val noResult = rows.filter { it.result == null && it.score.isBlank() }
+    if (noResult.isNotEmpty()) {
+        Fold("📝", "Táticas sem resultado", noResult.size.toString()) {
+            Text("Toque para informar o placar: assim o app aprende com ele.", fontSize = 11.sp, color = C.MUTED)
+            for (r in noResult.take(8)) {
+                Row(Modifier.fillMaxWidth().clickable { resultFor = r }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    ResultBadge(null)
+                    Text("  J${r.round} • ${r.formation} vs ${r.rival}", fontSize = 12.sp, modifier = Modifier.weight(1f))
+                    Text("＋", color = C.PRIMARY, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -3787,7 +4033,7 @@ private fun SlotLearning(slot: Int, d: SlotData) {
     val rf = resultFor
     if (rf != null) ResultDialog(slot, rf.kind, "J${rf.round} • ${rf.formation} vs ${rf.rival}") { resultFor = null }
     if (d.learning.isNotEmpty()) {
-        Fold("🗂", "Eventos de leitura", d.learning.size.toString()) {
+        Fold("🗂", "Registro do que o app leu", d.learning.size.toString()) {
             for (l in d.learning) {
                 Text("${fmtTime(l.at)} • ${l.kind}: ${l.text}", fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(vertical = 2.dp))
             }
@@ -3866,6 +4112,60 @@ private fun NotificationsPanel() {
     }
 }
 
+/** Regras da comunidade em cartões: situação -> tática, de onde veio e como foi a última pesquisa. */
+@Composable
+private fun CommunityView(v: MetaRefresh.View?) {
+    if (v == null) return
+    val fmt = SimpleDateFormat("dd/MM HH:mm", Locale.getDefault())
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        StatTile("📚", v.rules.size.toString(), "situações", C.PRIMARY, Modifier.weight(1f))
+        StatTile(if (v.active) "✅" else "⏸", if (v.active) "em uso" else "parado", "na tática", if (v.active) C.OK else C.WARN, Modifier.weight(1f))
+        StatTile("🔎", if (v.searched == true) "sim" else if (v.searched == false) "não" else "?", "buscou na web", if (v.searched == true) C.OK else C.WARN, Modifier.weight(1f))
+    }
+    if (v.at != null) Text("Regras de ${fmt.format(Date(v.at))}" + (v.lastAt?.let { " • última pesquisa ${fmt.format(Date(it))}" } ?: ""), fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 6.dp))
+    v.problem?.let { AlertCard("⚠ $it") }
+    if (v.rules.isEmpty()) {
+        Text("Nenhuma regra da comunidade ainda: a tática usa o modelo do app e os seus resultados.", fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 6.dp))
+    }
+    for (r in v.rules) {
+        val (icon, title, col) = when (r.rel) {
+            "U" -> Triple("🛡", "Quando você é MAIS FRACO", C.GOLD)
+            "F" -> Triple("💪", "Quando você é MAIS FORTE", C.OK)
+            else -> Triple("⚖", "Quando o jogo é PARELHO", C.PRIMARY)
+        }
+        Column(
+            Modifier.fillMaxWidth().padding(top = 8.dp).clip(RoundedCornerShape(16.dp)).background(C.SURFACE2)
+                .drawBehind { drawRect(col, size = Size(5.dp.toPx(), size.height)) }.padding(start = 14.dp, end = 12.dp, top = 10.dp, bottom = 10.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(icon, fontSize = 18.sp)
+                Column(Modifier.weight(1f).padding(start = 8.dp)) {
+                    Text(title, fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, color = col)
+                    Text("contra " + r.vs, fontSize = 11.sp, color = C.MUTED)
+                }
+            }
+            Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(r.formation, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
+                Spacer(Modifier.width(10.dp))
+                Box(Modifier.clip(RoundedCornerShape(50)).background(Color(0x33FFC83D)).padding(horizontal = 10.dp, vertical = 3.dp)) {
+                    Text(r.style, color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                }
+            }
+            Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                for ((lab, v2) in listOf("Pressão" to r.pressure, "Estilo" to r.mentality, "Ritmo" to r.tempo)) {
+                    if (v2 == null) continue
+                    Column(Modifier.weight(1f)) {
+                        Text("$lab $v2", fontSize = 10.sp, color = C.MUTED)
+                        LinearProgressIndicator(progress = { v2 / 100f }, modifier = Modifier.fillMaxWidth().height(5.dp).clip(RoundedCornerShape(50)), color = col, trackColor = C.BG)
+                    }
+                }
+            }
+            if (r.roles.isNotBlank()) Text(r.roles, fontSize = 11.sp, color = Color(0xCCFFFFFF), modifier = Modifier.padding(top = 6.dp))
+            Text("Fonte: ${r.source}" + listOfNotNull(r.marking?.let { " • marcação $it" }, r.offside?.let { " • fora-de-jogo $it" }).joinToString(""), fontSize = 10.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
+        }
+    }
+}
+
 @Composable
 private fun SettingsTab() {
     val ctx = LocalContext.current
@@ -3886,29 +4186,24 @@ private fun SettingsTab() {
         val exportScope = rememberCoroutineScope()
         var exportMsg by remember { mutableStateOf("") }
         var metaMsg by remember { mutableStateOf("") }
-        Fold("🌐", "Táticas da internet", startOpen = true) {
-            Hint(
-                "A IA pesquisa na internet (fórum do OSM, osmnextlevel, osmcoach, YouTube…) as táticas recomendadas por situação. " +
-                    "É só o ponto de partida: os resultados dos seus 4 slots ajustam por cima. Atualiza sozinha uma vez por dia."
-            )
+        Fold("🌐", "Táticas da comunidade (internet)", startOpen = true) {
+            val metaTick = rememberTick(5000L)
+            val mv = rememberLoaded<MetaRefresh.View?>(null, metaTick, metaMsg) { MetaRefresh.view(Repo(ctx)) }
+            CommunityView(mv)
             OutlinedButton(
                 onClick = {
                     metaMsg = "Pesquisando…"
                     exportScope.launch { metaMsg = withContext(Dispatchers.IO) { MetaRefresh.refresh(ctx) } }
                 },
-                modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
             ) { Text("🌐 Atualizar agora pela internet") }
             if (metaMsg.isNotBlank()) Text(metaMsg, fontSize = 12.sp, color = C.WARN)
-            // o que está valendo agora (regras da internet) e como foi a última pesquisa
-            val metaTick = rememberTick(5000L)
-            val metaLines = rememberLoaded(emptyList<String>(), metaTick, metaMsg) { MetaRefresh.status(Repo(ctx)) }
-            for (l in metaLines) {
-                val bad = Txt.norm(l).let { n -> n.contains("falh") || n.contains("erro") || n.contains("nenhum") || n.contains("sem ") }
-                Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.Top) {
-                    Box(Modifier.padding(top = 4.dp).size(8.dp).clip(RoundedCornerShape(50)).background(if (bad) C.WARN else C.OK))
-                    Text("  $l", fontSize = 12.sp, color = if (bad) C.WARN else Color.White)
-                }
-            }
+            Hint(
+                "A IA pesquisa (fórum do OSM, osmnextlevel, osmcoach, YouTube…) qual tática a comunidade usa em cada situação: quando você é mais fraco, " +
+                    "parelho ou mais forte que o rival. O app usa isso como PONTO DE PARTIDA da tática; depois os resultados dos seus 4 slots ajustam por cima. " +
+                    "Regras com mais de 30 dias deixam de valer. Atualiza sozinho uma vez por dia.",
+                "como o app usa"
+            )
         }
         Fold("📦", "Exportar diagnóstico") {
             Hint(

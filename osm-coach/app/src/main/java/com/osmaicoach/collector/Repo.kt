@@ -1434,6 +1434,21 @@ class Repo(private val ctx: Context) {
                 }
                 prefs.edit().putBoolean("train_reset_v1", true).apply()
             }
+            // Árbitro em 5 níveis: o "Médio" antigo juntava amarelo e laranja (a leitura errada que dava Cuidadoso com
+            // árbitro amarelo). Uma vez: apaga o árbitro lido no formato antigo e a tática feita com ele.
+            if (!prefs.getBoolean("referee5_v1", false)) {
+                for (slot in 1..4) {
+                    val ref = dao.fieldsOf(slot).firstOrNull { it.fkey == K.REFEREE } ?: continue
+                    if (Referee.norm(ref.fvalue) == null || ref.fvalue == "Médio") {
+                        dao.deleteField(slot, K.REFEREE)
+                        dao.deletePlan(slot, "tactic")
+                    } else if (ref.fvalue == "Rigoroso" && ref.source != "manual") {
+                        // o vermelho antigo chamava "Rigoroso"; agora vermelho é "Muito rigoroso" (mesmo desarme)
+                        dao.putField(ref.copy(fvalue = "Muito rigoroso"))
+                    }
+                }
+                prefs.edit().putBoolean("referee5_v1", true).apply()
+            }
             dedupeSquads()
             dropStaleTactics()
             canonicalizeOptions()

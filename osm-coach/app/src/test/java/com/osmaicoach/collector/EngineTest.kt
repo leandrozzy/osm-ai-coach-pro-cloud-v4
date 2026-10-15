@@ -242,12 +242,13 @@ class EngineTest {
         assertEquals(1, plan.train.count { it.trainer == "universal" })
     }
 
-    @Test fun foulsHistoryTurnsAggressiveTackleIntoNormal() {
+    @Test fun foulsHistoryWarnsButTheRefereeDecidesTheTackle() {
         val hist = listOf(
             HistRow("4-3-3", "x", "V", fouls = 20), HistRow("4-3-3", "x", "V", fouls = 18), HistRow("4-3-3", "x", "V", fouls = 19)
         )
         val r = TacticEngine.recommend(input(91, 61, "Brando", hist))!!
-        assertEquals("Normal", r.tactic.tackle)
+        // árbitro verde pede Agressivo; as faltas viram aviso
+        assertEquals("Agressivo", r.tactic.tackle)
         assertTrue(r.tactic.notes.any { it.contains("faltas") })
     }
 
@@ -293,17 +294,20 @@ class EngineTest {
     }
 
     @Test fun tackleFollowsTheReferee() {
-        assertEquals("Cuidadoso", Osm.clampTackle("Extremo", "Médio"))
-        assertEquals("Cuidadoso", Osm.clampTackle("Agressivo", "Médio"))
+        assertEquals("Cuidadoso", Osm.clampTackle("Extremo", "Rigoroso"))
+        assertEquals("Cuidadoso", Osm.clampTackle("Agressivo", "Muito rigoroso"))
         assertEquals("Normal", Osm.clampTackle("Extremo", null))
         assertEquals("Agressivo", Osm.clampTackle("Extremo", "Brando"))
         assertEquals("Cuidadoso", Osm.clampTackle("Cuidadoso", "Rigoroso"))
-        assertEquals("Cuidadoso", TacticEngine.recommend(input(91, 61, "Médio"))!!.tactic.tackle)
+        assertEquals("Cuidadoso", TacticEngine.recommend(input(91, 61, "Rigoroso"))!!.tactic.tackle)
         val (t, _) = TacticValidator.validate(
             org.json.JSONObject().put("formation", "4-3-3 A").put("pressure", 60).put("mentality", 70).put("tempo", 60).put("tackle", "Extremo"),
-            "Médio"
+            "Rigoroso"
         )
         assertEquals("Cuidadoso", t!!.tackle)
+        // azul pede Extremo, amarelo Normal
+        assertEquals("Extremo", TacticEngine.recommend(input(91, 61, "Muito brando"))!!.tactic.tackle)
+        assertEquals("Normal", TacticEngine.recommend(input(91, 61, "Normal"))!!.tactic.tackle)
     }
 
     @Test fun communityCounterTacticIsKnown() {
@@ -325,12 +329,12 @@ class EngineTest {
     @Test fun tacticScreenDifferencesAreReported() {
         val plan = org.json.JSONObject().put("formation", "4-3-3 A").put("playStyle", "Contra-ataque").put("tackle", "Normal").put("marking", "À zona")
         val o = Fx.ocr(Fx.line("4-4-2 A", 0.5f, 0.2f, 0.1f), Fx.line("Jogo de passe", 0.5f, 0.3f, 0.1f), Fx.line("Extremo", 0.5f, 0.4f, 0.1f))
-        val w = Parsers.tacticCheck(o, plan, "Médio")
+        val w = Parsers.tacticCheck(o, plan, "Rigoroso")
         assertTrue(w.any { it.startsWith("Formação") })
         assertTrue(w.any { it.startsWith("Estilo") })
         assertTrue(w.any { it.contains("expulsão") })
         // tudo certo: nenhum aviso
         val ok = Fx.ocr(Fx.line("4-3-3 A", 0.5f, 0.2f, 0.1f), Fx.line("Contra-ataque", 0.5f, 0.3f, 0.1f))
-        assertTrue(Parsers.tacticCheck(ok, plan, "Médio").isEmpty())
+        assertTrue(Parsers.tacticCheck(ok, plan, "Rigoroso").isEmpty())
     }
 }

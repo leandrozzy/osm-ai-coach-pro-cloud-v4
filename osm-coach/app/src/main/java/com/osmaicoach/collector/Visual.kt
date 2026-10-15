@@ -141,7 +141,11 @@ object SeasonCard {
                 if (value == null) value = m.groupValues[1].trim()
                 if (valueRank == null) valueRank = m.groupValues[2].toIntOrNull()
             }
-            if (said == null && t.startsWith("Direção:")) said = t.removePrefix("Direção:").trim().trim('"')
+            if (t.startsWith("Direção:")) {
+                val q = t.removePrefix("Direção:").trim().trim('"')
+                // a fala que julga a época (elogio ou bronca) vale mais que o aviso neutro "a época acabou"
+                if (said == null || (mood(said) == 0 && mood(q) != 0)) said = q
+            }
         }
         if (rank == null) rank = fields[K.LEAGUE_POS]?.value?.toIntOrNull()
         if (points == null) points = fields[K.POINTS]?.value?.toIntOrNull()
@@ -158,5 +162,18 @@ object SeasonCard {
             listOf("parab", "orgulh", "excelent", "fantast", "satisfeit", "cumprid", "otimo", "superou").any { n.contains(it) } -> 1
             else -> 0
         }
+    }
+
+    /** Campanha pelos jogos da liga com placar: vitórias, empates, derrotas, gols e pontos possíveis. */
+    data class Record(val v: Int, val e: Int, val d: Int, val gf: Int, val ga: Int, val games: Int, val maxPoints: Int)
+
+    fun record(matches: List<MatchEntity>, totalRounds: Int?): Record? {
+        val played = matches.filter { it.mkey.startsWith("L") && it.result != null }
+        if (played.isEmpty()) return null
+        val n = maxOf(played.size, totalRounds ?: 0)
+        return Record(
+            played.count { it.result == "V" }, played.count { it.result == "E" }, played.count { it.result == "D" },
+            played.sumOf { it.scoreMine ?: 0 }, played.sumOf { it.scoreOpp ?: 0 }, played.size, n * 3
+        )
     }
 }

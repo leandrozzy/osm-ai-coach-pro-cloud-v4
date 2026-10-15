@@ -221,6 +221,10 @@ interface CoachDao {
     @Query("SELECT * FROM screens WHERE imagePath IS NOT NULL ORDER BY at DESC LIMIT :limit")
     suspend fun savedScreens(limit: Int): List<ScreenEntity>
 
+    /** Telas que passaram (ou vão passar) pela IA: na fila, lidas, com erro ou ignoradas. */
+    @Query("SELECT * FROM screens WHERE imagePath IS NOT NULL AND aiState != 'none' ORDER BY at DESC LIMIT :limit")
+    suspend fun aiScreens(limit: Int): List<ScreenEntity>
+
     @Query("SELECT * FROM screens WHERE slotId = :slot AND imagePath IS NOT NULL AND type IN ('REPORT', 'OTHER_OSM') ORDER BY at DESC LIMIT :limit")
     suspend fun savedForSlot(slot: Int, limit: Int): List<ScreenEntity>
 

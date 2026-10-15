@@ -30,7 +30,7 @@ object ManualFields {
         Spec(K.RIVAL_TEAM, "Adversário", null, "Pré-jogo", "FC Zhenis Astana"),
         Spec(K.RIVAL_HUMAN, "Humano?", YES_NO, "Pré-jogo / calendário (apelido embaixo do time)", "Sim"),
         Spec(K.RIVAL_NICK, "Apelido do rival", null, "Calendário (embaixo do time humano)", "ChinoM10"),
-        Spec(K.REFEREE, "Árbitro", listOf("Brando", "Médio", "Rigoroso"), "Pré-jogo (termômetro do árbitro)", "Brando"),
+        Spec(K.REFEREE, "Árbitro", Referee.LEVELS, "Pré-jogo (cor do termômetro: azul, verde, amarelo, laranja, vermelho)", "Normal"),
         Spec(K.MY_STRENGTH, "Minha força", null, "Pré-jogo (círculo azul)", "91"),
         Spec(K.RIVAL_STRENGTH, "Força do rival", null, "Pré-jogo (círculo vermelho)", "61"),
         Spec(K.MY_OBJECTIVE, "Objetivo da temporada (posição)", null, "Plantel do seu time (topo: Objetivo)", "6"),

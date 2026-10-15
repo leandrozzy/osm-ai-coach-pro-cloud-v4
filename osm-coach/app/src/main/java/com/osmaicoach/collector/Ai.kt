@@ -924,13 +924,21 @@ object AiPrompts {
         "offside (\"Sim\" ou \"Não\"), tackle (desarme: ex. \"Normal\" ou \"Agressivo\"), " +
         "secretTraining (\"Sim\" SOMENTE se houver um cadeado visível no relatório; caso contrário \"NI\"), " +
         "trainingCamp (\"Sim\"/\"Não\"/\"NI\"), rivalStrength (número), rivalValue (ex.: \"21,1M\" — mantenha a vírgula), " +
-        "stadiumLevel (texto), stadiumBonus (texto), loginBonus (texto), referee (pela cor do termômetro ao lado de \"Árbitro\": verde = \"Brando\", laranja = \"Médio\", vermelho = \"Rigoroso\")."
+        "stadiumLevel (texto), stadiumBonus (texto), loginBonus (texto), referee (pela cor do termômetro ao lado de \"Árbitro\": azul = \"Muito brando\", verde = \"Brando\", amarelo = \"Normal\", laranja = \"Rigoroso\", vermelho = \"Muito rigoroso\")."
 
     fun squad(): String = HEAD +
         "É a lista de elenco. Chaves: team (nome do time no cabeçalho), players (lista). Cada jogador: " +
         "name, age (número), pos (código como ED, PL, MC, DC, GR), strength (a força em negrito: Ata para atacantes, " +
         "Med para meias, Def para defensores e goleiros), value (ex.: \"7,3M\"). " +
         "Não informe treino: a cor da camisa no plantel não indica treino."
+
+    /** Tela do próximo jogo (pré-jogo): os dois times, quem é usuário, os círculos de força/bônus e o árbitro. */
+    fun pregame(): String = HEAD +
+        "É a tela do próximo jogo (pré-jogo) com dois times frente a frente. Chaves: " +
+        "leftTeam, leftUser (nome de usuário escrito logo abaixo do time da ESQUERDA, ou \"NI\" se não houver), " +
+        "leftCircle (texto dentro do círculo do time da esquerda: um número de força ex. \"84\" ou um bônus ex. \"+3%\"), " +
+        "rightTeam, rightUser, rightCircle (o mesmo para o time da DIREITA), round (número da jornada), " +
+        "refereeColor (cor do termômetro ao lado de \"Árbitro\": \"azul\", \"verde\", \"amarelo\", \"laranja\" ou \"vermelho\")."
 }
 
 object AiMapper {
@@ -969,8 +977,48 @@ object AiMapper {
         clean(j.optString("stadiumLevel"))?.let { out[K.STADIUM] = Reading(it, c) }
         clean(j.optString("stadiumBonus"))?.let { out[K.STADIUM_BONUS] = Reading(it, c) }
         clean(j.optString("loginBonus"))?.let { out[K.RIVAL_LOGIN_BONUS] = Reading(it, c) }
-        clean(j.optString("referee"))?.takeIf { it in setOf("Brando", "Médio", "Rigoroso") }
-            ?.let { out[K.REFEREE] = Reading(it, 0.6) }
+        Referee.norm(clean(j.optString("referee")))?.let { out[K.REFEREE] = Reading(it, 0.6) }
+        return out
+    }
+
+    /**
+     * Pré-jogo lido pela IA. O meu time é o lado com o meu apelido (ou com o nome do meu time já guardado); o outro é o
+     * rival. Círculo com número = força; com "+N%" = bônus de login (só humanos têm).
+     */
+    fun pregame(j: JSONObject, myTeam: String?): Map<String, Reading> {
+        val out = LinkedHashMap<String, Reading>()
+        val c = 0.7
+        val lt = clean(j.optString("leftTeam"))
+        val rt = clean(j.optString("rightTeam"))
+        val lu = clean(j.optString("leftUser"))
+        val ru = clean(j.optString("rightUser"))
+        fun mine(team: String?, user: String?): Boolean =
+            (user != null && Txt.sim(Txt.key(user), MY_NICK) >= 0.75) ||
+                (team != null && myTeam != null && SlotMatcher.nameSim(Txt.key(team), Txt.key(myTeam)) >= 0.85)
+        val mineLeft = when {
+            mine(lt, lu) -> true
+            mine(rt, ru) -> false
+            else -> return out
+        }
+        val rivalTeam = if (mineLeft) rt else lt
+        val rivalUser = (if (mineLeft) ru else lu)?.takeIf { Evidence.plausibleNick(it) }
+        val myCircle = clean(j.optString(if (mineLeft) "leftCircle" else "rightCircle"))
+        val rivalCircle = clean(j.optString(if (mineLeft) "rightCircle" else "leftCircle"))
+        rivalTeam?.let { out[K.RIVAL_TEAM] = Reading(it, c) }
+        out[K.HOME] = Reading(if (mineLeft) "Casa" else "Fora", c)
+        fun circle(v: String?, strength: String, bonus: String) {
+            val t = v?.replace(" ", "") ?: return
+            Regex("^\\+?(\\d{1,2})%$").find(t)?.let { out[bonus] = Reading("+" + it.groupValues[1] + "%", c); return }
+            t.toIntOrNull()?.takeIf { it in 30..130 }?.let { out[strength] = Reading(it.toString(), c) }
+        }
+        circle(myCircle, K.MY_STRENGTH, K.MY_BONUS)
+        circle(rivalCircle, K.RIVAL_STRENGTH, K.RIVAL_LOGIN_BONUS)
+        if (rivalUser != null) {
+            out[K.RIVAL_NICK] = Reading(rivalUser, c)
+            out[K.RIVAL_HUMAN] = Reading("Sim", c)
+        }
+        j.optString("round").trim().toIntOrNull()?.takeIf { it in 1..60 }?.let { out[K.ROUND] = Reading(it.toString(), 0.65) }
+        Referee.norm(clean(j.optString("refereeColor")))?.let { out[K.REFEREE] = Reading(it, 0.65) }
         return out
     }
 
@@ -1018,7 +1066,11 @@ object Processor {
         val bytes = if (path != null) File(path).takeIf { it.exists() }?.readBytes() else null
         if (bytes == null) return ReadResult("failed", 0, "imagem ausente")
         val type = runCatching { ScreenType.valueOf(s.type) }.getOrDefault(ScreenType.OTHER_OSM)
-        val prompt = if (type == ScreenType.SQUAD) AiPrompts.squad() else AiPrompts.report()
+        val prompt = when (type) {
+            ScreenType.SQUAD -> AiPrompts.squad()
+            ScreenType.PREGAME -> AiPrompts.pregame()
+            else -> AiPrompts.report()
+        }
         val reply = AiClient.ask(ctx, prompt, bytes, 100000L)
         val json = AiClient.parseJson(reply.text)
         if (!reply.ok || json == null) {
@@ -1029,6 +1081,12 @@ object Processor {
             return ReadResult("failed", 0, err.take(200))
         }
         val now = System.currentTimeMillis()
+        if (type == ScreenType.PREGAME) {
+            val f = AiMapper.pregame(json, repo.fieldMap(s.slotId)[K.TEAM]?.value)
+            if (f.isEmpty()) return ReadResult("done", 0, "IA: não achei o seu time nesta tela (confira o apelido)")
+            val n = repo.apply(s.slotId, Extraction(ScreenType.PREGAME, fields = f), "ai", now)
+            return ReadResult("done", n, "IA leu o pré-jogo: " + f.keys.joinToString(", ") { k -> ManualFields.spec(k, k).label } + " ($n novo(s))")
+        }
         if (type != ScreenType.SQUAD && AiMapper.reportKind(json) != "rival_report") {
             return ReadResult("done", 0, "IA: não é o relatório do rival (" + AiMapper.reportKind(json).ifBlank { "?" } + ")")
         }
@@ -1323,6 +1381,73 @@ object MetaRefresh {
             out.add("Última pesquisa: ${fmt.format(java.util.Date(p.at))} — $res")
         }
         return out
+    }
+
+    /** Regra da comunidade pronta para a tela. */
+    data class RuleView(
+        val rel: String, val vs: String, val formation: String, val style: String, val pressure: Int?, val mentality: Int?, val tempo: Int?,
+        val roles: String, val marking: String?, val offside: String?, val source: String
+    )
+
+    /** Situação da pesquisa: regras em uso, quando foi, se buscou na internet e o problema em palavras simples. */
+    data class View(val rules: List<RuleView>, val at: Long?, val active: Boolean, val lastAt: Long?, val searched: Boolean?, val problem: String?)
+
+    suspend fun view(repo: Repo): View {
+        val r = remote(repo)
+        val rules = r?.optJSONObject("rules")
+        val out = ArrayList<RuleView>()
+        val order = listOf("U", "E", "F")
+        if (rules != null) {
+            for (k in rules.keys().asSequence().sortedBy { order.indexOf(it.substringBefore('|')).let { i -> if (i < 0) 9 else i } }) {
+                val o = rules.optJSONObject(k) ?: continue
+                val vs = k.substringAfter('|').let { if (it == "?" || it.isBlank()) "qualquer formação" else it }
+                val roles = listOfNotNull(
+                    o.optString("attack").ifBlank { null }?.let { "Avançados: $it" },
+                    o.optString("mid").ifBlank { null }?.let { "Médios: $it" },
+                    o.optString("def").ifBlank { null }?.let { "Defesas: $it" }
+                ).joinToString(" • ")
+                out.add(
+                    RuleView(
+                        k.substringBefore('|'), vs, o.optString("formation"), o.optString("style"),
+                        if (o.has("pressure")) o.optInt("pressure") else null, if (o.has("mentality")) o.optInt("mentality") else null,
+                        if (o.has("tempo")) o.optInt("tempo") else null, roles,
+                        o.optString("marking").ifBlank { null }, o.optString("offside").ifBlank { null },
+                        o.optString("source").substringBefore(" • ").ifBlank { "IA" }
+                    )
+                )
+            }
+        }
+        val at = r?.optLong("at")?.takeIf { it > 0 }
+        val active = at != null && System.currentTimeMillis() - at <= 30L * 86400000L && out.isNotEmpty()
+        var lastAt: Long? = null
+        var searched: Boolean? = null
+        var problem: String? = null
+        repo.dao.plan(0, LAST)?.let { p ->
+            val j = runCatching { JSONObject(p.json) }.getOrNull() ?: return@let
+            lastAt = p.at
+            val err = j.optString("error")
+            val se = j.optString("searchError")
+            searched = se.isBlank() && err.isBlank()
+            problem = when {
+                err.isNotBlank() -> "A última pesquisa falhou: " + plainError(err)
+                j.optInt("valid", -1) == 0 -> "A IA respondeu, mas sem regras aproveitáveis."
+                se.isNotBlank() -> "Sem busca na internet desta vez (" + plainError(se) + "): as regras vieram do conhecimento da própria IA."
+                else -> null
+            }
+        }
+        return View(out, at, active, lastAt, searched, problem)
+    }
+
+    /** Erro técnico -> frase curta. */
+    private fun plainError(e: String): String {
+        val n = e.lowercase()
+        return when {
+            n.contains("cota") || n.contains("quota") || n.contains("429") -> "a cota gratuita do Gemini para busca acabou hoje"
+            n.contains("404") && n.contains("groq") -> "a chave da Groq não tem o modelo de busca"
+            n.contains("sem chave") || n.contains("no key") -> "falta chave de IA"
+            n.contains("timeout") || n.contains("tempo") -> "a internet demorou demais"
+            else -> e.take(100)
+        }
     }
 
     /** Atualiza sozinho uma vez por semana (em segundo plano); depois de uma tentativa, espera 24 h para tentar de novo. */

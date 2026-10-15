@@ -127,11 +127,10 @@ object PixelProbe {
         }
     }
 
-    /** Termômetro do árbitro no pré-jogo: cor do bulbo (azul=brando, laranja=médio, vermelho=rigoroso). */
     /**
-     * Termômetro do árbitro no pré-jogo (logo à esquerda do texto "Árbitro"): o preenchimento é VERDE (brando),
-     * LARANJA (médio) ou VERMELHO (rigoroso). Azul é o fundo (quadro de transição) e nunca conta. Só responde com uma
-     * cor dominante (60%+) e pixels suficientes; senão null (não chuta).
+     * Termômetro do árbitro no pré-jogo (logo à esquerda do texto "Árbitro"), 5 níveis pela cor do bulbo:
+     * AZUL muito brando, VERDE brando, AMARELO normal, LARANJA rigoroso, VERMELHO muito rigoroso.
+     * Só responde com uma cor dominante e pixels suficientes; senão null (não chuta).
      */
     fun refereeSeverity(img: Img, labelLeft: Float? = null, labelYc: Float? = null): String? {
         val x0 = if (labelLeft != null) labelLeft - 0.02f else 0.490f
@@ -142,9 +141,11 @@ object PixelProbe {
         val xb = max((x1.coerceIn(0f, 1f) * img.w).toInt(), xa + 1)
         val ya = (y0.coerceIn(0f, 1f) * img.h).toInt()
         val yb = max((y1.coerceIn(0f, 1f) * img.h).toInt(), ya + 1)
-        var orange = 0
         var red = 0
+        var orange = 0
+        var yellow = 0
         var green = 0
+        var blue = 0
         val t = FloatArray(3)
         for (y in ya until min(yb, img.h)) {
             for (x in xa until min(xb, img.w)) {
@@ -152,21 +153,48 @@ object PixelProbe {
                 if (t[1] < 0.5f || t[2] < 0.55f) continue
                 val h = t[0]
                 when {
-                    h < 18f || h >= 340f -> red++
-                    h <= 65f -> orange++
+                    h < 15f || h >= 340f -> red++
+                    h < 40f -> orange++
+                    h < 72f -> yellow++
                     h in 80f..165f -> green++
+                    h in 185f..250f && t[1] >= 0.55f && t[2] >= 0.6f -> blue++
                 }
             }
         }
-        val total = orange + red + green
-        if (total < 6) return null
-        val top = max(orange, max(red, green))
-        if (top < total * 0.6f) return null
-        return when (top) {
-            red -> "Rigoroso"
-            orange -> "Médio"
-            else -> "Brando"
+        // cor quente/verde no bulbo vence: o tubo do termômetro é sempre azul
+        val warm = red + orange + yellow + green
+        if (warm >= 6) {
+            val top = maxOf(red, orange, yellow, green)
+            if (top < warm * 0.55f) return null
+            return when (top) {
+                red -> "Muito rigoroso"
+                orange -> "Rigoroso"
+                yellow -> "Normal"
+                else -> "Brando"
+            }
         }
+        // bulbo azul = muito brando, desde que o fundo em volta não seja azul (quadro de transição)
+        if (blue >= 8 && !blueAround(img, x0, x1, y0)) return "Muito brando"
+        return null
+    }
+
+    /** Fundo azul saturado logo acima do termômetro: é o quadro de transição, não o bulbo. */
+    private fun blueAround(img: Img, x0: Float, x1: Float, y0: Float): Boolean {
+        val xa = ((x0 - 0.03f).coerceIn(0f, 1f) * img.w).toInt()
+        val xb = max(((x1 + 0.03f).coerceIn(0f, 1f) * img.w).toInt(), xa + 1)
+        val ya = ((y0 - 0.10f).coerceIn(0f, 1f) * img.h).toInt()
+        val yb = max(((y0 - 0.03f).coerceIn(0f, 1f) * img.h).toInt(), ya + 1)
+        var n = 0
+        var b = 0
+        val t = FloatArray(3)
+        for (y in ya until min(yb, img.h)) {
+            for (x in xa until min(xb, img.w)) {
+                n++
+                hsv(img.px[y * img.w + x], t)
+                if (t[0] in 185f..250f && t[1] >= 0.55f && t[2] >= 0.5f) b++
+            }
+        }
+        return n > 0 && b >= n * 0.5f
     }
 }
 

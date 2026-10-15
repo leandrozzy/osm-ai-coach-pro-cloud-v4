@@ -843,7 +843,7 @@ object Director {
             "prefira a que não perde para nenhuma delas, mesmo que não seja a mais ofensiva. " +
             "Você pode divergir da simulação só com um motivo concreto dos dados (ex.: perfil do rival humano, " +
             "resultado real de jogos anteriores). REGRAS: formation deve ser uma de $allowed; pressure, mentality e tempo de 0 a 100 " +
-            "(até 15 pontos de distância do rascunho); tackle SÓ entre $tackles (limite do árbitro; Extremo nunca). " +
+            "(até 15 pontos de distância do rascunho); tackle SÓ entre $tackles (limite do árbitro pela cor do termômetro: azul Extremo, verde Agressivo, amarelo Normal, laranja/vermelho Cuidadoso). " +
             "Contra rival BEM MAIS FRACO não jogue com 2 atacantes: use 3 atacantes, mentalidade ofensiva e estilo de ataque — " +
             "é o jogo para vencer com folga. " +
             "Use os nomes EXATOS do OSM: playStyle ${Osm.STYLES}; marking ${Osm.MARKING}; tackle ${Osm.TACKLES}; " +

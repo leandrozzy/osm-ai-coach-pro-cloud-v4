@@ -237,7 +237,7 @@ class IntelTest {
     }
 
     @Test fun extremeTackleIsPunishedUnlessTheRefereeIsLenient() {
-        val base = WinModel.Input(80, 80, referee = "Médio")
+        val base = WinModel.Input(80, 80, referee = "Normal")
         val normal = WinModel.predict(base.copy(plan = plan))!!
         val extreme = WinModel.predict(base.copy(plan = plan.copy(tackle = "Extremo")))!!
         assertTrue(extreme.loss > normal.loss)

@@ -336,12 +336,8 @@ object TacticEngine {
             styleNote = "Estilo ${bestStyle.formation} escolhido pelo histórico: ${bestStyle.v}V ${bestStyle.e}E ${bestStyle.d}D em ${bestStyle.games} jogos."
         }
 
-        val tackle = when {
-            // termômetro laranja ou vermelho: cartão fácil -> Cuidadoso
-            inp.referee == "Rigoroso" || inp.referee == "Médio" -> "Cuidadoso"
-            inp.referee == "Brando" && diff != null && diff >= 5 -> "Agressivo"
-            else -> "Normal"
-        }
+        // Desarme pelo termômetro do árbitro: azul Extremo, verde Agressivo, amarelo Normal, laranja/vermelho Cuidadoso.
+        val tackle = Referee.tackle(inp.referee) ?: "Normal"
         // Disciplina: se nos últimos jogos o time cometeu muitas faltas, desarme Normal mesmo contra rival fraco.
         val foulRows = inp.history.filter { it.fouls != null }.takeLast(3)
         var tackleFinal = tackle
@@ -350,14 +346,12 @@ object TacticEngine {
             var total = 0
             for (r in foulRows) total += r.fouls ?: 0
             val avg = total / foulRows.size
-            if (avg >= 16 && tackle == "Agressivo") {
-                tackleFinal = "Normal"
-                disciplineNote = "Média de $avg faltas nos últimos ${foulRows.size} jogos: desarme Normal para evitar cartões."
+            if (avg >= 16 && (tackle == "Agressivo" || tackle == "Extremo")) {
+                disciplineNote = "Atenção: média de $avg faltas nos últimos ${foulRows.size} jogos. O árbitro permite $tackle, mas confira os cartões."
             }
         }
-        if (inp.lessons?.discipline == true && tackleFinal == "Agressivo") {
-            tackleFinal = "Normal"
-            disciplineNote = "Faltas demais nos últimos jogos: desarme Normal."
+        if (inp.lessons?.discipline == true && (tackleFinal == "Agressivo" || tackleFinal == "Extremo") && disciplineNote == null) {
+            disciplineNote = "Atenção: muitas faltas nos últimos jogos com desarme forte."
         }
         val marking = if (inp.rivalAtk != null && inp.myDef != null && inp.rivalAtk - inp.myDef >= 5) "Homem-a-homem" else "À zona"
         val offside = if (inp.rivalAtk != null && inp.myDef != null && inp.myDef - inp.rivalAtk >= 5) "Sim" else "Não"
@@ -386,10 +380,12 @@ object TacticEngine {
         if (inp.myAtk != null && inp.rivalDef != null) {
             notes.add("Ataque ${inp.myAtk} vs defesa rival ${inp.rivalDef} (${if (inp.myAtk >= inp.rivalDef) "+" else "-"}${gap(inp.myAtk, inp.rivalDef)}).")
         }
-        if (inp.referee == "Rigoroso" || inp.referee == "Médio") {
-            notes.add("Árbitro ${if (inp.referee == "Rigoroso") "rigoroso (termômetro vermelho)" else "médio (termômetro laranja)"}: desarme Cuidadoso para evitar cartões.")
+        val refName = Referee.norm(inp.referee)
+        if (refName != null) {
+            notes.add("Árbitro $refName (termômetro ${Referee.color(refName)}): desarme $tackle.")
+        } else {
+            notes.add("Árbitro não lido: desarme Normal. Abra o pré-jogo para ler o termômetro.")
         }
-        if (inp.referee == "Brando" && tackle == "Agressivo") notes.add("Árbitro brando e rival fraco: desarme Agressivo é seguro.")
         if (marking == "Homem-a-homem") notes.add("Ataque do rival (${inp.rivalAtk}) supera sua defesa (${inp.myDef}): marcação homem a homem.")
         if (inp.fitness.isNotEmpty()) {
             val rawKeys = lineup(formation, inp.players)?.first?.flatten()?.filterNotNull()?.map { it.nameKey }?.toSet() ?: emptySet()
@@ -500,7 +496,8 @@ object MarketEngine {
             val list = byCat[c] ?: continue
             val extra = list.size - (MarketPlanner.TARGET[c] ?: 0)
             if (extra > 0) {
-                for (p in list.takeLast(extra)) {
+                // quem está treinando não sai (o treino em andamento se perde)
+                for (p in list.filter { it.training != true }.takeLast(extra)) {
                     if (sells.size >= sellSlots) break
                     sells.add(SellItem(p.name, c, p.strength, Money.parse(p.valueText), "excesso de $c (meta ${MarketPlanner.TARGET[c]}): é o mais fraco do setor"))
                     soldKeys.add(p.nameKey)
@@ -513,7 +510,7 @@ object MarketEngine {
             val core = CORE[c] ?: 3
             for (p in list.drop(core)) {
                 if (sells.size >= sellSlots) break
-                if ((p.age ?: 0) >= 31 && p.nameKey !in soldKeys && (Money.parse(p.valueText) ?: 0.0) > 0.0) {
+                if ((p.age ?: 0) >= 31 && p.training != true && p.nameKey !in soldKeys && (Money.parse(p.valueText) ?: 0.0) > 0.0) {
                     sells.add(SellItem(p.name, c, p.strength, Money.parse(p.valueText), "${p.age} anos e reserva: vender agora, antes de perder valor"))
                     soldKeys.add(p.nameKey)
                 }
@@ -550,7 +547,7 @@ object MarketEngine {
                     have[c] = (have[c] ?: 0) + 1
                 } else if (shortfall == null) shortfall = cd.price - budget
             } else {
-                val out = (byCat[c] ?: emptyList()).lastOrNull { it.nameKey !in soldKeys }
+                val out = (byCat[c] ?: emptyList()).lastOrNull { it.nameKey !in soldKeys && it.training != true }
                 if (out == null || sells.size >= sellSlots) continue
                 val vOut = Money.parse(out.valueText) ?: 0.0
                 val net = cd.price - vOut
