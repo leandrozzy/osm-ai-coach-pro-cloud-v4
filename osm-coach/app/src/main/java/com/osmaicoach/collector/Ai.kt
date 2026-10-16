@@ -1132,7 +1132,7 @@ object AiPrompts {
     fun pregame(): String = HEAD +
         "É a tela do próximo jogo (pré-jogo) com dois times frente a frente. Chaves: " +
         "leftTeam, leftUser (nome de usuário escrito logo abaixo do time da ESQUERDA, ou \"NI\" se não houver), " +
-        "leftCircle (texto dentro do círculo do time da esquerda: um número de força ex. \"84\" ou um bônus ex. \"+3%\"), " +
+        "leftCircle (texto dentro do círculo do time da esquerda: um número de força ex. \"84\", um bônus ex. \"+3%\" ou \"cadeado\" se houver um cadeado no lugar do número), " +
         "rightTeam, rightUser, rightCircle (o mesmo para o time da DIREITA), round (número da jornada), " +
         "refereeColor (cor do termômetro ao lado de \"Árbitro\": \"azul\", \"verde\", \"amarelo\", \"laranja\" ou \"vermelho\")."
 }
@@ -1209,6 +1209,11 @@ object AiMapper {
         }
         circle(myCircle, K.MY_STRENGTH, K.MY_BONUS)
         circle(rivalCircle, K.RIVAL_STRENGTH, K.RIVAL_LOGIN_BONUS)
+        // cadeado = treino secreto (só humano faz)
+        if (rivalCircle != null && Txt.norm(rivalCircle).let { it.contains("cadeado") || it.contains("lock") }) {
+            out[K.RIVAL_SECRET] = Reading("Sim", c)
+            out[K.RIVAL_HUMAN] = Reading("Sim", c)
+        }
         if (rivalUser != null) {
             out[K.RIVAL_NICK] = Reading(rivalUser, c)
             out[K.RIVAL_HUMAN] = Reading("Sim", c)

@@ -3292,12 +3292,14 @@ private fun SlotTactic(slot: Int, d: SlotData) {
         return
     }
     // Checklist: o que ainda falta ler e em qual tela do OSM (a tática sai melhor com tudo lido).
-    val human = fv(d, K.RIVAL_HUMAN) == "Sim"
+    val secret = SecretTraining.on(d.fields)
+    val human = secret || fv(d, K.RIVAL_HUMAN) == "Sim"
+    // Treino secreto (cadeado): força e relatório do analista não existem neste jogo, não "faltam".
     val checks = listOfNotNull(
-        Pair("Força do rival", "Pré-jogo (círculo do rival)").takeIf { known(d.fields, K.RIVAL_STRENGTH) == null },
+        Pair("Força do rival", "Pré-jogo (círculo do rival)").takeIf { !secret && known(d.fields, K.RIVAL_STRENGTH) == null },
         Pair("Setores do rival (GOL/DEF/MEI/ATA)", "Plantel do rival").takeIf { known(d.fields, K.RIVAL_DEF) == null || known(d.fields, K.RIVAL_ATK) == null },
         Pair("Formação do rival", "Análise do rival").takeIf { known(d.fields, K.RIVAL_FORMATION) == null },
-        Pair("Estilo do rival", "Análise do rival").takeIf { known(d.fields, K.RIVAL_PLAN) == null },
+        Pair("Estilo do rival", "Análise do rival").takeIf { !secret && known(d.fields, K.RIVAL_PLAN) == null },
         Pair("Árbitro", "Pré-jogo (termômetro)").takeIf { known(d.fields, K.REFEREE) == null },
         Pair("Nome do usuário rival", "Pré-jogo ou plantel do rival").takeIf { human && known(d.fields, K.RIVAL_NICK) == null },
         Pair("Seu elenco", "Plantel do seu time (role até o fim)").takeIf { d.players.count { it.owner == "MY" && it.strength != null } < 14 }
@@ -3326,6 +3328,17 @@ private fun SlotTactic(slot: Int, d: SlotData) {
                 modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
             ) { Text("✓ Liberar todos") }
             Hint("Marque quem está lesionado ou suspenso tocando no jogador na aba Elenco. Vale só para esta rodada.", "como marcar")
+        }
+    }
+    if (secret) {
+        Panel {
+            Text("🔒 Rival fez TREINO SECRETO", color = OsmColors.YELLOW, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Text(
+                "Rival humano. O jogo esconde a força, o bônus e o relatório do analista dele, então isso não falta ler. " +
+                    (SecretTraining.estimate(d.fields)?.let { "Força estimada pelos setores do plantel: $it (com margem). " } ?: "Leia o Plantel do rival para eu estimar a força. ") +
+                    "A tática vem mais segura: sem linha de impedimento e meio-campo protegido.",
+                fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp)
+            )
         }
     }
     if (checks.isNotEmpty()) {
@@ -3395,7 +3408,7 @@ private fun SlotTactic(slot: Int, d: SlotData) {
                 " VS ", fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, color = OsmColors.YELLOW,
                 fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
             )
-            StrengthBubble(known(d.fields, K.RIVAL_STRENGTH))
+            StrengthBubble(known(d.fields, K.RIVAL_STRENGTH) ?: if (secret) "🔒" else null)
             Column(Modifier.weight(1f).padding(end = 6.dp), horizontalAlignment = Alignment.End) {
                 Text(j.optString("rival"), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.End)
                 Text(known(d.fields, K.RIVAL_NICK) ?: if (fv(d, K.RIVAL_HUMAN) == "Não") "CPU" else "", fontSize = 11.sp, color = OsmColors.CAPTION, maxLines = 1)

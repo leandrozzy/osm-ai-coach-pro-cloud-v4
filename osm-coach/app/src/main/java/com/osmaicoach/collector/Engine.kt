@@ -148,7 +148,9 @@ object TacticEngine {
         /** Modelo da comunidade atualizado pela internet. */
         val metaRemote: org.json.JSONObject? = null,
         /** Estilo de jogo do rival lido no relatório (Contra-ataque, Jogo de passe…). */
-        val rivalStyle: String? = null
+        val rivalStyle: String? = null,
+        /** Treino secreto do rival (cadeado): tática e força dele escondidas. */
+        val rivalSecret: Boolean = false
     )
 
     private data class Sliders(val mentality: Int, val pressure: Int, val tempo: Int, val bucket: String)
@@ -402,7 +404,7 @@ object TacticEngine {
         if (disciplineNote != null) notes.add(disciplineNote)
         val stat = Learning.stats(inp.history).firstOrNull { it.formation == formation }
         if (stat != null) notes.add("Histórico de $formation: ${stat.v}V ${stat.e}E ${stat.d}D em ${stat.games} jogo(s) registrados.")
-        if (inp.rivalHuman == true) notes.add("Rival humano: ele pode mudar a tática; confira o relatório antes do jogo.")
+        if (inp.rivalHuman == true && !inp.rivalSecret) notes.add("Rival humano: ele pode mudar a tática; confira o relatório antes do jogo.")
 
         // Modelo de referência da comunidade do OSM: base quando um time é claramente mais forte. Se a formação do
         // modelo já perdeu demais neste slot, fica a do elenco; o estilo vencedor do histórico também prevalece.
@@ -494,6 +496,18 @@ object TacticEngine {
                 "Base da comunidade ${meta.label.removePrefix("comunidade ").let { if (it.startsWith("(")) it else "($it)" }}: ${meta.formation} • ${meta.style} • pressão ${meta.pressure} / estilo ${meta.mentality} / ritmo ${meta.tempo}" +
                     (if (failing) " — a formação $mb já perdeu demais aqui, mantive ${Formations.variant(formation, styleF)}." else ".") +
                     (if (adjust.isNotEmpty()) " Ajustada para este jogo: " + adjust.joinToString("; ") + "." else "")
+            )
+        }
+        // Treino secreto: o rival humano escondeu a tática e a força. Nada de aposta que depende de saber o que ele faz.
+        if (inp.rivalSecret) {
+            val sec = ArrayList<String>()
+            if (offF == "Sim") { offF = "Não"; sec.add("sem linha de impedimento") }
+            if (aM == "Pressionar na frente") { aM = "Manter posições"; sec.add("meio-campo mantém posições") }
+            notes.add(
+                0,
+                "🔒 Rival com TREINO SECRETO (humano): força e tática dele escondidas. " +
+                    (inp.rivalStrength?.let { "Força considerada $it (estimada pelos setores do plantel, com margem). " } ?: "") +
+                    "Tática segura" + (if (sec.isNotEmpty()) ": " + sec.joinToString(", ") else "") + "."
             )
         }
         // Contra-ataque: ritmo alto para a transição e pressão baixa para atrair o rival (comunidade do OSM).
