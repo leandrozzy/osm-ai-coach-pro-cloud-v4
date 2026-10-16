@@ -142,6 +142,9 @@ object Director {
         val fields = JSONObject()
         for ((k, v) in f) if (FieldMerge.known(v.value)) fields.put(k, v.value)
         ctx.put("campos", fields)
+        if (mustWin(f)) {
+            ctx.put("batalha", "SIM: só a VITÓRIA conta (empate quase não ajuda). Busque vencer: mais gente na frente e mentalidade mais ofensiva, sem se expor a ponto de perder.")
+        }
         if (SecretTraining.on(f)) {
             ctx.put(
                 "treino_secreto_rival",
@@ -244,6 +247,10 @@ object Director {
             }.getOrNull()
         }
 
+    /** Batalha: só a vitória serve (o empate quase não ajuda a passar de fase). */
+    fun mustWin(f: Map<String, StoredField>): Boolean = f[K.COMP_TYPE]?.value == "Batalha"
+    const val BATTLE_DRAW = 0.4
+
     suspend fun tacticInput(repo: Repo, slot: Int): TacticEngine.Input {
         val f = repo.fieldMap(slot)
         val out = repo.unavailable(slot)
@@ -269,7 +276,8 @@ object Director {
             metaLogs = allLogs(repo),
             metaRemote = MetaRefresh.remote(repo),
             rivalStyle = f[K.RIVAL_PLAN]?.value?.takeIf { FieldMerge.known(it) },
-            rivalSecret = SecretTraining.on(f)
+            rivalSecret = SecretTraining.on(f),
+            mustWin = mustWin(f)
         )
     }
 
@@ -342,6 +350,7 @@ object Director {
             rivalSecret = boolOf(str(K.RIVAL_SECRET), "Sim", "Não"), rivalCamp = boolOf(str(K.RIVAL_CAMP), "Sim", "Não"),
             home = boolOf(str(K.HOME), "Casa", "Fora"),
             rivalHuman = if (SecretTraining.on(f)) true else boolOf(str(K.RIVAL_HUMAN), "Sim", "Não"),
+            drawValue = if (mustWin(f)) BATTLE_DRAW else 1.0,
             referee = str(K.REFEREE),
             myBonus = bonus(K.MY_BONUS), rivalBonus = bonus(K.RIVAL_LOGIN_BONUS),
             recent = played.filter { !Fixtures.isCup(it) }.mapNotNull { it.result }.take(5),
@@ -872,6 +881,9 @@ object Director {
             "Não copie o rascunho por comodidade e não aplique a mesma receita para rivais diferentes: olhe a formação e o " +
             "estilo DESTE rival, a diferença exata de força e os setores (ataque × defesa dele, meio × meio, defesa × ataque dele). " +
             "Contra rival HUMANO prefira a tática que não perde para as táticas que ele já usou. " +
+            "Se DADOS.batalha existir, o jogo é de BATALHA: só a vitória conta; prefira a tática com mais chance de VENCER, " +
+            "não a que só evita a derrota (avançados atacando, mentalidade acima de 55 se não for bem mais fraco). " +
+            "Se o rival joga Contra-ataque, não responda com Contra-ataque (os dois esperam e sai empate). " +
             "Se DADOS.treino_secreto_rival existir, o rival fez TREINO SECRETO: a tática e a força dele estão escondidas; " +
             "use a força estimada, NÃO use linha de impedimento (offside \"Não\"), proteja o meio-campo e não aposte em " +
             "contra-golpe ao estilo dele (ele é desconhecido). " +

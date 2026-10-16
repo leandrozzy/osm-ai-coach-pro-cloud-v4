@@ -95,6 +95,12 @@ class TrainingRefereeTest {
         assertEquals("Rigoroso", PixelProbe.refereeSeverity(img("orange"), 0.505f, 0.47f))
     }
 
+    @Test fun blueBulbOnBattleScreenIsVeryLenient() {
+        // pré-jogo de batalha: fundo azul e bulbo azul-claro; o rosto do árbitro (pele) não pode virar "Rigoroso"
+        assertEquals("Muito brando", PixelProbe.refereeSeverity(img("battle_blue"), 0.506f, 0.47f))
+        assertEquals("Muito brando", PixelProbe.refereeSeverity(img("battle_blue")))
+    }
+
     @Test fun greenThermometerIsLenient() {
         assertEquals("Brando", PixelProbe.refereeSeverity(img("green")))
     }

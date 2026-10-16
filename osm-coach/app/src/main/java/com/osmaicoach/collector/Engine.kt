@@ -150,7 +150,9 @@ object TacticEngine {
         /** Estilo de jogo do rival lido no relatório (Contra-ataque, Jogo de passe…). */
         val rivalStyle: String? = null,
         /** Treino secreto do rival (cadeado): tática e força dele escondidas. */
-        val rivalSecret: Boolean = false
+        val rivalSecret: Boolean = false,
+        /** Batalha: só a vitória conta. */
+        val mustWin: Boolean = false
     )
 
     private data class Sliders(val mentality: Int, val pressure: Int, val tempo: Int, val bucket: String)
@@ -497,6 +499,16 @@ object TacticEngine {
                     (if (failing) " — a formação $mb já perdeu demais aqui, mantive ${Formations.variant(formation, styleF)}." else ".") +
                     (if (adjust.isNotEmpty()) " Ajustada para este jogo: " + adjust.joinToString("; ") + "." else "")
             )
+        }
+        // Batalha: empate não serve. Sem ser bem mais fraco, avançados atacando e mentalidade para vencer.
+        if (inp.mustWin && (diff ?: 0) >= -8) {
+            val win = ArrayList<String>()
+            if (aA != "Atacar apenas") { aA = "Atacar apenas"; win.add("avançados só atacam") }
+            if (mF < 60) { mF = 60; win.add("estilo 60") }
+            if (styleF == "Contra-ataque" && Osm.style(inp.rivalStyle) == "Contra-ataque") {
+                styleF = "Jogo de passe"; win.add("jogo de passe (o rival também espera no contra-ataque)")
+            }
+            notes.add(0, "⚔ Batalha: só a vitória conta" + (if (win.isNotEmpty()) " — " + win.joinToString(", ") else "") + ".")
         }
         // Treino secreto: o rival humano escondeu a tática e a força. Nada de aposta que depende de saber o que ele faz.
         if (inp.rivalSecret) {
