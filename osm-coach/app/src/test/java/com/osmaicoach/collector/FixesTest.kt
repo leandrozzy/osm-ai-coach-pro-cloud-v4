@@ -19,9 +19,9 @@ class FixesTest {
         // digitado à mão há 6 dias: a leitura de hoje vale
         val manualOld = StoredField("+3%", 2.0, now - 6 * 24 * h)
         assertEquals("+7%", FieldMerge.merge(K.MY_BONUS, manualOld, Reading("+7%", 0.85), now)?.value)
-        // digitado à mão agora há pouco: continua valendo
+        // digitado à mão agora há pouco: a leitura nova da tela também atualiza
         val manualNew = StoredField("+3%", 2.0, now - h / 2)
-        assertNull(FieldMerge.merge(K.MY_BONUS, manualNew, Reading("+7%", 0.85), now))
+        assertEquals("+7%", FieldMerge.merge(K.MY_BONUS, manualNew, Reading("+7%", 0.85), now)?.value)
         // leitura do OCR de hoje troca a leitura anterior do OCR (o bônus muda)
         val ocr = StoredField("+3%", 0.85, now - 1 * h)
         assertEquals("+5%", FieldMerge.merge(K.MY_BONUS, ocr, Reading("+5%", 0.85), now)?.value)

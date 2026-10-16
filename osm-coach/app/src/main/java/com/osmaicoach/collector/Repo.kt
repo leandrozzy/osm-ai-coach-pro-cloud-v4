@@ -226,7 +226,7 @@ class Repo(private val ctx: Context) {
     /** O slot passou a ter o meu time novo: troca o time guardado e o slot volta a "ativo". */
     suspend fun startCompetition(slot: Int, team: String, now: Long) {
         val old = dao.fieldsOf(slot).firstOrNull { it.fkey == K.TEAM }
-        if (old != null && Txt.sim(Txt.key(old.fvalue), Txt.key(team)) < 0.85 && old.source != "manual") dao.deleteField(slot, K.TEAM)
+        if (old != null && Txt.sim(Txt.key(old.fvalue), Txt.key(team)) < 0.85) dao.deleteField(slot, K.TEAM)
         dao.putField(FieldEntity(slot, K.SLOT_STATE, "ativo", 0.9, now, "pregame"))
         dao.deleteField(slot, K.SLOT_PENDING)
         dao.deletePlan(slot, "evidence")
@@ -237,7 +237,6 @@ class Repo(private val ctx: Context) {
     private suspend fun hubPut(slot: Int, key: String, value: String, now: Long): Int {
         val old = dao.fieldsOf(slot).firstOrNull { it.fkey == key }
         if (old != null && old.fvalue == value) return 0
-        if (old?.source == "manual") return 0
         dao.putField(FieldEntity(slot, key, value, 0.8, now, "hub"))
         return 1
     }
@@ -744,7 +743,7 @@ class Repo(private val ctx: Context) {
         return out
     }
 
-    /** Valor digitado pelo usuário: confiança acima de qualquer leitura (nada da leitura automática sobrescreve). */
+    /** Valor digitado pelo usuário: vale até a próxima leitura da tela, que sempre atualiza (o jogo pode ter mudado). */
     suspend fun setManual(slot: Int, key: String, value: String) {
         dao.putField(FieldEntity(slot, key, value.trim(), 2.0, System.currentTimeMillis(), "manual"))
     }

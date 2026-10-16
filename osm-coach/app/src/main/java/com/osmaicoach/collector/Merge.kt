@@ -48,11 +48,10 @@ object FieldMerge {
             val past = oldT != null && oldT < now - 60000L
             return if (past || incoming.conf >= old.conf) StoredField(v, incoming.conf, now) else null
         }
-        val replace = if (key in VOLATILE) {
-            incoming.conf >= 0.7 && incoming.conf >= old.conf - 0.1
-        } else {
-            incoming.conf > old.conf
-        }
+        // A leitura nova da tela vale: o jogo mudou (transferência, rival trocou, valor digitado ficou velho). Vale
+        // também sobre o que foi digitado à mão — quem digitou pode corrigir de novo. Só leitura fraca (< 0,7) não
+        // troca um dado mais confiável.
+        val replace = incoming.conf >= 0.7 || incoming.conf >= old.conf
         return if (replace) StoredField(v, incoming.conf, now) else null
     }
 }

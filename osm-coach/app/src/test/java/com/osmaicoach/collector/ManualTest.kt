@@ -28,9 +28,11 @@ class ManualTest {
         assertNull(ManualFields.normalize(K.MATCH_AT, "amanhã"))
     }
 
-    @Test fun manualValueIsNeverOverwrittenByAutomaticReading() {
-        assertNull(FieldMerge.merge(K.RIVAL_STRENGTH, StoredField("61", 2.0, 1L), Reading("70", 0.95), 2L))
-        assertNull(FieldMerge.merge(K.RIVAL_PLAN, StoredField("Jogo de passe", 2.0, 1L), Reading("Jogar pelas alas", 0.95), 2L))
+    @Test fun newReadingUpdatesEvenAManualValue() {
+        assertEquals("70", FieldMerge.merge(K.RIVAL_STRENGTH, StoredField("61", 2.0, 1L), Reading("70", 0.95), 2L)?.value)
+        assertEquals("Jogar pelas alas", FieldMerge.merge(K.RIVAL_PLAN, StoredField("Jogo de passe", 2.0, 1L), Reading("Jogar pelas alas", 0.95), 2L)?.value)
+        // leitura fraca não troca dado confiável
+        assertNull(FieldMerge.merge(K.TEAM, StoredField("Tobol", 0.9, 1L), Reading("T0bol", 0.5), 2L))
     }
 
     @Test fun missingFieldsComeWithKeysSoTheUserCanFillThem() {
