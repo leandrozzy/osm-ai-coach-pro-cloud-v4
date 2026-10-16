@@ -205,6 +205,13 @@ object Parsers {
                 f[K.RIVAL_LOGIN_BONUS] = Reading("+0%", 0.8)
             }
 
+            // Cadeado no círculo do rival = TREINO SECRETO: força, bônus e relatório do analista ficam escondidos.
+            // Só humano faz treino secreto.
+            if (img != null && rivalStr == null && rivalBonus == null && PixelProbe.lockedCircle(img, !mineLeft)) {
+                f[K.RIVAL_SECRET] = Reading("Sim", 0.9)
+                f[K.RIVAL_HUMAN] = Reading("Sim", 0.9)
+            }
+
             // Classificação (tabela no canto inferior direito): linha do meu time.
             val myKey = Txt.key(f[K.TEAM]?.value ?: "")
             if (myKey.length >= 3) {

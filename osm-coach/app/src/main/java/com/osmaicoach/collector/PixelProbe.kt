@@ -61,6 +61,28 @@ object PixelProbe {
         frac(img, 0.20f, 0.28f, 0.01f, 0.08f, ORANGE) >= 0.08f &&
             frac(img, 0.12f, 0.22f, 0.01f, 0.08f, LIGHT_BLUE) >= 0.10f
 
+    // Disco cinza-azulado translúcido do cadeado (o círculo normal da força é azul-marinho escuro).
+    private val LOCK_DISC: (Float, Float, Float) -> Boolean = { h, s, v -> h in 198f..234f && s in 0.22f..0.49f && v in 0.46f..0.72f }
+
+    /**
+     * Pré-jogo: o rival fez TREINO SECRETO quando o círculo dele mostra um cadeado no lugar da força/bônus.
+     * Procura o disco ao redor da posição do círculo (esquerda x≈0,34 ou direita x≈0,66, y≈0,26).
+     */
+    fun lockedCircle(img: Img, left: Boolean): Boolean {
+        var best = 0f
+        var cx = 0.29f
+        while (cx <= 0.391f) {
+            val x = if (left) cx else 1f - cx
+            var cy = 0.22f
+            while (cy <= 0.301f) {
+                best = max(best, frac(img, x - 0.015f, x + 0.015f, cy - 0.035f, cy + 0.035f, LOCK_DISC))
+                cy += 0.01f
+            }
+            cx += 0.006f
+        }
+        return best >= 0.30f
+    }
+
     /** A central dos 4 slots não tem barra superior; ela é azul. Serve só para decidir se vale rodar OCR. */
     fun hubBackdrop(img: Img): Boolean = frac(img, 0f, 1f, 0f, 1f, HUB_BLUE) >= 0.25f
 

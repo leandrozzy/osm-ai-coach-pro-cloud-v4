@@ -56,6 +56,38 @@ object FieldMerge {
     }
 }
 
+/**
+ * Treino secreto do rival (cadeado no círculo dele no pré-jogo). Só humano faz. O jogo esconde a força, o bônus e
+ * o relatório do analista (estilo, marcação, impedimento, desarme, estágio, estádio): esses campos não "faltam".
+ */
+object SecretTraining {
+    val HIDDEN = setOf(
+        K.RIVAL_STRENGTH, K.RIVAL_LOGIN_BONUS, K.RIVAL_PLAN, K.RIVAL_MARKING, K.RIVAL_OFFSIDE, K.RIVAL_TACKLE,
+        K.RIVAL_CAMP, K.STADIUM
+    )
+
+    /** Margem para o que o cadeado esconde (bônus de login e o reforço da preparação dele). */
+    const val MARGIN = 3
+
+    fun on(f: Map<String, StoredField>): Boolean = f[K.RIVAL_SECRET]?.value == "Sim"
+
+    /**
+     * Força do rival para a tática: a lida; com treino secreto e sem leitura, a média dos setores do plantel
+     * dele (GOL/DEF/MEI/ATA) + margem. Null se não houver como estimar.
+     */
+    fun rivalStrength(f: Map<String, StoredField>): Int? {
+        f[K.RIVAL_STRENGTH]?.value?.takeIf { FieldMerge.known(it) }?.toIntOrNull()?.let { return it }
+        return if (on(f)) estimate(f) else null
+    }
+
+    fun estimate(f: Map<String, StoredField>): Int? {
+        val s = listOf(K.RIVAL_GOL, K.RIVAL_DEF, K.RIVAL_MID, K.RIVAL_ATK)
+            .mapNotNull { f[it]?.value?.takeIf { v -> FieldMerge.known(v) }?.toIntOrNull()?.takeIf { v -> v in 20..130 } }
+        if (s.size < 3) return null
+        return Math.round(s.average()).toInt() + MARGIN
+    }
+}
+
 object Completeness {
     data class Item(val key: String, val label: String)
 
@@ -112,8 +144,9 @@ object Completeness {
     /** O que falta para o próximo jogo, pelo mesmo critério em todos os slots (humano: + apelido e bônus). */
     fun gameMissing(fields: Map<String, StoredField>): List<Item> {
         val human = fields[K.RIVAL_HUMAN]?.value == "Sim"
+        val secret = SecretTraining.on(fields)
         return (ITEMS.filter { it.key in GAME } + (if (human) HUMAN_ONLY else emptyList()))
-            .filter { !FieldMerge.known(fields[it.key]?.value) }
+            .filter { !FieldMerge.known(fields[it.key]?.value) && !(secret && it.key in SecretTraining.HIDDEN) }
     }
 
     /** Calculado somente por campos realmente preenchidos; nunca por quantidade de frames. */
@@ -122,7 +155,9 @@ object Completeness {
         val missing = ArrayList<String>()
         val missingItems = ArrayList<Item>()
         val human = fields[K.RIVAL_HUMAN]?.value == "Sim"
+        val secret = SecretTraining.on(fields)
         for (it in (if (human) ITEMS + HUMAN_ONLY else ITEMS)) {
+            if (secret && it.key in SecretTraining.HIDDEN && !FieldMerge.known(fields[it.key]?.value)) continue
             if (FieldMerge.known(fields[it.key]?.value)) known.add(it.label) else {
                 missing.add(it.label)
                 missingItems.add(it)

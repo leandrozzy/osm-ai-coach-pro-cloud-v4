@@ -11,7 +11,7 @@ class EngineTest {
     private fun p(name: String, cat: String, pos: String, s: Int, age: Int = 25, value: String = "5,0M", training: Boolean? = null) =
         PlayerEntity(1, "MY", Txt.key(name), name, age, pos, cat, s, value, training, null, 0L)
 
-    private fun squad(): List<PlayerEntity> = listOf(
+    internal fun squad(): List<PlayerEntity> = listOf(
         p("Kelleher", "GOL", "GR", 88), p("Silva", "GOL", "GR", 86),
         p("Guehi", "DEF", "DC", 98), p("Koundé", "DEF", "DD", 91), p("Timber", "DEF", "DE", 88),
         p("Quansah", "DEF", "DC", 84), p("Kiwior", "DEF", "DC", 83), p("Williams", "DEF", "DE", 83),

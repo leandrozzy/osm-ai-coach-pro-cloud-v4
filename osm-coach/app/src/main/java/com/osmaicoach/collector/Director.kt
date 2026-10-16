@@ -142,6 +142,14 @@ object Director {
         val fields = JSONObject()
         for ((k, v) in f) if (FieldMerge.known(v.value)) fields.put(k, v.value)
         ctx.put("campos", fields)
+        if (SecretTraining.on(f)) {
+            ctx.put(
+                "treino_secreto_rival",
+                "SIM (cadeado no pré-jogo): rival HUMANO; força, bônus e relatório do analista escondidos. " +
+                    (SecretTraining.estimate(f)?.let { "Força estimada pelos setores do plantel dele: $it (já com margem de +${SecretTraining.MARGIN}). " } ?: "Força sem estimativa. ") +
+                    "Ele se preparou para este jogo: tática segura, sem linha de impedimento."
+            )
+        }
 
         val players = dao.playersOf(slot)
         val mine = players.filter { it.owner == "MY" }.sortedWith(compareBy<PlayerEntity>({ it.cat ?: "Z" }, { -(it.strength ?: 0) }))
@@ -244,8 +252,8 @@ object Director {
         return TacticEngine.Input(
             players = players,
             myStrength = f[K.MY_STRENGTH]?.value?.toIntOrNull(),
-            rivalStrength = f[K.RIVAL_STRENGTH]?.value?.toIntOrNull(),
-            rivalHuman = boolOf(f[K.RIVAL_HUMAN]?.value, "Sim", "Não"),
+            rivalStrength = SecretTraining.rivalStrength(f),
+            rivalHuman = if (SecretTraining.on(f)) true else boolOf(f[K.RIVAL_HUMAN]?.value, "Sim", "Não"),
             rivalFormation = f[K.RIVAL_FORMATION]?.value?.takeIf { FieldMerge.known(it) } ?: repo.rivalProfileFormation(slot),
             myDef = f[K.MY_DEF]?.value?.toIntOrNull(),
             rivalAtk = f[K.RIVAL_ATK]?.value?.toIntOrNull(),
@@ -260,7 +268,8 @@ object Director {
             lessons = Coach.lessons(coachGames(repo, slot), f[K.RIVAL_TEAM]?.value?.takeIf { FieldMerge.known(it) }),
             metaLogs = allLogs(repo),
             metaRemote = MetaRefresh.remote(repo),
-            rivalStyle = f[K.RIVAL_PLAN]?.value?.takeIf { FieldMerge.known(it) }
+            rivalStyle = f[K.RIVAL_PLAN]?.value?.takeIf { FieldMerge.known(it) },
+            rivalSecret = SecretTraining.on(f)
         )
     }
 
@@ -324,7 +333,7 @@ object Director {
             played.filter { m -> Fixtures.opponent(m)?.let { Txt.sim(Txt.key(it), rival) >= 0.85 } == true }.mapNotNull { it.result }
         } else emptyList()
         return WinModel.Input(
-            myStrength = int(K.MY_STRENGTH), rivalStrength = int(K.RIVAL_STRENGTH),
+            myStrength = int(K.MY_STRENGTH), rivalStrength = SecretTraining.rivalStrength(f),
             myAtk = int(K.MY_ATK), myMid = int(K.MY_MID), myDef = int(K.MY_DEF), myGol = int(K.MY_GOL),
             rivalAtk = int(K.RIVAL_ATK), rivalMid = int(K.RIVAL_MID), rivalDef = int(K.RIVAL_DEF), rivalGol = int(K.RIVAL_GOL),
             rivalFormation = str(K.RIVAL_FORMATION) ?: repo.rivalProfileFormation(slot),
@@ -332,7 +341,7 @@ object Director {
             rivalTackle = str(K.RIVAL_TACKLE),
             rivalSecret = boolOf(str(K.RIVAL_SECRET), "Sim", "Não"), rivalCamp = boolOf(str(K.RIVAL_CAMP), "Sim", "Não"),
             home = boolOf(str(K.HOME), "Casa", "Fora"),
-            rivalHuman = boolOf(str(K.RIVAL_HUMAN), "Sim", "Não"),
+            rivalHuman = if (SecretTraining.on(f)) true else boolOf(str(K.RIVAL_HUMAN), "Sim", "Não"),
             referee = str(K.REFEREE),
             myBonus = bonus(K.MY_BONUS), rivalBonus = bonus(K.RIVAL_LOGIN_BONUS),
             recent = played.filter { !Fixtures.isCup(it) }.mapNotNull { it.result }.take(5),
@@ -340,7 +349,7 @@ object Director {
             calib = Calib.offset(repo.dao.tacticLogs(slot).mapNotNull { runCatching { JSONObject(it.json) }.getOrNull() }),
             meta = run {
                 val my = int(K.MY_STRENGTH)
-                val rv = int(K.RIVAL_STRENGTH)
+                val rv = SecretTraining.rivalStrength(f)
                 if (my != null && rv != null) Meta.resolve(
                     my - rv, boolOf(str(K.HOME), "Casa", "Fora"), str(K.RIVAL_FORMATION) ?: repo.rivalProfileFormation(slot),
                     MetaRefresh.remote(repo), allLogs(repo)
@@ -833,7 +842,7 @@ object Director {
         for (f in candidateFormations(res, inp)) {
             val rows = TacticEngine.lineup(f, inp.players, inp.fitness)?.first ?: continue
             for (st in SIM_STYLES) for (dm in listOf(-12, 0, 12)) for (tk in Osm.allowedTackles(inp.referee).filter { it != "Cuidadoso" }.ifEmpty { listOf("Cuidadoso") })
-                for (off in listOf("Não", "Sim")) for (mk in listOf("À zona", "Homem-a-homem")) for (md in mids) {
+                for (off in if (inp.rivalSecret) listOf("Não") else listOf("Não", "Sim")) for (mk in listOf("À zona", "Homem-a-homem")) for (md in mids) {
                     // contra-ataque pede ritmo alto (transição rápida) e bloco baixo (pressão baixa)
                     val counter = st == "Contra-ataque"
                     val t = t0.copy(
@@ -863,6 +872,9 @@ object Director {
             "Não copie o rascunho por comodidade e não aplique a mesma receita para rivais diferentes: olhe a formação e o " +
             "estilo DESTE rival, a diferença exata de força e os setores (ataque × defesa dele, meio × meio, defesa × ataque dele). " +
             "Contra rival HUMANO prefira a tática que não perde para as táticas que ele já usou. " +
+            "Se DADOS.treino_secreto_rival existir, o rival fez TREINO SECRETO: a tática e a força dele estão escondidas; " +
+            "use a força estimada, NÃO use linha de impedimento (offside \"Não\"), proteja o meio-campo e não aposte em " +
+            "contra-golpe ao estilo dele (ele é desconhecido). " +
             "REGRAS: formation uma de $allowed; pressure, mentality e tempo de 0 a 100; tackle SÓ entre $tackles " +
             "(árbitro pela cor do termômetro: azul Extremo, verde Agressivo, amarelo Normal, laranja/vermelho Cuidadoso). " +
             "Contra rival BEM MAIS FRACO use 3 atacantes, mentalidade ofensiva e estilo de ataque. " +
@@ -1002,7 +1014,9 @@ object Director {
         if (reply.ok && json != null) {
             val (validated, err) = TacticValidator.validate(json, inp.referee)
             if (validated != null) {
-                val t = TacticValidator.canonical(validated, res.tactic)
+                val t = TacticValidator.canonical(validated, res.tactic).let {
+                    if (inp.rivalSecret && it.offside == "Sim") it.copy(offside = "Não", notes = it.notes + "Treino secreto do rival: sem linha de impedimento.") else it
+                }
                 aiWhy = t.notes.joinToString(" ")
                 // a IA decide: só fica fora uma escolha que a simulação mostra claramente pior ou que foge muito do jogo
                 val okLimits = fromChat || (Formations.base(t.formation) in allowed && Math.abs(t.pressure - res.tactic.pressure) <= 30 &&
