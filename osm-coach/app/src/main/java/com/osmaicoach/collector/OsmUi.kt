@@ -1,6 +1,7 @@
 package com.osmaicoach.collector
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -28,6 +29,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -493,3 +495,70 @@ fun OsmTitle(text: String, modifier: Modifier = Modifier) {
     )
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// Arte 3D de verdade (renderizada em Blender). As versões em Canvas acima ficam como reserva.
+
+/** Fundo do app: estádio noturno com refletores, coberto por um véu azul-marinho que garante contraste. */
+@Composable
+fun OsmAppBackground(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    Box(modifier.background(OsmColors.NIGHT_BOTTOM)) {
+        Image(osmArt("bg_stadium"), null, Modifier.matchParentSize(), contentScale = ContentScale.Crop)
+        Box(
+            Modifier.matchParentSize().background(
+                Brush.verticalGradient(
+                    0f to Color(0x8C061331), 0.25f to Color(0xC7081A40),
+                    0.6f to Color(0xE6081A40), 1f to Color(0xF2050E24)
+                )
+            )
+        )
+        content()
+    }
+}
+
+@Composable
+fun StyleArt(style: String?, modifier: Modifier = Modifier) {
+    val name = when (Osm.style(style) ?: style) {
+        "Jogar pelas alas" -> "style_alas"
+        "Jogo de passe" -> "style_passe"
+        "Contra-ataque" -> "style_contra"
+        "Remate à vista" -> "style_remate"
+        "Bola longa" -> "style_longa"
+        else -> "style_passe"
+    }
+    Image(osmArt(name), style, modifier, contentScale = ContentScale.Fit)
+}
+
+@Composable
+fun TackleArt(tackle: String?, modifier: Modifier = Modifier) {
+    val name = when (Osm.tackle(tackle) ?: tackle) {
+        "Cuidadoso" -> "tackle_cuidadoso"
+        "Agressivo" -> "tackle_agressivo"
+        "Extremo" -> "tackle_extremo"
+        else -> "tackle_normal"
+    }
+    Image(osmArt(name), tackle, modifier, contentScale = ContentScale.Fit)
+}
+
+/** Campo em bloco 3D com as três camadas (avançados, médios, defesas) sobrepostas na mesma moldura. */
+@Composable
+fun SectorArt(attack: String?, mid: String?, def: String?, modifier: Modifier = Modifier) {
+    val a = Osm.ATTACK.indexOf(Osm.attack(attack) ?: attack).coerceAtLeast(0)
+    val m = Osm.MIDFIELD.indexOf(Osm.midfield(mid) ?: mid).coerceAtLeast(0)
+    val d = Osm.DEFENSE.indexOf(Osm.defense(def) ?: def).coerceAtLeast(0)
+    Box(modifier) {
+        for (layer in listOf("sector_base", "sector_def_$d", "sector_mid_$m", "sector_att_$a"))
+            Image(osmArt(layer), null, Modifier.matchParentSize(), contentScale = ContentScale.Fit)
+    }
+}
+
+@Composable
+fun MarkingArt(marking: String?, modifier: Modifier = Modifier) {
+    val man = (Osm.marking(marking) ?: marking) == "Homem-a-homem"
+    Image(osmArt(if (man) "mark_homem" else "mark_zona"), marking, modifier, contentScale = ContentScale.Fit)
+}
+
+@Composable
+fun OffsideArt(offside: String?, modifier: Modifier = Modifier) {
+    Image(osmArt(if (offside == "Sim") "offside_sim" else "offside_nao"), offside, modifier, contentScale = ContentScale.Fit)
+}

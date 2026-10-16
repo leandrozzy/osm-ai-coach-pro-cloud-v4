@@ -80,6 +80,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.imageResource
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -180,7 +181,9 @@ class MainActivity : ComponentActivity() {
                 colorScheme = darkColorScheme(
                     primary = C.PRIMARY, secondary = C.GOLD, background = C.BG, surface = C.SURFACE,
                     onSurface = Color.White, onBackground = Color.White, surfaceVariant = C.SURFACE2,
-                    onPrimary = Color.White, secondaryContainer = C.SURFACE2
+                    onPrimary = Color.White, secondaryContainer = C.SURFACE2,
+                    onSecondary = Color(0xFF0B1C3E), onSecondaryContainer = Color.White, onSurfaceVariant = Color(0xFFC9D8F0),
+                    primaryContainer = C.SURFACE2, onPrimaryContainer = Color.White, outline = Color(0xFF3F6AA8)
                 ),
                 typography = base.copy(
                     displayLarge = f(base.displayLarge), displayMedium = f(base.displayMedium), displaySmall = f(base.displaySmall),
@@ -193,7 +196,11 @@ class MainActivity : ComponentActivity() {
                 androidx.compose.runtime.CompositionLocalProvider(
                     androidx.compose.material3.LocalTextStyle provides f(base.bodyLarge)
                 ) {
-                    Box(Modifier.fillMaxSize().background(OSM_BACKGROUND)) { App() }
+                    androidx.compose.runtime.CompositionLocalProvider(
+                        androidx.compose.material3.LocalContentColor provides Color.White
+                    ) {
+                        OsmAppBackground(Modifier.fillMaxSize()) { App() }
+                    }
                 }
             }
         }
@@ -2956,36 +2963,6 @@ private fun DrawScope.pitch3d(pv: PitchView) {
     }
 }
 
-/** Camisa com volume: silhueta, sombreado lateral, gola e brilho. (cx, cy) é o centro do peito. */
-private fun DrawScope.shirt(cx: Float, cy: Float, r: Float, color: Color) {
-    fun o(x: Float, y: Float) = Offset(cx + x * r, cy + y * r)
-    val path = androidx.compose.ui.graphics.Path()
-    val pts = listOf(
-        o(-0.28f, -1f), o(-0.66f, -0.86f), o(-1.08f, -0.42f), o(-0.80f, -0.12f), o(-0.58f, -0.34f),
-        o(-0.58f, 0.95f), o(0.58f, 0.95f), o(0.58f, -0.34f), o(0.80f, -0.12f), o(1.08f, -0.42f),
-        o(0.66f, -0.86f), o(0.28f, -1f)
-    )
-    path.moveTo(pts[0].x, pts[0].y)
-    for (i in 1 until pts.size) path.lineTo(pts[i].x, pts[i].y)
-    val neck = o(0f, -0.70f)
-    path.quadraticBezierTo(neck.x, neck.y, pts[0].x, pts[0].y)
-    path.close()
-    // sombra no gramado
-    drawOval(Color(0x66000000), topLeft = Offset(cx - r * 0.95f, cy + r * 0.80f), size = Size(r * 1.9f, r * 0.55f))
-    val dark = Color(
-        red = color.red * 0.55f, green = color.green * 0.55f, blue = color.blue * 0.55f, alpha = 1f
-    )
-    val light = Color(
-        red = color.red + (1f - color.red) * 0.35f, green = color.green + (1f - color.green) * 0.35f,
-        blue = color.blue + (1f - color.blue) * 0.35f, alpha = 1f
-    )
-    drawPath(path, Brush.horizontalGradient(listOf(dark, light, color, dark), startX = cx - r * 1.08f, endX = cx + r * 1.08f))
-    drawPath(path, Brush.verticalGradient(listOf(Color(0x00000000), Color(0x55000000)), startY = cy - r, endY = cy + r))
-    drawPath(path, Color(0xCC0B1220), style = Stroke(1.4f * density))
-    drawLine(Color(0xAAFFFFFF), o(-0.24f, -0.94f), neck, 1.6f * density, cap = StrokeCap.Round)
-    drawLine(Color(0xAAFFFFFF), o(0.24f, -0.94f), neck, 1.6f * density, cap = StrokeCap.Round)
-}
-
 @Composable
 private fun LineupPitch(plan: JSONObject) {
     val rows = ArrayList<List<Pair<String, Int>>>()
@@ -3011,6 +2988,11 @@ private fun LineupPitch(plan: JSONObject) {
     val advA = arrowSet(plan.optString("advAttack"))
     val advM = arrowSet(plan.optString("advMid"))
     val advD = arrowSet(plan.optString("advDef"))
+    // Jogadores 3D renderizados (Blender), um uniforme por setor.
+    val kitGol = androidx.compose.ui.graphics.ImageBitmap.imageResource(R.drawable.osm_lineup_gol)
+    val kitDef = androidx.compose.ui.graphics.ImageBitmap.imageResource(R.drawable.osm_lineup_def)
+    val kitMei = androidx.compose.ui.graphics.ImageBitmap.imageResource(R.drawable.osm_lineup_mei)
+    val kitAta = androidx.compose.ui.graphics.ImageBitmap.imageResource(R.drawable.osm_lineup_ata)
     Canvas(Modifier.fillMaxWidth().height(440.dp).clip(RoundedCornerShape(20.dp))) {
         val dp = density
         val pv = PitchView(size.width, size.height)
@@ -3058,19 +3040,29 @@ private fun LineupPitch(plan: JSONObject) {
                     arrow(a, b, col.copy(alpha = 0.95f), 3f * dp * sc)
                 }
                 val r = 17f * dp * sc
-                val cy = foot.y - r * 0.9f
-                shirt(foot.x, cy, r, markerColor)
+                val kit = when {
+                    ri == 0 -> kitGol
+                    ri == 1 -> kitDef
+                    ri == rows.size - 1 -> kitAta
+                    else -> kitMei
+                }
+                val fh = r * 3.1f
+                val fw = fh * kit.width / kit.height
+                drawImage(
+                    kit, dstOffset = androidx.compose.ui.unit.IntOffset((foot.x - fw / 2f).toInt(), (foot.y - fh * 0.97f).toInt()),
+                    dstSize = androidx.compose.ui.unit.IntSize(fw.toInt(), fh.toInt())
+                )
                 drawIntoCanvas { cv ->
                     if (pl.second > 0) {
                         numPaint.textSize = 12.5f * dp * sc
-                        cv.nativeCanvas.drawText(pl.second.toString(), foot.x, cy + r * 0.38f, numPaint)
+                        cv.nativeCanvas.drawText(pl.second.toString(), foot.x, foot.y - fh * 0.5f, numPaint)
                     }
                 }
                 if (pl.first.isNotBlank()) {
                     namePaint.textSize = 10f * dp * (0.75f + 0.25f * sc)
                     val label = if (pl.first.length > 12) pl.first.take(11) + "…" else pl.first
                     val tw = namePaint.measureText(label)
-                    val top = foot.y + r * 0.35f
+                    val top = foot.y + r * 0.1f
                     drawRoundRect(
                         Color(0xD90B1220), topLeft = Offset(foot.x - tw / 2f - 6f * dp, top),
                         size = Size(tw + 12f * dp, namePaint.textSize + 6f * dp), cornerRadius = CornerRadius(7f * dp, 7f * dp)
@@ -3440,14 +3432,14 @@ private fun SlotTactic(slot: Int, d: SlotData) {
         left = {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 OsmCaption("Estilo de jogo", style)
-                StylePitch(style, Modifier.fillMaxWidth().height(92.dp).padding(top = 4.dp))
+                StyleArt(style, Modifier.fillMaxWidth().height(96.dp).padding(top = 4.dp))
                 OsmDots(Osm.STYLES.size, Osm.STYLES.indexOf(style), Modifier.padding(top = 4.dp))
             }
         },
         right = {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 OsmCaption("Desarme", tackle)
-                TackleFace(tackle, Modifier.size(width = 92.dp, height = 92.dp).padding(top = 4.dp))
+                TackleArt(tackle, Modifier.size(width = 80.dp, height = 104.dp).padding(top = 4.dp))
                 OsmDots(Osm.TACKLES.size, Osm.TACKLES.indexOf(tackle), Modifier.padding(top = 4.dp))
             }
         }
@@ -3455,7 +3447,7 @@ private fun SlotTactic(slot: Int, d: SlotData) {
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp).osmPanel().padding(10.dp)) {
         Text("Táticas por sector", fontSize = 11.sp, color = OsmColors.CAPTION, fontWeight = FontWeight.SemiBold, modifier = Modifier.align(Alignment.CenterHorizontally))
         Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            SectorPitch(att, mid, def, Modifier.size(width = 104.dp, height = 150.dp))
+            SectorArt(att, mid, def, Modifier.size(width = 124.dp, height = 163.dp))
             Column(Modifier.weight(1f).padding(start = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 SectorChoice("Avançados", att, Osm.ATTACK)
                 SectorChoice("Médios", mid, Osm.MIDFIELD)
@@ -3470,14 +3462,14 @@ private fun SlotTactic(slot: Int, d: SlotData) {
         left = {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 OsmCaption("Marcação", marking)
-                MarkingFigure(marking, Modifier.size(width = 80.dp, height = 74.dp).padding(top = 4.dp))
+                MarkingArt(marking, Modifier.size(width = 140.dp, height = 124.dp).padding(top = 4.dp))
                 OsmDots(2, Osm.MARKING.indexOf(marking), Modifier.padding(top = 4.dp))
             }
         },
         right = {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 OsmCaption("Fazer fora-de-jogo", offside)
-                OffsideFigure(offside, Modifier.size(width = 80.dp, height = 74.dp).padding(top = 4.dp))
+                OffsideArt(offside, Modifier.size(width = 140.dp, height = 124.dp).padding(top = 4.dp))
                 OsmDots(2, if (offside == "Sim") 1 else 0, Modifier.padding(top = 4.dp))
             }
         }
