@@ -349,7 +349,9 @@ object WinModel {
         /** Correção aprendida deste slot: o modelo vem prevendo gols a mais (<0) ou a menos (>0). */
         val calib: Double = 0.0,
         /** Modelo do jogo (comunidade + aprendizado); null = o embutido. */
-        val meta: Meta.Template? = null
+        val meta: Meta.Template? = null,
+        /** Quanto vale um empate (1 = liga normal). Na batalha só a vitória conta: o empate vale bem menos. */
+        val drawValue: Double = 1.0
     )
 
     /** Efeito de um fator: no log dos meus gols esperados, no log dos gols do rival e na imprevisibilidade. */
@@ -588,7 +590,7 @@ object WinModel {
     /** Pontos esperados (3V + 1E) sem detalhar fatores: rápido para comparar centenas de táticas. */
     fun expectedPoints(i: Input): Double? {
         val o = outcome(terms(i) ?: return null)
-        return 3.0 * o[0] + o[1]
+        return 3.0 * o[0] + i.drawValue * o[1]
     }
 
     fun predict(i: Input): Prob? {

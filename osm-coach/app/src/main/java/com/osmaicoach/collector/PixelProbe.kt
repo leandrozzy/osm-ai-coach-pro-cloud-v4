@@ -160,63 +160,54 @@ object PixelProbe {
         val y0 = if (labelYc != null) labelYc - 0.06f else 0.430f
         val y1 = if (labelYc != null) labelYc + 0.035f else 0.505f
         val xa = (x0.coerceIn(0f, 1f) * img.w).toInt()
-        val xb = max((x1.coerceIn(0f, 1f) * img.w).toInt(), xa + 1)
+        val xb = min(max((x1.coerceIn(0f, 1f) * img.w).toInt(), xa + 1), img.w)
         val ya = (y0.coerceIn(0f, 1f) * img.h).toInt()
-        val yb = max((y1.coerceIn(0f, 1f) * img.h).toInt(), ya + 1)
-        var red = 0
-        var orange = 0
-        var yellow = 0
-        var green = 0
-        var blue = 0
+        val yb = min(max((y1.coerceIn(0f, 1f) * img.h).toInt(), ya + 1), img.h)
         val t = FloatArray(3)
-        for (y in ya until min(yb, img.h)) {
-            for (x in xa until min(xb, img.w)) {
-                hsv(img.px[y * img.w + x], t)
-                if (t[1] < 0.5f || t[2] < 0.55f) continue
-                val h = t[0]
-                when {
-                    h < 15f || h >= 340f -> red++
-                    h < 40f -> orange++
-                    h < 72f -> yellow++
-                    h in 80f..165f -> green++
-                    h in 185f..250f && t[1] >= 0.55f && t[2] >= 0.6f -> blue++
-                }
+        // 0 vermelho, 1 laranja, 2 amarelo, 3 verde, 4 azul-claro do bulbo; -1 = não é cor de bulbo
+        fun kind(c: Int): Int {
+            hsv(c, t)
+            if (t[1] < 0.5f || t[2] < 0.55f) return -1
+            val h = t[0]
+            return when {
+                h < 15f || h >= 340f -> 0
+                h < 40f -> 1
+                h < 72f -> 2
+                h in 80f..165f -> 3
+                // bulbo "muito brando": azul-claro vivo. O fundo azul da batalha (mais escuro) não conta.
+                h in 180f..214f && t[1] >= 0.6f && t[2] >= 0.88f -> 4
+                else -> -1
             }
         }
-        // cor quente/verde no bulbo vence: o tubo do termômetro é sempre azul
-        val warm = red + orange + yellow + green
-        if (warm >= 6) {
-            val top = maxOf(red, orange, yellow, green)
-            if (top < warm * 0.55f) return null
-            return when (top) {
-                red -> "Muito rigoroso"
-                orange -> "Rigoroso"
-                yellow -> "Normal"
-                else -> "Brando"
+        // O bulbo é a coluna com mais cor de bulbo; o rosto do árbitro (pele/camisa) fica à esquerda e não entra.
+        var best = -1
+        var bestN = 0
+        for (x in xa until xb) {
+            var n = 0
+            for (y in ya until yb) if (kind(img.px[y * img.w + x]) >= 0) n++
+            if (n > bestN) { bestN = n; best = x }
+        }
+        if (best < 0 || bestN < 3) return null
+        val half = max(2, (0.004f * img.w).toInt())
+        val cnt = IntArray(5)
+        for (x in max(xa, best - half)..min(xb - 1, best + half)) {
+            for (y in ya until yb) {
+                val k = kind(img.px[y * img.w + x])
+                if (k >= 0) cnt[k]++
             }
         }
-        // bulbo azul = muito brando, desde que o fundo em volta não seja azul (quadro de transição)
-        if (blue >= 8 && !blueAround(img, x0, x1, y0)) return "Muito brando"
-        return null
-    }
-
-    /** Fundo azul saturado logo acima do termômetro: é o quadro de transição, não o bulbo. */
-    private fun blueAround(img: Img, x0: Float, x1: Float, y0: Float): Boolean {
-        val xa = ((x0 - 0.03f).coerceIn(0f, 1f) * img.w).toInt()
-        val xb = max(((x1 + 0.03f).coerceIn(0f, 1f) * img.w).toInt(), xa + 1)
-        val ya = ((y0 - 0.10f).coerceIn(0f, 1f) * img.h).toInt()
-        val yb = max(((y0 - 0.03f).coerceIn(0f, 1f) * img.h).toInt(), ya + 1)
-        var n = 0
-        var b = 0
-        val t = FloatArray(3)
-        for (y in ya until min(yb, img.h)) {
-            for (x in xa until min(xb, img.w)) {
-                n++
-                hsv(img.px[y * img.w + x], t)
-                if (t[0] in 185f..250f && t[1] >= 0.55f && t[2] >= 0.5f) b++
-            }
+        val tot = cnt.sum()
+        if (tot < 6) return null
+        var top = 0
+        for (k in 1 until 5) if (cnt[k] > cnt[top]) top = k
+        if (cnt[top] < tot * 0.55f) return null
+        return when (top) {
+            0 -> "Muito rigoroso"
+            1 -> "Rigoroso"
+            2 -> "Normal"
+            3 -> "Brando"
+            else -> "Muito brando"
         }
-        return n > 0 && b >= n * 0.5f
     }
 }
 

@@ -73,4 +73,23 @@ class SecretTrainingTest {
         assertTrue(r.tactic.notes.first().contains("TREINO SECRETO"))
         assertFalse(r.tactic.notes.any { it.contains("confira o relatório") })
     }
+
+    @Test fun battleAgainstEqualRivalPlaysToWin() {
+        val squad = EngineTest().squad()
+        val inp = TacticEngine.Input(squad, 73, 75, true, "4-3-3 A", 70, 76, "Muito brando", false, emptyList(),
+            rivalStyle = "Contra-ataque", mustWin = true)
+        val r = TacticEngine.recommend(inp)!!
+        assertEquals("Atacar apenas", r.tactic.advAttack)
+        assertTrue(r.tactic.mentality >= 60)
+        assertTrue(r.tactic.playStyle != "Contra-ataque")
+        assertEquals("Extremo", r.tactic.tackle)
+        assertTrue(r.tactic.notes.first().startsWith("⚔ Batalha"))
+    }
+
+    @Test fun drawIsWorthLessInBattle() {
+        val i = WinModel.Input(73, 75)
+        val league = WinModel.expectedPoints(i)!!
+        val battle = WinModel.expectedPoints(i.copy(drawValue = Director.BATTLE_DRAW))!!
+        assertTrue(battle < league)
+    }
 }
