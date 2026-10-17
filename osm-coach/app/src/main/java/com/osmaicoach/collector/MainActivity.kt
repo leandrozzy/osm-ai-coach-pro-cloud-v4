@@ -1107,6 +1107,8 @@ data class SlotSummary(
 data class TodayData(val active: Boolean = false, val slots: List<SlotSummary> = emptyList())
 
 data class SlotData(
+    /** false enquanto o slot ainda está carregando (evita piscar "ainda não lido"). */
+    val ready: Boolean = false,
     val fields: Map<String, StoredField> = emptyMap(),
     val players: List<PlayerEntity> = emptyList(),
     val matches: List<MatchEntity> = emptyList(),
@@ -1165,6 +1167,7 @@ private suspend fun loadSlot(ctx: Context, slot: Int): SlotData {
     Director.resolveTacticLogs(repo, slot)
     val tplan = dao.plan(slot, "tactic")?.json?.let { try { JSONObject(it) } catch (e: Exception) { null } }
     return SlotData(
+        ready = true,
         fields = f, players = players, matches = dao.matchesOf(slot),
         tactic = dao.plan(slot, "tactic"), market = dao.plan(slot, "market"),
         learning = dao.learningOf(slot),
@@ -2135,7 +2138,7 @@ private fun SlotScreen(slot: Int, tab: Int, onTab: (Int) -> Unit, onBack: () -> 
     val tick = rememberTick(2000L)
     val data = rememberLoaded(SlotData(), tick, Pair(slot, UiBus.version)) { loadSlot(ctx, slot) }
     val tabs = listOf("Resumo", "Pré-jogo", "Elenco", "Calendário", "Tática", "Resultado", "Diretor", "Aprendizado")
-    val title = known(data.fields, K.TEAM) ?: known(data.fields, K.HUB_TITLE) ?: "Slot $slot ainda não lido"
+    val title = known(data.fields, K.TEAM) ?: known(data.fields, K.HUB_TITLE) ?: if (data.ready) "Slot $slot ainda não lido" else "carregando…"
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             OutlinedButton(onClick = onBack) { Text("←") }
@@ -2144,12 +2147,16 @@ private fun SlotScreen(slot: Int, tab: Int, onTab: (Int) -> Unit, onBack: () -> 
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Text("S$slot • $title", fontWeight = FontWeight.Bold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(known(data.fields, K.COMPETITION) ?: "competição não lida", color = C.MUTED, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(known(data.fields, K.COMPETITION) ?: if (data.ready) "competição não lida" else "", color = C.MUTED, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             OsmButton()
         }
         ScrollableTabRow(selectedTabIndex = tab, edgePadding = 4.dp, containerColor = C.BG) {
             tabs.forEachIndexed { i, t -> Tab(selected = tab == i, onClick = { onTab(i) }, text = { Text(t, fontSize = 13.sp) }) }
+        }
+        if (!data.ready) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { androidx.compose.material3.CircularProgressIndicator(color = C.PRIMARY) }
+            return@Column
         }
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
             when (tab) {

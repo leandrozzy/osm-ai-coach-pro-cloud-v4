@@ -102,7 +102,7 @@ object TrainBoard {
         // "Não está treinando" marcado à mão (depois da última leitura da tela): o lugar fica livre
         for (i in out.indices) {
             val k = out[i].key ?: continue
-            if (out[i].state == "active" && manual[k] == false) {
+            if ((out[i].state == "active" || out[i].state == "done") && manual[k] == false) {
                 out[i] = out[i].copy(name = null, state = "empty", key = null)
             }
         }
