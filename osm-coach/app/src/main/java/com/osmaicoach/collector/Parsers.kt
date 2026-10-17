@@ -874,7 +874,8 @@ object Parsers {
             val name = nameLn?.text?.trim()?.takeIf { TrainBoard.plausible(it) }?.replace(Regex("^\\d+\\s*"), "")?.takeIf { Txt.letters(it) >= 3 }
             val timer = texts.any { RX_TIMER.containsMatchIn(it) || it == "concluir" }
             val done = texts.any { it.contains("treino conclu") || it.contains("treino concu") }
-            val empty = texts.any { it.startsWith("seleciona") }
+            // "Seleciona" = livre; universal bloqueado ("Desbloquear treinador") também não tem ninguém treinando
+            val empty = texts.any { it.startsWith("seleciona") || it.contains("desbloquear") }
             val state = when {
                 timer && name != null -> "active"
                 done && name != null -> "done"

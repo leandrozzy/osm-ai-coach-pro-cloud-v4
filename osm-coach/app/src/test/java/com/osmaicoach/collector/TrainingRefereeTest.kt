@@ -51,6 +51,14 @@ class TrainingRefereeTest {
         for (r in listOf("ATA", "MEI", "DEF", "GOL")) assertEquals(r, "empty", t[r]?.state)
     }
 
+    @Test fun lockedUniversalTrainerIsFree() {
+        // vídeo de 17/10 (S3): universal bloqueado, só o boneco e "Desbloquear treinador"; ninguém treina nele
+        val t = Parsers.training(ocr(ALL_DONE.replace("Reclamar@0.09,0.94", "Desbloquear treinador@0.09,0.94"))).associateBy { it.role }
+        assertEquals("empty", t["UNI"]?.state)
+        assertNull(t["UNI"]?.name)
+        assertEquals("done", t["ATA"]?.state)
+    }
+
     @Test fun rewardAnimationFrameIsIgnored() {
         assertTrue(Parsers.training(ocr(REWARD_ANIMATION)).isEmpty())
     }
