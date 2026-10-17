@@ -293,8 +293,15 @@ class Repo(private val ctx: Context) {
 
     private suspend fun applyPregame(slot: Int, ex: Extraction, source: String, now: Long): Int {
         newSeasonIfNeeded(slot, ex.roundRead ?: ex.fields[K.ROUND]?.value?.toIntOrNull(), now)
+        // Jogo novo (outra rodada): o cadeado do jogo anterior não vale mais.
+        val oldRound = dao.fieldsOf(slot).firstOrNull { it.fkey == K.ROUND }?.fvalue?.toIntOrNull()
+        val newRound = ex.roundRead ?: ex.fields[K.ROUND]?.value?.toIntOrNull()
+        if (oldRound != null && newRound != null && oldRound != newRound && !ex.fields.containsKey(K.RIVAL_SECRET)) {
+            dao.deleteField(slot, K.RIVAL_SECRET)
+        }
         val newRival = ex.fields[K.RIVAL_TEAM]
-        if (newRival != null && newRival.conf >= 0.8) {
+        // 0,7 = mesma confiança com que o nome novo entra (leitura pela IA): rival trocado sempre limpa o anterior
+        if (newRival != null && newRival.conf >= 0.7) {
             val old = dao.fieldsOf(slot).firstOrNull { it.fkey == K.RIVAL_TEAM }
             if (old != null && Txt.sim(Txt.key(old.fvalue), Txt.key(newRival.value)) < 0.8) {
                 dao.deleteRivalFields(slot)
@@ -973,7 +980,7 @@ class Repo(private val ctx: Context) {
 
     // ------------------------------------------------------------------ treinos informados à mão
 
-    private suspend fun trainingOverrides(slot: Int): Map<String, Boolean> {
+    suspend fun trainingOverrides(slot: Int): Map<String, Boolean> {
         val p = dao.plan(slot, "trainov") ?: return emptyMap()
         val out = HashMap<String, Boolean>()
         try {

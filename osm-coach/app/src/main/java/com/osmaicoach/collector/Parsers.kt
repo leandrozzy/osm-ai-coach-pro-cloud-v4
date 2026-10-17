@@ -210,6 +210,9 @@ object Parsers {
             if (img != null && rivalStr == null && rivalBonus == null && PixelProbe.lockedCircle(img, !mineLeft)) {
                 f[K.RIVAL_SECRET] = Reading("Sim", 0.9)
                 f[K.RIVAL_HUMAN] = Reading("Sim", 0.9)
+            } else if (rivalStr != null || rivalBonus != null) {
+                // número (força ou bônus) no círculo do rival: neste jogo não há cadeado
+                f[K.RIVAL_SECRET] = Reading("Não", 0.9)
             }
 
             // Classificação (tabela no canto inferior direito): linha do meu time.

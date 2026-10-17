@@ -52,6 +52,22 @@ class VisualTest {
         assertTrue(TrainBoard.plausible("19 BUKAYO SAKA"))
     }
 
+    @Test fun manualCorrectionWinsOverTheTrainingScreen() {
+        val now = 10L * 86400000L
+        val mine = listOf(p("Aubameyang", "ATA"), p("Almoez Ali", "ATA"), p("Nsoki", "DEF"))
+        val screen = JSONObject()
+            .put("ATA", JSONObject().put("name", "ALMOEZ ALI").put("state", "active").put("at", now))
+            .put("UNI", JSONObject().put("name", "PIERRE-EMERICK AUBAMEYANG").put("state", "active").put("at", now))
+            .put("DEF", JSONObject().put("name", JSONObject.NULL).put("state", "empty").put("at", now))
+        // "Não está treinando" no Aubameyang e "Está treinando" no Nsoki
+        val seats = TrainBoard.seats(screen, mine, now, mapOf(Txt.key("Aubameyang") to false, Txt.key("Nsoki") to true))
+        assertEquals("empty", seats.first { it.role == "UNI" }.state)
+        assertEquals(Txt.key("Nsoki"), seats.first { it.role == "DEF" }.key)
+        assertEquals(setOf(Txt.key("Almoez Ali"), Txt.key("Nsoki")), TrainBoard.activeKeys(seats))
+        // sem correção, a leitura da tela vale
+        assertEquals(2, TrainBoard.activeKeys(TrainBoard.seats(screen, mine, now)).size)
+    }
+
     @Test fun samePlayerInTwoTrainersKeepsTheNewestRead() {
         val now = 10L * 86400000L
         val mine = listOf(p("Guéhi", "DEF"))

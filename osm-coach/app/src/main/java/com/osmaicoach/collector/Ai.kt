@@ -1213,6 +1213,8 @@ object AiMapper {
         if (rivalCircle != null && Txt.norm(rivalCircle).let { it.contains("cadeado") || it.contains("lock") }) {
             out[K.RIVAL_SECRET] = Reading("Sim", c)
             out[K.RIVAL_HUMAN] = Reading("Sim", c)
+        } else if (out.containsKey(K.RIVAL_STRENGTH) || out.containsKey(K.RIVAL_LOGIN_BONUS)) {
+            out[K.RIVAL_SECRET] = Reading("Não", c)
         }
         if (rivalUser != null) {
             out[K.RIVAL_NICK] = Reading(rivalUser, c)
