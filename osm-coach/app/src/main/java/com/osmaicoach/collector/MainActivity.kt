@@ -1132,6 +1132,8 @@ data class SlotData(
     val board: List<String> = emptyList(),
     /** Última leitura de cada treinador (tela de Treinamento). */
     val trainScreen: JSONObject? = null,
+    /** Treino corrigido à mão (nameKey -> treinando?). */
+    val trainOv: Map<String, Boolean> = emptyMap(),
     /** Resumo do fim da competição (posição, pontos, campeão, valor). */
     val season: JSONObject? = null
 )
@@ -1187,6 +1189,7 @@ private suspend fun loadSlot(ctx: Context, slot: Int): SlotData {
         rivalProfile = repo.rivalProfile(slot),
         board = repo.boardMessages(slot),
         trainScreen = dao.plan(slot, "trainscreen")?.json?.let { try { JSONObject(it) } catch (e: Exception) { null } },
+        trainOv = repo.trainingOverrides(slot),
         season = dao.plan(slot, "season")?.json?.let { try { JSONObject(it) } catch (e: Exception) { null } },
         win = tplan?.takeIf { tacticCurrent(it, f) }?.let { Director.winProb(repo, slot, it) },
         evidence = repo.evidence(slot),
@@ -2002,7 +2005,7 @@ private suspend fun loadDirector(ctx: Context): List<DirSlot> {
         val top = plan?.radar?.maxByOrNull { it.gain }
         val seats = TrainBoard.seats(
             repo.dao.plan(s.slot, "trainscreen")?.json?.let { runCatching { JSONObject(it) }.getOrNull() },
-            repo.playersOf(s.slot), System.currentTimeMillis()
+            repo.playersOf(s.slot), System.currentTimeMillis(), repo.trainingOverrides(s.slot)
         )
         val freeSeat = seats.firstOrNull { it.state == "empty" || it.state == "done" }
         val next = when {
@@ -2504,7 +2507,7 @@ private fun SlotSquad(slot: Int, d: SlotData) {
             }
         }
     }
-    val seats = TrainBoard.seats(d.trainScreen, d.players, System.currentTimeMillis())
+    val seats = TrainBoard.seats(d.trainScreen, d.players, System.currentTimeMillis(), d.trainOv)
     Panel {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("🏋 Treinamento", color = C.GOLD, fontWeight = FontWeight.Bold, fontSize = 14.sp, modifier = Modifier.weight(1f))
@@ -3634,7 +3637,7 @@ private fun SlotDirector(slot: Int, d: SlotData) {
     }
 
     // ---- 1. treinadores
-    val seats = TrainBoard.seats(d.trainScreen, d.players, System.currentTimeMillis())
+    val seats = TrainBoard.seats(d.trainScreen, d.players, System.currentTimeMillis(), d.trainOv)
     val busy = seats.count { it.state == "active" && it.fresh }
     StepHeader(1, "🏋", "Treinadores", "$busy de 5")
     TrainingBoardView(seats)

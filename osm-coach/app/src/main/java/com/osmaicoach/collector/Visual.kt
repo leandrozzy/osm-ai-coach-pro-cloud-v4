@@ -57,7 +57,8 @@ object TrainBoard {
     private fun pretty(n: String): String =
         n.trim().replace(Regex("^\\d+\\s*"), "").lowercase().split(" ").joinToString(" ") { w -> w.replaceFirstChar { it.uppercase() } }
 
-    fun seats(screen: JSONObject?, players: List<PlayerEntity>, now: Long): List<Seat> {
+    /** manual = correção à mão do usuário (nameKey -> treinando?), feita depois da última leitura da tela. */
+    fun seats(screen: JSONObject?, players: List<PlayerEntity>, now: Long, manual: Map<String, Boolean> = emptyMap()): List<Seat> {
         val mine = players.filter { it.owner == "MY" }
         val out = ArrayList<Seat>()
         for ((role, title) in ROLES) {
@@ -98,11 +99,24 @@ object TrainBoard {
                 }
             }
         }
+        // "Não está treinando" marcado à mão (depois da última leitura da tela): o lugar fica livre
+        for (i in out.indices) {
+            val k = out[i].key ?: continue
+            if (out[i].state == "active" && manual[k] == false) {
+                out[i] = out[i].copy(name = null, state = "empty", key = null)
+            }
+        }
         // tela de Treinamento ainda não lida: mostra quem o app marcou à mão como treinando, no lugar da posição dele
         val used = out.mapNotNull { it.key }.toSet()
         val marked = mine.filter { it.training == true && it.nameKey !in used }
+        // marcado à mão como treinando: entra num lugar livre da posição dele (ou no universal)
+        for (p in mine.filter { manual[it.nameKey] == true && it.nameKey !in used }) {
+            val i = out.indexOfFirst { (it.state == "unknown" || it.state == "empty") && it.role == p.cat }.takeIf { it >= 0 }
+                ?: out.indexOfFirst { (it.state == "unknown" || it.state == "empty") && it.role == "UNI" }.takeIf { it >= 0 } ?: continue
+            out[i] = out[i].copy(name = p.name, state = "active", fresh = true, key = p.nameKey, at = now)
+        }
         if (screen == null) {
-            for (p in marked) {
+            for (p in marked.filter { m -> out.none { it.key == m.nameKey } }) {
                 val i = out.indexOfFirst { it.state == "unknown" && it.role == p.cat }.takeIf { it >= 0 }
                     ?: out.indexOfFirst { it.state == "unknown" && it.role == "UNI" }.takeIf { it >= 0 } ?: continue
                 out[i] = out[i].copy(name = p.name, state = "active", fresh = true, key = p.nameKey)
