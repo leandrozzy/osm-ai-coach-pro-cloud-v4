@@ -407,6 +407,7 @@ class Repo(private val ctx: Context) {
         val existing = dao.playersOf(slot).filter { it.owner == owner }
         val blocked = blockedPlayers(slot)
         val seen = ArrayList<String>()
+        val arrived = ArrayList<String>()
         val cm = LinkedHashMap<String, Pair<Int, Int>>()
         for (p in ex.players) {
             var key = Txt.key(p.name)
@@ -445,8 +446,11 @@ class Repo(private val ctx: Context) {
                 dao.putPlayer(n)
                 changed++
             }
+            // jogador novo num elenco que já estava lido = contratação (a 1ª leitura do elenco não conta)
+            if (old == null && existing.size >= 14 && source != "ai" && n.strength != null && n.valueText != null && !looksGarbled(n.name)) arrived.add(key)
         }
         if (seen.isNotEmpty()) markSeen(slot, seen, now)
+        if (seen.isNotEmpty()) trackProgress(slot, seen, arrived, now)
         if (seen.isNotEmpty()) dedupeSlot(slot, now)
         if (cm.isNotEmpty()) {
             val cur = dao.plan(slot, "cm")?.json?.let { try { JSONObject(it) } catch (e: Exception) { null } } ?: JSONObject()
@@ -1422,6 +1426,75 @@ class Repo(private val ctx: Context) {
     }
 
     /** Última vez que cada jogador do meu elenco apareceu numa leitura (para achar quem saiu ou nunca existiu). */
+    /**
+     * Evolução do time: histórico de força/valor de quem foi lido (com a marca de treino), contratações no livro de
+     * caixa (preço da lista de transferências quando o jogador foi visto lá) e o resumo da semana.
+     */
+    private suspend fun trackProgress(slot: Int, seen: List<String>, arrived: List<String>, now: Long) {
+        try {
+            val mine = playersOf(slot).filter { it.owner == "MY" }
+            val byKey = mine.associateBy { it.nameKey }
+            val hist = planJson(slot, "phist")
+            var histChanged = false
+            for (k in seen) {
+                val p = byKey[k] ?: continue
+                if (Growth.record(hist, k, now, p.strength, Money.parse(p.valueText), p.training == true)) histChanged = true
+            }
+            if (histChanged) dao.putPlan(PlanEntity(slot, "phist", hist.toString(), now))
+            if (arrived.isNotEmpty()) {
+                val ledger = Ledger.parse(dao.plan(slot, "ledger")?.json)
+                var add = false
+                for (k in arrived) {
+                    val p = byKey[k] ?: continue
+                    val listed = dao.listing(slot, k) ?: dao.listingsOf(slot).firstOrNull { l ->
+                        l.age == p.age && Txt.sim(Txt.key(l.name.split(" ").last()), Txt.key(p.name.split(" ").last())) >= 0.85
+                    }
+                    val price = Money.parse(listed?.priceText)
+                    if (Ledger.add(ledger, Ledger.Entry("buy", k, p.name, now, price ?: Money.parse(p.valueText), price == null, p.strength, p.age))) {
+                        add = true
+                        learn(slot, "elenco", "Contratação: ${p.name}" + (price?.let { " por ${moneyText(it)}" } ?: "") + ".", now)
+                    }
+                }
+                if (add) dao.putPlan(PlanEntity(slot, "ledger", Ledger.toJson(ledger), now))
+            }
+            snapshotWeek(slot, now)
+        } catch (e: Exception) {
+            Diag.lastError = "Evolução: " + (e.message ?: e.javaClass.simpleName)
+        }
+    }
+
+    /** Semana atual do slot: valor do elenco, caixa, força do XI e resultados (das táticas registradas). */
+    suspend fun snapshotWeek(slot: Int, now: Long = System.currentTimeMillis()) {
+        val f = fieldMap(slot)
+        val mine = dao.playersOf(slot).filter { it.owner == "MY" }
+        val res = dao.tacticLogs(slot).mapNotNull { runCatching { org.json.JSONObject(it.json).optString("result") }.getOrNull() }
+        val list = Weekly.parse(dao.plan(slot, "weekly")?.json)
+        Weekly.upsert(
+            list, Weekly.Week(
+                Weekly.weekId(now), now, Money.parse(f[K.MY_VALUE]?.value), Money.parse(f[K.CASH]?.value),
+                Weekly.xi(mine.mapNotNull { it.strength }), res.count { it == "V" }, res.count { it == "E" }, res.count { it == "D" }
+            )
+        )
+        dao.putPlan(PlanEntity(slot, "weekly", Weekly.toJson(list), now))
+    }
+
+    data class ProgressData(
+        val score: Scoreboard.Stats, val ledger: Ledger.Summary, val train: Growth.TrainReport?, val week: Weekly.Delta?,
+        val weeks: List<Weekly.Week>, val falling: List<Triple<String, Double, Double>> = emptyList()
+    )
+
+    /** Tudo o que a tela de Evolução mostra. */
+    suspend fun progress(slot: Int, now: Long = System.currentTimeMillis()): ProgressData {
+        val logs = dao.tacticLogs(slot).mapNotNull { p -> runCatching { org.json.JSONObject(p.json).put("at", p.at) }.getOrNull() }
+        val mine = dao.playersOf(slot).filter { it.owner == "MY" }
+        val weeks = Weekly.parse(dao.plan(slot, "weekly")?.json)
+        return ProgressData(
+            Scoreboard.of(logs), Ledger.summary(Ledger.parse(dao.plan(slot, "ledger")?.json)),
+            Growth.report(planJson(slot, "phist"), mine.associate { it.nameKey to it.name }, now),
+            Weekly.delta(weeks), weeks, Growth.falling(planJson(slot, "phist"), mine, now)
+        )
+    }
+
     private suspend fun markSeen(slot: Int, keys: List<String>, now: Long) {
         val j = planJson(slot, "squadseen")
         for (k in keys) j.put(k, now)
@@ -1458,10 +1531,17 @@ class Repo(private val ctx: Context) {
             if (!fullPass || seenNow.size < mine.size * 0.5) continue
             val gone = mine.filter { seenAt.optLong(it.nameKey, 0L) < since }
             if (gone.isEmpty() || gone.size > 20) continue
+            val ledger = Ledger.parse(dao.plan(slot, "ledger")?.json)
             for (p in gone) {
                 dao.deletePlayer(slot, "MY", p.nameKey)
                 removed++
+                // saiu do elenco numa leitura completa: venda (pelo último valor do plantel)
+                // fantasma de OCR (nome ilegível, sem valor) não é venda
+                if (!looksGarbled(p.name) && p.valueText != null) {
+                    Ledger.add(ledger, Ledger.Entry("sell", p.nameKey, p.name, now, Money.parse(p.valueText), true, p.strength, p.age))
+                }
             }
+            dao.putPlan(PlanEntity(slot, "ledger", Ledger.toJson(ledger), now))
             learn(slot, "elenco", "Elenco conferido: ${gone.joinToString { it.name }} não apareceu na leitura completa e saiu da lista.", now)
         }
         return removed

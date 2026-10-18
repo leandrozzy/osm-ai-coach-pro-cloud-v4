@@ -1136,6 +1136,8 @@ data class SlotData(
     val trainScreen: JSONObject? = null,
     /** Treino corrigido à mão (nameKey -> treinando?). */
     val trainOv: Map<String, Boolean> = emptyMap(),
+    /** Evolução: placar da tática, livro de caixa, treino e semana. */
+    val progress: Repo.ProgressData? = null,
     /** Resumo do fim da competição (posição, pontos, campeão, valor). */
     val season: JSONObject? = null
 )
@@ -1193,6 +1195,7 @@ private suspend fun loadSlot(ctx: Context, slot: Int): SlotData {
         board = repo.boardMessages(slot),
         trainScreen = dao.plan(slot, "trainscreen")?.json?.let { try { JSONObject(it) } catch (e: Exception) { null } },
         trainOv = repo.trainingOverrides(slot),
+        progress = runCatching { repo.progress(slot) }.getOrNull(),
         season = dao.plan(slot, "season")?.json?.let { try { JSONObject(it) } catch (e: Exception) { null } },
         win = tplan?.takeIf { tacticCurrent(it, f) }?.let { Director.winProb(repo, slot, it) },
         evidence = repo.evidence(slot),
@@ -1966,7 +1969,9 @@ data class DirSlot(
     val stadium: String? = null,
     val goal: String? = null,
     /** A primeira coisa a fazer neste slot para o time evoluir. */
-    val next: String? = null
+    val next: String? = null,
+    /** Semana em uma linha: valor, caixa e treino. */
+    val week: String? = null
 )
 
 private suspend fun loadDirector(ctx: Context): List<DirSlot> {
@@ -2035,7 +2040,15 @@ private suspend fun loadDirector(ctx: Context): List<DirSlot> {
                 alerts = alerts,
                 stadium = stadiumLine,
                 goal = goalLine,
-                next = next
+                next = next,
+                week = runCatching { repo.progress(s.slot) }.getOrNull()?.let { pg ->
+                    listOfNotNull(
+                        pg.week?.value?.let { "valor ${moneyText(it, true)}" },
+                        pg.week?.cash?.let { "caixa ${moneyText(it, true)}" },
+                        pg.train?.takeIf { it.trained > 0 }?.let { "treino ${if (it.edge >= 0) "+" else ""}${"%.1f".format(it.edge).replace('.', ',')}/jogador" },
+                        pg.ledger.takeIf { it.buys + it.sells > 0 }?.let { "saldo ${moneyText(it.balance, true)}" }
+                    ).takeIf { it.isNotEmpty() }?.joinToString(" • ")?.let { "📈 Semana: $it" }
+                }
             )
         )
     }
@@ -2122,6 +2135,7 @@ private fun DirectorTab(onOpen: (Int, Int) -> Unit) {
                 }
                 if (d.radar != null) Text("📡 ${d.radar}", fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
                 if (d.goal != null) Text(d.goal, fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 2.dp))
+                if (d.week != null) Text(d.week, fontSize = 12.sp, color = OsmColors.YELLOW, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 4.dp))
                 Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = { onOpen(d.s.slot, 4) }, modifier = Modifier.weight(1f)) { Text("Tática", fontSize = 12.sp) }
                     OutlinedButton(onClick = { onOpen(d.s.slot, 6) }, modifier = Modifier.weight(1f)) { Text("Plano completo", fontSize = 12.sp) }
@@ -3587,6 +3601,7 @@ private fun StepHeader(n: Int, icon: String, title: String, badge: String? = nul
 @Composable
 private fun SlotDirector(slot: Int, d: SlotData) {
     val ctx = LocalContext.current
+    d.progress?.let { EvolutionPanel(it) }
     val plan = d.marketPlan
     if (plan == null) {
         EmptyState("👕", "Leia o seu elenco primeiro", "No jogo: Plantel do SEU time, role a lista até o fim. Aí o diretor monta treinos, vendas e compras.")
@@ -4039,6 +4054,7 @@ private fun GameCard(g: Coach.Game, rv: Coach.Review?) {
 
 @Composable
 private fun SlotLearning(slot: Int, d: SlotData) {
+    d.progress?.let { ScoreboardCard(it.score) }
     data class Row2(
         val kind: String, val round: Int, val formation: String, val style: String, val rival: String,
         val result: String?, val score: String, val human: Boolean?, val home: Boolean?
