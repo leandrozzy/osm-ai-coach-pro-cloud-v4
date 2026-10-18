@@ -62,6 +62,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.animation.togetherWith
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -2172,16 +2173,28 @@ private fun SlotScreen(slot: Int, tab: Int, onTab: (Int) -> Unit, onBack: () -> 
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { androidx.compose.material3.CircularProgressIndicator(color = C.PRIMARY) }
             return@Column
         }
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
-            when (tab) {
-                0 -> SlotSummaryTab(slot, data)
-                1 -> SlotPregame(slot, data)
-                2 -> SlotSquad(slot, data)
-                3 -> SlotCalendar(slot, data)
-                4 -> SlotTactic(slot, data)
-                5 -> SlotResult(slot, data) { onTab(4) }
-                6 -> SlotDirector(slot, data)
-                else -> SlotLearning(slot, data)
+        // troca de aba fluida: a nova desliza um pouco e aparece enquanto a anterior some
+        androidx.compose.animation.AnimatedContent(
+            targetState = tab,
+            transitionSpec = {
+                val dir = if (targetState > initialState) 1 else -1
+                (androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(260)) +
+                    androidx.compose.animation.slideInHorizontally(androidx.compose.animation.core.tween(300)) { it / 10 * dir }) togetherWith
+                    androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(160))
+            },
+            label = "tabs"
+        ) { t ->
+            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
+                when (t) {
+                    0 -> SlotSummaryTab(slot, data)
+                    1 -> SlotPregame(slot, data)
+                    2 -> SlotSquad(slot, data)
+                    3 -> SlotCalendar(slot, data)
+                    4 -> SlotTactic(slot, data)
+                    5 -> SlotResult(slot, data) { onTab(4) }
+                    6 -> SlotDirector(slot, data)
+                    else -> SlotLearning(slot, data)
+                }
             }
         }
     }

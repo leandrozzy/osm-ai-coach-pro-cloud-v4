@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -394,9 +395,12 @@ fun OsmSlider(title: String, label: String, value: Int, modifier: Modifier = Mod
     Column(modifier.fillMaxWidth().osmPanel().padding(horizontal = 12.dp, vertical = 10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         OsmCaption(title, label)
         Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            val anim by androidx.compose.animation.core.animateFloatAsState(
+                value.coerceIn(0, 100) / 100f, androidx.compose.animation.core.tween(700, easing = androidx.compose.animation.core.FastOutSlowInEasing), label = "slider"
+            )
             Canvas(Modifier.weight(1f).height(22.dp)) {
                 val y = size.height / 2
-                val f = value.coerceIn(0, 100) / 100f
+                val f = anim
                 val th = 3.dp.toPx()
                 drawLine(OsmColors.TRACK, Offset(0f, y), Offset(size.width, y), th, StrokeCap.Round)
                 drawLine(OsmColors.BLUE, Offset(0f, y), Offset(size.width * f, y), th, StrokeCap.Round)
@@ -526,7 +530,10 @@ fun StyleArt(style: String?, modifier: Modifier = Modifier) {
         "Bola longa" -> "style_longa"
         else -> "style_passe"
     }
-    Image(osmArt(name), style, modifier, contentScale = ContentScale.Fit)
+    // troca suave entre estilos e a seta se desenha de novo
+    androidx.compose.animation.Crossfade(targetState = name, animationSpec = androidx.compose.animation.core.tween(350), label = "style") { n ->
+        OsmAnim(n, modifier)
+    }
 }
 
 @Composable
@@ -537,7 +544,9 @@ fun TackleArt(tackle: String?, modifier: Modifier = Modifier) {
         "Extremo" -> "tackle_extremo"
         else -> "tackle_normal"
     }
-    Image(osmArt(name), tackle, modifier, contentScale = ContentScale.Fit)
+    androidx.compose.animation.Crossfade(targetState = name, animationSpec = androidx.compose.animation.core.tween(350), label = "tackle") { n ->
+        Image(osmArt(n), tackle, modifier, contentScale = ContentScale.Fit)
+    }
 }
 
 /** Campo em bloco 3D com as três camadas (avançados, médios, defesas) sobrepostas na mesma moldura. */
@@ -547,18 +556,26 @@ fun SectorArt(attack: String?, mid: String?, def: String?, modifier: Modifier = 
     val m = Osm.MIDFIELD.indexOf(Osm.midfield(mid) ?: mid).coerceAtLeast(0)
     val d = Osm.DEFENSE.indexOf(Osm.defense(def) ?: def).coerceAtLeast(0)
     Box(modifier) {
-        for (layer in listOf("sector_base", "sector_def_$d", "sector_mid_$m", "sector_att_$a"))
-            Image(osmArt(layer), null, Modifier.matchParentSize(), contentScale = ContentScale.Fit)
+        Image(osmArt("sector_base"), null, Modifier.matchParentSize(), contentScale = ContentScale.Fit)
+        // cada setor com a sua seta animada (redesenha quando a opção do setor muda)
+        for (layer in listOf("sector_def_$d", "sector_mid_$m", "sector_att_$a")) {
+            androidx.compose.runtime.key(layer.substringBeforeLast('_')) { OsmAnim(layer, Modifier.matchParentSize()) }
+        }
     }
 }
 
 @Composable
 fun MarkingArt(marking: String?, modifier: Modifier = Modifier) {
     val man = (Osm.marking(marking) ?: marking) == "Homem-a-homem"
-    Image(osmArt(if (man) "mark_homem" else "mark_zona"), marking, modifier, contentScale = ContentScale.Fit)
+    androidx.compose.animation.Crossfade(targetState = man, animationSpec = androidx.compose.animation.core.tween(350), label = "mark") { m ->
+        Image(osmArt(if (m) "mark_homem" else "mark_zona"), marking, modifier, contentScale = ContentScale.Fit)
+    }
 }
 
 @Composable
 fun OffsideArt(offside: String?, modifier: Modifier = Modifier) {
-    Image(osmArt(if (offside == "Sim") "offside_sim" else "offside_nao"), offside, modifier, contentScale = ContentScale.Fit)
+    // "Sim": o bandeirinha levanta a bandeira (animado); "Não": parado com a bandeira abaixada
+    androidx.compose.animation.Crossfade(targetState = offside == "Sim", animationSpec = androidx.compose.animation.core.tween(300), label = "offside") { up ->
+        if (up) OsmAnim("offside_sim", modifier) else Image(osmArt("offside_nao"), offside, modifier, contentScale = ContentScale.Fit)
+    }
 }
