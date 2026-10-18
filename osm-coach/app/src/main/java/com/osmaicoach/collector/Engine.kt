@@ -125,6 +125,25 @@ object Learning {
 }
 
 object TacticEngine {
+    /**
+     * Avançados com 3 na frente (4-3-3, 3-4-3, 4-2-4) e você não sendo bem mais fraco: "Atacar apenas". Só vale
+     * "Apoiar meio-campo" quando o meio dele é claramente mais forte e o seu ataque não leva vantagem sobre a defesa
+     * dele. Devolve (escolha, motivo) quando muda a escolha recebida.
+     */
+    fun smartAttack(current: String, formation: String, diff: Int?, myMid: Int?, rivalMid: Int?, myAtk: Int?, rivalDef: Int?): Pair<String, String>? {
+        val fw = Formations.lines(formation).lastOrNull() ?: return null
+        if (fw < 3 || (diff ?: 0) <= -5) return null
+        val midShort = myMid != null && rivalMid != null && rivalMid - myMid >= 4
+        val atkEdge = myAtk != null && rivalDef != null && myAtk - rivalDef >= 5
+        val want = if (midShort && !atkEdge) "Apoiar meio-campo" else "Atacar apenas"
+        if (Osm.attack(current) == want) return null
+        val why = if (want == "Atacar apenas") {
+            "$fw atacantes" + (if (diff != null) " e força ${if (diff >= 0) "+" else ""}$diff" else "") +
+                (if (myMid != null && rivalMid != null) " (meio $myMid x $rivalMid)" else "") + ": avançados só atacam"
+        } else "meio dele $rivalMid x seu $myMid: avançados apoiam o meio-campo"
+        return Pair(want, why)
+    }
+
     data class Input(
         val players: List<PlayerEntity>,
         val myStrength: Int?,
@@ -499,6 +518,11 @@ object TacticEngine {
                     (if (failing) " — a formação $mb já perdeu demais aqui, mantive ${Formations.variant(formation, styleF)}." else ".") +
                     (if (adjust.isNotEmpty()) " Ajustada para este jogo: " + adjust.joinToString("; ") + "." else "")
             )
+        }
+        // Avançados pela situação real (setores e força), não pela regra genérica.
+        smartAttack(aA, fF, diff, inp.myMid, inp.rivalMid, inp.myAtk, inp.rivalDef)?.let { (v, why) ->
+            aA = v
+            notes.add("Avançados: $why.")
         }
         // Batalha: empate não serve. Sem ser bem mais fraco, avançados atacando e mentalidade para vencer.
         if (inp.mustWin && (diff ?: 0) >= -8) {

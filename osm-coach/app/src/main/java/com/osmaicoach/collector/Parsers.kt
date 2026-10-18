@@ -72,24 +72,24 @@ object Parsers {
             // sem a referência da grade, só vale card com "x/y JORNADA" (nada de estado nem título solto)
             if (!anchored && done == null) continue
             if (done == null && (all.contains("comecar nova liga") || all.contains("nova liga") && all.contains("comecar"))) {
-                cards.add(HubCard(slot, "", "", null, null, "vazio"))
+                cards.add(HubCard(slot, "", "", null, null, "vazio", dx = dx, dy = dy))
                 continue
             }
             // competição nova que ainda não começou: "PRÉ-ÉPOCA" no lugar de "x/y JORNADA"
             if (done == null && Regex("pre\\W?epoca|pretemporada|pre-temporada").containsMatchIn(all)) {
                 val nm = names.filter { !Regex("epoca|temporada").containsMatchIn(Txt.norm(it.text)) }
                 if (nm.isNotEmpty()) {
-                    cards.add(HubCard(slot, nm[0].text.trim(), nm.getOrNull(1)?.text?.trim() ?: "", null, null, "preepoca"))
+                    cards.add(HubCard(slot, nm[0].text.trim(), nm.getOrNull(1)?.text?.trim() ?: "", null, null, "preepoca", dx = dx, dy = dy))
                     continue
                 }
             }
             if (done == null && all.contains("procurar advers")) {
                 val title = names.firstOrNull { !Txt.norm(it.text).contains("procurar") }?.text?.trim() ?: "Batalha"
-                cards.add(HubCard(slot, "", title, null, null, "procurando"))
+                cards.add(HubCard(slot, "", title, null, null, "procurando", dx = dx, dy = dy))
                 continue
             }
             if (names.isEmpty()) continue
-            cards.add(HubCard(slot, names[0].text.trim(), names.getOrNull(1)?.text?.trim() ?: "", done, total))
+            cards.add(HubCard(slot, names[0].text.trim(), names.getOrNull(1)?.text?.trim() ?: "", done, total, dx = dx, dy = dy))
         }
         return Extraction(ScreenType.HUB, hubCards = cards)
     }

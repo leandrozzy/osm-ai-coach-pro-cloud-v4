@@ -92,4 +92,16 @@ class SecretTrainingTest {
         val battle = WinModel.expectedPoints(i.copy(drawValue = Director.BATTLE_DRAW))!!
         assertTrue(battle < league)
     }
+
+    @Test fun forwardsAttackInAFourThreeThreeWhenNotWeaker() {
+        // 4-3-3 mais forte com o meio parelho: avançados só atacam
+        assertEquals("Atacar apenas", TacticEngine.smartAttack("Apoiar meio-campo", "4-3-3 A", 8, 85, 84, 88, 80)?.first)
+        // meio dele bem mais forte e meu ataque sem vantagem: apoiar o meio-campo
+        assertEquals("Apoiar meio-campo", TacticEngine.smartAttack("Atacar apenas", "4-3-3 A", 0, 78, 85, 80, 82)?.first)
+        // 2 atacantes ou rival bem mais forte: não mexe
+        assertNull(TacticEngine.smartAttack("Apoiar meio-campo", "4-4-2 A", 8, 85, 84, 88, 80))
+        assertNull(TacticEngine.smartAttack("Ajudar a defender", "4-3-3 A", -10, 70, 80, 70, 80))
+        // já está certo: nada a mudar
+        assertNull(TacticEngine.smartAttack("Atacar apenas", "4-3-3 A", 8, 85, 84, 88, 80))
+    }
 }
