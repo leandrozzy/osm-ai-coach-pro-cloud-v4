@@ -3469,7 +3469,7 @@ private fun SlotTactic(slot: Int, d: SlotData) {
         left = {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 OsmCaption("Estilo de jogo", style)
-                StyleArt(style, Modifier.fillMaxWidth().height(96.dp).padding(top = 4.dp))
+                StyleArt(style, Modifier.fillMaxWidth().height(112.dp).padding(top = 4.dp))
                 OsmDots(Osm.STYLES.size, Osm.STYLES.indexOf(style), Modifier.padding(top = 4.dp))
             }
         },
