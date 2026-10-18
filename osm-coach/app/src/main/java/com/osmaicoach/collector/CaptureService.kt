@@ -160,10 +160,18 @@ class CaptureService : AccessibilityService() {
         val app = applicationContext
         scope.launch {
             val text = try {
-                val slot = Diag.currentSlot
+                val repo = Repo(app)
+                val now = System.currentTimeMillis()
+                // slot não identificado (central, tela de tática): usa a tática válida do próximo jogo
+                val slot = Diag.currentSlot.takeIf { it > 0 } ?: (1..4).mapNotNull { s ->
+                    val p = repo.dao.plan(s, "tactic") ?: return@mapNotNull null
+                    val j = runCatching { org.json.JSONObject(p.json) }.getOrNull() ?: return@mapNotNull null
+                    val f = repo.fieldMap(s)
+                    if (!Director.tacticValid(j, p.at, f, now)) return@mapNotNull null
+                    Pair(s, f[K.MATCH_AT]?.value?.toLongOrNull() ?: Long.MAX_VALUE)
+                }.minByOrNull { it.second }?.first ?: 0
                 if (slot <= 0) "Entre no slot (pré-jogo) para eu saber qual tática mostrar."
                 else {
-                    val repo = Repo(app)
                     val p = repo.dao.plan(slot, "tactic")
                     val j = p?.json?.let { runCatching { org.json.JSONObject(it) }.getOrNull() }
                     if (p == null || j == null) "S$slot: nenhuma tática gerada. Gere no app (aba Tática)."

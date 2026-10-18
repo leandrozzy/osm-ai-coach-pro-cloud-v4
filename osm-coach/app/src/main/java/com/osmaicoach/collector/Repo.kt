@@ -272,7 +272,14 @@ class Repo(private val ctx: Context) {
             dao.putPlan(PlanEntity(slot, "tlog_" + tag + "_" + p.kind.removePrefix("tlog_"), p.json, p.at))
             dao.deletePlan(slot, p.kind)
         }
-        dao.deletePlan(slot, "tactic")
+        // a tática de um jogo que ainda vai acontecer, das primeiras jornadas, já é da competição nova: fica
+        val keep = dao.plan(slot, "tactic")?.let { p ->
+            runCatching { org.json.JSONObject(p.json) }.getOrNull()?.let { j ->
+                val at = if (j.isNull("matchAt")) 0L else j.optLong("matchAt")
+                at > now && j.optInt("forRound", 99) in 1..3
+            }
+        } == true
+        if (!keep) dao.deletePlan(slot, "tactic")
         // conferência entre telas e mensagens da direção são da competição que acabou
         dao.deletePlan(slot, "evidence")
         dao.plan(slot, "board")?.let {
@@ -292,7 +299,8 @@ class Repo(private val ctx: Context) {
     }
 
     private suspend fun applyPregame(slot: Int, ex: Extraction, source: String, now: Long): Int {
-        newSeasonIfNeeded(slot, ex.roundRead ?: ex.fields[K.ROUND]?.value?.toIntOrNull(), now)
+        // competição nova só pela jornada lida com segurança (OCR); a leitura da IA (0,65) pode errar a jornada
+        newSeasonIfNeeded(slot, ex.roundRead ?: ex.fields[K.ROUND]?.takeIf { it.conf >= 0.85 }?.value?.toIntOrNull(), now)
         // Jogo novo (outra rodada): o cadeado do jogo anterior não vale mais.
         val oldRound = dao.fieldsOf(slot).firstOrNull { it.fkey == K.ROUND }?.fvalue?.toIntOrNull()
         val newRound = ex.roundRead ?: ex.fields[K.ROUND]?.value?.toIntOrNull()
@@ -1531,7 +1539,10 @@ class Repo(private val ctx: Context) {
     private suspend fun dropStaleTactics() {
         for (slot in 1..4) {
             val p = dao.plan(slot, "tactic") ?: continue
-            val has = try { org.json.JSONObject(p.json).optInt("forRound", -1) > 0 } catch (e: Exception) { false }
+            val has = try {
+                val j = org.json.JSONObject(p.json)
+                j.optInt("forRound", -1) > 0 || (!j.isNull("matchAt") && j.optLong("matchAt") > 0L)
+            } catch (e: Exception) { false }
             if (!has) dao.deletePlan(slot, "tactic")
         }
     }
