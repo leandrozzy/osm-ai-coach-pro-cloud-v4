@@ -3025,11 +3025,6 @@ private fun LineupPitch(plan: JSONObject) {
     val advA = arrowSet(plan.optString("advAttack"))
     val advM = arrowSet(plan.optString("advMid"))
     val advD = arrowSet(plan.optString("advDef"))
-    // Jogadores 3D renderizados (Blender), um uniforme por setor.
-    val kitGol = androidx.compose.ui.graphics.ImageBitmap.imageResource(R.drawable.osm_lineup_gol)
-    val kitDef = androidx.compose.ui.graphics.ImageBitmap.imageResource(R.drawable.osm_lineup_def)
-    val kitMei = androidx.compose.ui.graphics.ImageBitmap.imageResource(R.drawable.osm_lineup_mei)
-    val kitAta = androidx.compose.ui.graphics.ImageBitmap.imageResource(R.drawable.osm_lineup_ata)
     Canvas(Modifier.fillMaxWidth().height(440.dp).clip(RoundedCornerShape(20.dp))) {
         val dp = density
         val pv = PitchView(size.width, size.height)
@@ -3077,22 +3072,14 @@ private fun LineupPitch(plan: JSONObject) {
                     arrow(a, b, col.copy(alpha = 0.95f), 3f * dp * sc)
                 }
                 val r = 17f * dp * sc
-                val kit = when {
-                    ri == 0 -> kitGol
-                    ri == 1 -> kitDef
-                    ri == rows.size - 1 -> kitAta
-                    else -> kitMei
-                }
-                val fh = r * 3.6f
-                val fw = fh * kit.width / kit.height
-                drawImage(
-                    kit, dstOffset = androidx.compose.ui.unit.IntOffset((foot.x - fw / 2f).toInt(), (foot.y - fh * 0.97f).toInt()),
-                    dstSize = androidx.compose.ui.unit.IntSize(fw.toInt(), fh.toInt())
-                )
+                // ficha do jogador (mesmo visual das ilustrações da tática), número da força no centro
+                val tok = r * 1.05f
+                val cy = foot.y - tok
+                token(Offset(foot.x, cy), tok, markerColor, jersey = false)
                 drawIntoCanvas { cv ->
                     if (pl.second > 0) {
                         numPaint.textSize = 12.5f * dp * sc
-                        cv.nativeCanvas.drawText(pl.second.toString(), foot.x, foot.y - fh * 0.66f, numPaint)
+                        cv.nativeCanvas.drawText(pl.second.toString(), foot.x, cy + numPaint.textSize * 0.36f, numPaint)
                     }
                 }
                 if (pl.first.isNotBlank()) {
@@ -3482,14 +3469,14 @@ private fun SlotTactic(slot: Int, d: SlotData) {
         left = {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 OsmCaption("Estilo de jogo", style)
-                StyleArt(style, Modifier.fillMaxWidth().height(112.dp).padding(top = 4.dp))
+                StyleIllustration(style, Modifier.fillMaxWidth().height(118.dp).padding(top = 6.dp))
                 OsmDots(Osm.STYLES.size, Osm.STYLES.indexOf(style), Modifier.padding(top = 4.dp))
             }
         },
         right = {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 OsmCaption("Desarme", tackle)
-                TackleArt(tackle, Modifier.size(width = 96.dp, height = 120.dp).padding(top = 4.dp))
+                TackleIllustration(tackle, Modifier.size(width = 130.dp, height = 112.dp).padding(top = 6.dp))
                 OsmDots(Osm.TACKLES.size, Osm.TACKLES.indexOf(tackle), Modifier.padding(top = 4.dp))
             }
         }
@@ -3497,7 +3484,7 @@ private fun SlotTactic(slot: Int, d: SlotData) {
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp).osmPanel().padding(10.dp)) {
         Text("Táticas por sector", fontSize = 11.sp, color = OsmColors.CAPTION, fontWeight = FontWeight.SemiBold, modifier = Modifier.align(Alignment.CenterHorizontally))
         Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            SectorArt(att, mid, def, Modifier.size(width = 124.dp, height = 163.dp))
+            SectorIllustration(att, mid, def, Modifier.size(width = 128.dp, height = 172.dp))
             Column(Modifier.weight(1f).padding(start = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 SectorChoice("Avançados", att, Osm.ATTACK)
                 SectorChoice("Médios", mid, Osm.MIDFIELD)
@@ -3512,14 +3499,14 @@ private fun SlotTactic(slot: Int, d: SlotData) {
         left = {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 OsmCaption("Marcação", marking)
-                MarkingArt(marking, Modifier.size(width = 140.dp, height = 160.dp).padding(top = 4.dp))
+                MarkingIllustration(marking, Modifier.size(width = 130.dp, height = 150.dp).padding(top = 6.dp))
                 OsmDots(2, Osm.MARKING.indexOf(marking), Modifier.padding(top = 4.dp))
             }
         },
         right = {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 OsmCaption("Fazer fora-de-jogo", offside)
-                OffsideArt(offside, Modifier.size(width = 140.dp, height = 160.dp).padding(top = 4.dp))
+                OffsideIllustration(offside, Modifier.size(width = 130.dp, height = 150.dp).padding(top = 6.dp))
                 OsmDots(2, if (offside == "Sim") 1 else 0, Modifier.padding(top = 4.dp))
             }
         }
