@@ -3070,7 +3070,7 @@ private fun LineupPitch(plan: JSONObject) {
                     ri == rows.size - 1 -> kitAta
                     else -> kitMei
                 }
-                val fh = r * 3.1f
+                val fh = r * 3.6f
                 val fw = fh * kit.width / kit.height
                 drawImage(
                     kit, dstOffset = androidx.compose.ui.unit.IntOffset((foot.x - fw / 2f).toInt(), (foot.y - fh * 0.97f).toInt()),
@@ -3079,7 +3079,7 @@ private fun LineupPitch(plan: JSONObject) {
                 drawIntoCanvas { cv ->
                     if (pl.second > 0) {
                         numPaint.textSize = 12.5f * dp * sc
-                        cv.nativeCanvas.drawText(pl.second.toString(), foot.x, foot.y - fh * 0.5f, numPaint)
+                        cv.nativeCanvas.drawText(pl.second.toString(), foot.x, foot.y - fh * 0.66f, numPaint)
                     }
                 }
                 if (pl.first.isNotBlank()) {
@@ -3476,7 +3476,7 @@ private fun SlotTactic(slot: Int, d: SlotData) {
         right = {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 OsmCaption("Desarme", tackle)
-                TackleArt(tackle, Modifier.size(width = 80.dp, height = 104.dp).padding(top = 4.dp))
+                TackleArt(tackle, Modifier.size(width = 96.dp, height = 120.dp).padding(top = 4.dp))
                 OsmDots(Osm.TACKLES.size, Osm.TACKLES.indexOf(tackle), Modifier.padding(top = 4.dp))
             }
         }
@@ -3499,14 +3499,14 @@ private fun SlotTactic(slot: Int, d: SlotData) {
         left = {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 OsmCaption("Marcação", marking)
-                MarkingArt(marking, Modifier.size(width = 140.dp, height = 124.dp).padding(top = 4.dp))
+                MarkingArt(marking, Modifier.size(width = 140.dp, height = 160.dp).padding(top = 4.dp))
                 OsmDots(2, Osm.MARKING.indexOf(marking), Modifier.padding(top = 4.dp))
             }
         },
         right = {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 OsmCaption("Fazer fora-de-jogo", offside)
-                OffsideArt(offside, Modifier.size(width = 140.dp, height = 124.dp).padding(top = 4.dp))
+                OffsideArt(offside, Modifier.size(width = 140.dp, height = 160.dp).padding(top = 4.dp))
                 OsmDots(2, if (offside == "Sim") 1 else 0, Modifier.padding(top = 4.dp))
             }
         }
