@@ -74,7 +74,11 @@ data class ListingRead(
 )
 
 /** state: null = competição em andamento; "vazio" = "+ Começar nova liga"; "procurando" = batalha procurando adversário; "preepoca" = competição nova antes da 1ª jornada. */
-data class HubCard(val slot: Int, val team: String, val subtitle: String, val roundDone: Int?, val roundTotal: Int?, val state: String? = null)
+data class HubCard(
+    val slot: Int, val team: String, val subtitle: String, val roundDone: Int?, val roundTotal: Int?, val state: String? = null,
+    /** Deslocamento da grade na tela (a central rola/anima): o escudo é recortado no lugar certo. */
+    val dx: Float = 0f, val dy: Float = 0f
+)
 
 data class MatchReportRead(
     val round: Int? = null,

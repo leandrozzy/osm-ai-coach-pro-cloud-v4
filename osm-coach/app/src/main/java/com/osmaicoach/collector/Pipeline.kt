@@ -244,14 +244,22 @@ class FramePipeline private constructor(private val ctx: Context) {
         else -> "Outra tela do OSM"
     }
 
-    /** Recorta o escudo de cada card da central para mostrar na interface (no máx. 1x a cada 6 h por slot). */
-    private fun saveCrests(bmp: Bitmap, slots: List<Int>) {
+    /**
+     * Recorta o escudo de cada card da central para mostrar na interface. Time novo no card (liga nova) troca o
+     * escudo na hora; o mesmo time renova no máx. 1x a cada 6 h. Slot vazio/procurando não tem escudo: fica o antigo.
+     */
+    private fun saveCrests(bmp: Bitmap, cards: List<HubCard>) {
         val dir = File(ctx.filesDir, "crests").apply { mkdirs() }
-        for (slot in slots) {
+        for (card in cards) {
+            if (card.state != null && card.state != "preepoca") continue
+            val slot = card.slot
             val f = File(dir, "s$slot.png")
-            if (f.exists() && System.currentTimeMillis() - f.lastModified() < 6L * 3600L * 1000L) continue
-            val cx = if (slot % 2 == 1) 0.5867f else 0.7953f
-            val cy = if (slot <= 2) 0.263f else 0.711f
+            val tag = File(dir, "s$slot.txt")
+            val team = Txt.key(card.team)
+            val sameTeam = team.isNotEmpty() && tag.exists() && runCatching { tag.readText() }.getOrNull() == team
+            if (f.exists() && sameTeam && System.currentTimeMillis() - f.lastModified() < 6L * 3600L * 1000L) continue
+            val cx = (if (slot % 2 == 1) 0.5867f else 0.7953f) + card.dx
+            val cy = (if (slot <= 2) 0.263f else 0.711f) + card.dy
             val x = ((cx - 0.04f) * bmp.width).toInt().coerceIn(0, bmp.width - 2)
             val y = ((cy - 0.09f) * bmp.height).toInt().coerceIn(0, bmp.height - 2)
             val w = (0.08f * bmp.width).toInt().coerceAtMost(bmp.width - x)
@@ -261,6 +269,7 @@ class FramePipeline private constructor(private val ctx: Context) {
                 val crop = Bitmap.createBitmap(bmp, x, y, w, hh)
                 FileOutputStream(f).use { crop.compress(Bitmap.CompressFormat.PNG, 100, it) }
                 crop.recycle()
+                if (team.isNotEmpty()) tag.writeText(team)
             } catch (e: Exception) {
                 Diag.lastError = "Escudo: " + (e.message ?: "erro")
             }
@@ -391,7 +400,7 @@ class FramePipeline private constructor(private val ctx: Context) {
                 lastOwners[type] = Triple(cur, own, now)
             }
 
-            if (type == ScreenType.HUB) saveCrests(bmp, ex.hubCards.map { it.slot })
+            if (type == ScreenType.HUB) saveCrests(bmp, ex.hubCards)
             // Telas de dados lidas antes de o slot ser reconhecido (entrou no slot por uma tela sem nome do time):
             // ficam guardadas e vão para o slot assim que ele é identificado, sem passar pela central no meio.
             val asgSlot = asg.slot
