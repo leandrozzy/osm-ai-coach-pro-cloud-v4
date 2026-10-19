@@ -62,6 +62,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.ui.draw.rotate
+import androidx.compose.animation.animateContentSize
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -485,8 +489,13 @@ private fun <T> rememberLoaded(initial: T, tick: Int, key: Any?, loader: suspend
 // ------------------------------------------------------------------ componentes visuais
 
 @Composable
-private fun Title(text: String) =
-    Text(text, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 14.dp, bottom = 6.dp))
+private fun Title(text: String) {
+    Row(Modifier.padding(top = 16.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(width = 4.dp, height = 20.dp).clip(RoundedCornerShape(50)).background(Brush.verticalGradient(listOf(OsmColors.YELLOW, Color(0xFFFF8A00)))))
+        Spacer(Modifier.width(10.dp))
+        Text(text, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
+    }
+}
 
 @Composable
 private fun KV(label: String, value: String) {
@@ -499,20 +508,24 @@ private fun KV(label: String, value: String) {
 @Composable
 private fun Panel(content: @Composable () -> Unit) {
     Card(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp).osmPanel(),
-        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).osmPanel(),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = Color.Transparent)
-    ) { Column(Modifier.padding(14.dp)) { content() } }
+    ) { Column(Modifier.padding(16.dp)) { content() } }
 }
 
 @Composable
 private fun Pill(text: String, ok: Boolean? = null) {
-    val bg = when (ok) {
-        true -> Color(0xFF14532D)
-        false -> Color(0xFF6B1D1D)
-        null -> C.SURFACE2
+    val c = when (ok) {
+        true -> Color(0xFF22C55E)
+        false -> Color(0xFFEF4444)
+        null -> Color(0xFF5FA8FF)
     }
-    Box(Modifier.padding(end = 6.dp, top = 2.dp, bottom = 2.dp).clip(RoundedCornerShape(50)).background(bg).padding(horizontal = 10.dp, vertical = 3.dp)) {
+    Box(
+        Modifier.padding(end = 6.dp, top = 2.dp, bottom = 2.dp).clip(RoundedCornerShape(50))
+            .background(Brush.verticalGradient(listOf(c.copy(alpha = 0.32f), c.copy(alpha = 0.18f))))
+            .border(1.dp, c.copy(alpha = 0.45f), RoundedCornerShape(50)).padding(horizontal = 10.dp, vertical = 3.dp)
+    ) {
         Text(text, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
     }
 }
@@ -534,12 +547,13 @@ private fun Crest(slot: Int, size: Dp) {
 
 @Composable
 private fun Bar(pct: Int) {
-    LinearProgressIndicator(
-        progress = { pct.coerceIn(0, 100) / 100f },
-        modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50)),
-        color = C.PRIMARY,
-        trackColor = C.SURFACE2
-    )
+    val f by androidx.compose.animation.core.animateFloatAsState(pct.coerceIn(0, 100) / 100f, androidx.compose.animation.core.tween(800), label = "bar")
+    Box(Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50)).background(Color(0x33000000))) {
+        Box(
+            Modifier.fillMaxWidth(f).fillMaxHeight().clip(RoundedCornerShape(50))
+                .background(Brush.horizontalGradient(listOf(Color(0xFF1E6BFF), Color(0xFF3DB2FF), Color(0xFF6EE7FF))))
+        )
+    }
 }
 
 // ------------------------------------------------------------------ desenhos e blocos visuais (menos texto)
@@ -567,18 +581,21 @@ private fun Hint(text: String, label: String = "como funciona") {
 private fun Fold(icon: String, title: String, badge: String? = null, startOpen: Boolean = false, content: @Composable () -> Unit) {
     var open by rememberSaveable(title) { mutableStateOf(startOpen) }
     Card(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp).osmPanel(),
-        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).osmPanel(),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = Color.Transparent)
     ) {
-        Column {
+        Column(Modifier.animateContentSize()) {
             Row(
                 Modifier.fillMaxWidth().clickable { open = !open }.padding(horizontal = 14.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Box(Modifier.size(32.dp).clip(RoundedCornerShape(10.dp)).background(C.SURFACE2), contentAlignment = Alignment.Center) {
-                    Text(icon, fontSize = 16.sp)
-                }
+                Box(
+                    Modifier.size(34.dp).clip(RoundedCornerShape(11.dp))
+                        .background(Brush.linearGradient(listOf(Color(0xFF2B5BB8), Color(0xFF14306E))))
+                        .border(1.dp, Color(0x4072B8FF), RoundedCornerShape(11.dp)),
+                    contentAlignment = Alignment.Center
+                ) { Text(icon, fontSize = 16.sp) }
                 Spacer(Modifier.width(10.dp))
                 Text(title, fontWeight = FontWeight.Bold, fontSize = 14.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (badge != null) {
@@ -586,7 +603,8 @@ private fun Fold(icon: String, title: String, badge: String? = null, startOpen: 
                         Text(badge, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = C.GOLD, maxLines = 1)
                     }
                 }
-                Text(if (open) "▲" else "▼", fontSize = 12.sp, color = C.MUTED)
+                val rot by androidx.compose.animation.core.animateFloatAsState(if (open) 180f else 0f, label = "chev")
+                Text("▼", fontSize = 12.sp, color = C.MUTED, modifier = Modifier.rotate(rot))
             }
             if (open) Column(Modifier.padding(start = 14.dp, end = 14.dp, bottom = 14.dp)) { content() }
         }
@@ -597,8 +615,10 @@ private fun Fold(icon: String, title: String, badge: String? = null, startOpen: 
 @Composable
 private fun StatTile(icon: String, value: String, label: String, color: Color, modifier: Modifier = Modifier) {
     Column(
-        modifier.clip(RoundedCornerShape(10.dp)).background(color.copy(alpha = 0.16f))
-            .border(1.dp, color.copy(alpha = 0.35f), RoundedCornerShape(10.dp)).padding(vertical = 10.dp, horizontal = 6.dp),
+        modifier.clip(RoundedCornerShape(14.dp))
+            .background(Brush.verticalGradient(listOf(color.copy(alpha = 0.26f), color.copy(alpha = 0.08f))))
+            .border(1.dp, Brush.verticalGradient(listOf(color.copy(alpha = 0.6f), color.copy(alpha = 0.12f))), RoundedCornerShape(14.dp))
+            .padding(vertical = 10.dp, horizontal = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(icon, fontSize = 18.sp)
@@ -610,12 +630,17 @@ private fun StatTile(icon: String, value: String, label: String, color: Color, m
 /** Anel de progresso com o texto no meio. */
 @Composable
 private fun Ring(pct: Int, size: Dp, color: Color, center: String, sub: String? = null) {
+    val ringAnim by androidx.compose.animation.core.animateFloatAsState(pct.coerceIn(0, 100) / 100f, androidx.compose.animation.core.tween(900), label = "ring")
     Box(Modifier.size(size), contentAlignment = Alignment.Center) {
         Canvas(Modifier.size(size)) {
             val sw = this.size.width * 0.11f
             val arc = Size(this.size.width - sw, this.size.height - sw)
             drawArc(C.SURFACE2, -90f, 360f, false, topLeft = Offset(sw / 2f, sw / 2f), size = arc, style = Stroke(sw))
-            drawArc(color, -90f, 360f * pct.coerceIn(0, 100) / 100f, false, topLeft = Offset(sw / 2f, sw / 2f), size = arc, style = Stroke(sw, cap = StrokeCap.Round))
+            drawArc(color.copy(alpha = 0.22f), -90f, 360f * ringAnim, false, topLeft = Offset(sw / 2f, sw / 2f), size = arc, style = Stroke(sw * 2f, cap = StrokeCap.Round))
+            drawArc(
+                Brush.sweepGradient(listOf(color.copy(alpha = 0.7f), color, Color.White.copy(alpha = 0.9f), color)),
+                -90f, 360f * ringAnim, false, topLeft = Offset(sw / 2f, sw / 2f), size = arc, style = Stroke(sw, cap = StrokeCap.Round)
+            )
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(center, fontSize = (size.value * (if (center.length >= 4) 0.2f else 0.24f)).sp, fontWeight = FontWeight.ExtraBold, color = Color.White, maxLines = 1)
@@ -1136,6 +1161,8 @@ data class SlotData(
     val trainScreen: JSONObject? = null,
     /** Treino corrigido à mão (nameKey -> treinando?). */
     val trainOv: Map<String, Boolean> = emptyMap(),
+    /** Evolução: placar da tática, livro de caixa, treino e semana. */
+    val progress: Repo.ProgressData? = null,
     /** Resumo do fim da competição (posição, pontos, campeão, valor). */
     val season: JSONObject? = null
 )
@@ -1193,6 +1220,7 @@ private suspend fun loadSlot(ctx: Context, slot: Int): SlotData {
         board = repo.boardMessages(slot),
         trainScreen = dao.plan(slot, "trainscreen")?.json?.let { try { JSONObject(it) } catch (e: Exception) { null } },
         trainOv = repo.trainingOverrides(slot),
+        progress = runCatching { repo.progress(slot) }.getOrNull(),
         season = dao.plan(slot, "season")?.json?.let { try { JSONObject(it) } catch (e: Exception) { null } },
         win = tplan?.takeIf { tacticCurrent(it, f) }?.let { Director.winProb(repo, slot, it) },
         evidence = repo.evidence(slot),
@@ -1966,7 +1994,9 @@ data class DirSlot(
     val stadium: String? = null,
     val goal: String? = null,
     /** A primeira coisa a fazer neste slot para o time evoluir. */
-    val next: String? = null
+    val next: String? = null,
+    /** Semana em uma linha: valor, caixa e treino. */
+    val week: String? = null
 )
 
 private suspend fun loadDirector(ctx: Context): List<DirSlot> {
@@ -2035,7 +2065,15 @@ private suspend fun loadDirector(ctx: Context): List<DirSlot> {
                 alerts = alerts,
                 stadium = stadiumLine,
                 goal = goalLine,
-                next = next
+                next = next,
+                week = runCatching { repo.progress(s.slot) }.getOrNull()?.let { pg ->
+                    listOfNotNull(
+                        pg.week?.value?.let { "valor ${moneyText(it, true)}" },
+                        pg.week?.cash?.let { "caixa ${moneyText(it, true)}" },
+                        pg.train?.takeIf { it.trained > 0 }?.let { "treino ${if (it.edge >= 0) "+" else ""}${"%.1f".format(it.edge).replace('.', ',')}/jogador" },
+                        pg.ledger.takeIf { it.buys + it.sells > 0 }?.let { "saldo ${moneyText(it.balance, true)}" }
+                    ).takeIf { it.isNotEmpty() }?.joinToString(" • ")?.let { "📈 Semana: $it" }
+                }
             )
         )
     }
@@ -2122,6 +2160,7 @@ private fun DirectorTab(onOpen: (Int, Int) -> Unit) {
                 }
                 if (d.radar != null) Text("📡 ${d.radar}", fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
                 if (d.goal != null) Text(d.goal, fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 2.dp))
+                if (d.week != null) Text(d.week, fontSize = 12.sp, color = OsmColors.YELLOW, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 4.dp))
                 Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = { onOpen(d.s.slot, 4) }, modifier = Modifier.weight(1f)) { Text("Tática", fontSize = 12.sp) }
                     OutlinedButton(onClick = { onOpen(d.s.slot, 6) }, modifier = Modifier.weight(1f)) { Text("Plano completo", fontSize = 12.sp) }
@@ -2158,16 +2197,28 @@ private fun SlotScreen(slot: Int, tab: Int, onTab: (Int) -> Unit, onBack: () -> 
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { androidx.compose.material3.CircularProgressIndicator(color = C.PRIMARY) }
             return@Column
         }
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
-            when (tab) {
-                0 -> SlotSummaryTab(slot, data)
-                1 -> SlotPregame(slot, data)
-                2 -> SlotSquad(slot, data)
-                3 -> SlotCalendar(slot, data)
-                4 -> SlotTactic(slot, data)
-                5 -> SlotResult(slot, data) { onTab(4) }
-                6 -> SlotDirector(slot, data)
-                else -> SlotLearning(slot, data)
+        // troca de aba fluida: a nova desliza um pouco e aparece enquanto a anterior some
+        androidx.compose.animation.AnimatedContent(
+            targetState = tab,
+            transitionSpec = {
+                val dir = if (targetState > initialState) 1 else -1
+                (androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(260)) +
+                    androidx.compose.animation.slideInHorizontally(androidx.compose.animation.core.tween(300)) { it / 10 * dir }) togetherWith
+                    androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(160))
+            },
+            label = "tabs"
+        ) { t ->
+            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
+                when (t) {
+                    0 -> SlotSummaryTab(slot, data)
+                    1 -> SlotPregame(slot, data)
+                    2 -> SlotSquad(slot, data)
+                    3 -> SlotCalendar(slot, data)
+                    4 -> SlotTactic(slot, data)
+                    5 -> SlotResult(slot, data) { onTab(4) }
+                    6 -> SlotDirector(slot, data)
+                    else -> SlotLearning(slot, data)
+                }
             }
         }
     }
@@ -2998,11 +3049,6 @@ private fun LineupPitch(plan: JSONObject) {
     val advA = arrowSet(plan.optString("advAttack"))
     val advM = arrowSet(plan.optString("advMid"))
     val advD = arrowSet(plan.optString("advDef"))
-    // Jogadores 3D renderizados (Blender), um uniforme por setor.
-    val kitGol = androidx.compose.ui.graphics.ImageBitmap.imageResource(R.drawable.osm_lineup_gol)
-    val kitDef = androidx.compose.ui.graphics.ImageBitmap.imageResource(R.drawable.osm_lineup_def)
-    val kitMei = androidx.compose.ui.graphics.ImageBitmap.imageResource(R.drawable.osm_lineup_mei)
-    val kitAta = androidx.compose.ui.graphics.ImageBitmap.imageResource(R.drawable.osm_lineup_ata)
     Canvas(Modifier.fillMaxWidth().height(440.dp).clip(RoundedCornerShape(20.dp))) {
         val dp = density
         val pv = PitchView(size.width, size.height)
@@ -3050,22 +3096,14 @@ private fun LineupPitch(plan: JSONObject) {
                     arrow(a, b, col.copy(alpha = 0.95f), 3f * dp * sc)
                 }
                 val r = 17f * dp * sc
-                val kit = when {
-                    ri == 0 -> kitGol
-                    ri == 1 -> kitDef
-                    ri == rows.size - 1 -> kitAta
-                    else -> kitMei
-                }
-                val fh = r * 3.1f
-                val fw = fh * kit.width / kit.height
-                drawImage(
-                    kit, dstOffset = androidx.compose.ui.unit.IntOffset((foot.x - fw / 2f).toInt(), (foot.y - fh * 0.97f).toInt()),
-                    dstSize = androidx.compose.ui.unit.IntSize(fw.toInt(), fh.toInt())
-                )
+                // ficha do jogador (mesmo visual das ilustrações da tática), número da força no centro
+                val tok = r * 1.05f
+                val cy = foot.y - tok
+                token(Offset(foot.x, cy), tok, markerColor, jersey = false)
                 drawIntoCanvas { cv ->
                     if (pl.second > 0) {
                         numPaint.textSize = 12.5f * dp * sc
-                        cv.nativeCanvas.drawText(pl.second.toString(), foot.x, foot.y - fh * 0.5f, numPaint)
+                        cv.nativeCanvas.drawText(pl.second.toString(), foot.x, cy + numPaint.textSize * 0.36f, numPaint)
                     }
                 }
                 if (pl.first.isNotBlank()) {
@@ -3455,14 +3493,14 @@ private fun SlotTactic(slot: Int, d: SlotData) {
         left = {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 OsmCaption("Estilo de jogo", style)
-                StyleArt(style, Modifier.fillMaxWidth().height(96.dp).padding(top = 4.dp))
+                StyleIllustration(style, Modifier.fillMaxWidth().height(118.dp).padding(top = 6.dp))
                 OsmDots(Osm.STYLES.size, Osm.STYLES.indexOf(style), Modifier.padding(top = 4.dp))
             }
         },
         right = {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 OsmCaption("Desarme", tackle)
-                TackleArt(tackle, Modifier.size(width = 80.dp, height = 104.dp).padding(top = 4.dp))
+                TackleIllustration(tackle, Modifier.size(width = 130.dp, height = 112.dp).padding(top = 6.dp))
                 OsmDots(Osm.TACKLES.size, Osm.TACKLES.indexOf(tackle), Modifier.padding(top = 4.dp))
             }
         }
@@ -3470,7 +3508,7 @@ private fun SlotTactic(slot: Int, d: SlotData) {
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp).osmPanel().padding(10.dp)) {
         Text("Táticas por sector", fontSize = 11.sp, color = OsmColors.CAPTION, fontWeight = FontWeight.SemiBold, modifier = Modifier.align(Alignment.CenterHorizontally))
         Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            SectorArt(att, mid, def, Modifier.size(width = 124.dp, height = 163.dp))
+            SectorIllustration(att, mid, def, Modifier.size(width = 128.dp, height = 172.dp))
             Column(Modifier.weight(1f).padding(start = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 SectorChoice("Avançados", att, Osm.ATTACK)
                 SectorChoice("Médios", mid, Osm.MIDFIELD)
@@ -3485,14 +3523,14 @@ private fun SlotTactic(slot: Int, d: SlotData) {
         left = {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 OsmCaption("Marcação", marking)
-                MarkingArt(marking, Modifier.size(width = 140.dp, height = 124.dp).padding(top = 4.dp))
+                MarkingIllustration(marking, Modifier.size(width = 130.dp, height = 150.dp).padding(top = 6.dp))
                 OsmDots(2, Osm.MARKING.indexOf(marking), Modifier.padding(top = 4.dp))
             }
         },
         right = {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 OsmCaption("Fazer fora-de-jogo", offside)
-                OffsideArt(offside, Modifier.size(width = 140.dp, height = 124.dp).padding(top = 4.dp))
+                OffsideIllustration(offside, Modifier.size(width = 130.dp, height = 150.dp).padding(top = 6.dp))
                 OsmDots(2, if (offside == "Sim") 1 else 0, Modifier.padding(top = 4.dp))
             }
         }
@@ -3587,6 +3625,7 @@ private fun StepHeader(n: Int, icon: String, title: String, badge: String? = nul
 @Composable
 private fun SlotDirector(slot: Int, d: SlotData) {
     val ctx = LocalContext.current
+    d.progress?.let { EvolutionPanel(it) }
     val plan = d.marketPlan
     if (plan == null) {
         EmptyState("👕", "Leia o seu elenco primeiro", "No jogo: Plantel do SEU time, role a lista até o fim. Aí o diretor monta treinos, vendas e compras.")
@@ -4039,6 +4078,7 @@ private fun GameCard(g: Coach.Game, rv: Coach.Review?) {
 
 @Composable
 private fun SlotLearning(slot: Int, d: SlotData) {
+    d.progress?.let { ScoreboardCard(it.score) }
     data class Row2(
         val kind: String, val round: Int, val formation: String, val style: String, val rival: String,
         val result: String?, val score: String, val human: Boolean?, val home: Boolean?

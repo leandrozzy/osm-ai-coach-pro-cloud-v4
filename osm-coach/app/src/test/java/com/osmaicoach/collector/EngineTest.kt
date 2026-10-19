@@ -47,13 +47,25 @@ class EngineTest {
 
     @Test fun underdogFollowsTheCommunityModel() {
         val r = TacticEngine.recommend(input(70, 90).copy(rivalFormation = "4-3-3 A"))!!
-        assertEquals("5-4-1 A", r.tactic.formation)
+        // azarão: bloco compacto com 2 atacantes que ficam na frente (não o 5-4-1 que ficava sem gol)
+        assertEquals("5-3-2", Formations.base(r.tactic.formation))
         assertEquals("Contra-ataque", r.tactic.playStyle)
-        assertTrue(r.tactic.mentality <= 25)
-        assertTrue(r.tactic.pressure <= 36)
+        assertEquals("Atacar apenas", r.tactic.advAttack)
+        assertTrue(r.tactic.mentality in 32..45)
+        assertTrue(r.tactic.pressure <= 42)
         assertTrue(r.tactic.tempo >= 60)
         assertEquals("Não", r.tactic.offside)
-        assertTrue(r.tactic.notes.first().startsWith("Base da comunidade"))
+        assertTrue(r.tactic.notes.any { it.startsWith("Base da comunidade") })
+    }
+
+    @Test fun goalDroughtPushesTheUnderdogForward() {
+        val dry = Coach.Lessons(0, 1, 2, false, emptySet())
+        val r = TacticEngine.recommend(input(76, 88).copy(rivalFormation = "4-3-3 A", lessons = dry))!!
+        assertEquals("Atacar apenas", r.tactic.advAttack)
+        assertTrue(r.tactic.mentality >= 42)
+        assertTrue(r.tactic.tempo >= 66)
+        assertTrue(Formations.lines(r.tactic.formation).last() >= 2)
+        assertTrue(r.tactic.notes.first().startsWith("⚠ Sem gols"))
     }
 
     @Test fun underdogTacticChangesWithTheRivalAndTheGap() {

@@ -383,7 +383,8 @@ object TacticEngine {
 
         val roles: Pair<String, String> = if (diff != null && diff >= 15) Pair("Atacar apenas", "Pressionar na frente")
         else if (diff != null && diff >= 5) Pair("Atacar apenas", "Manter posições")
-        else if (diff != null && diff <= -5) Pair("Ajudar a defender", "Ajudar a defesa")
+        // azarão: os avançados FICAM na frente para o contra-ataque (recuar todo mundo = zero gols)
+        else if (diff != null && diff <= -5) Pair("Atacar apenas", "Ajudar a defesa")
         else Pair("Atacar apenas", "Manter posições")
         val advAttack = roles.first
         val advMid = if ((inp.lessons?.midNeed ?: 0) > 0 && roles.second == "Pressionar na frente") "Manter posições" else roles.second
@@ -523,6 +524,28 @@ object TacticEngine {
         smartAttack(aA, fF, diff, inp.myMid, inp.rivalMid, inp.myAtk, inp.rivalDef)?.let { (v, why) ->
             aA = v
             notes.add("Avançados: $why.")
+        }
+        // Seca de gols: jogos recentes sem marcar (relatório do jogo). Recuar mais não resolve — o time some do ataque.
+        // Azarão: avançados ficam na frente, estilo e ritmo sobem e, se só há 1 atacante, passa para 2 (5-3-2 / 4-4-2).
+        if ((diff ?: 0) <= -5) {
+            val drought = (inp.lessons?.atkNeed ?: 0) > 0
+            val fix = ArrayList<String>()
+            if (aA != "Atacar apenas") { aA = "Atacar apenas"; fix.add("avançados ficam na frente para o contra-ataque") }
+            val floorM = if (drought) 42 else 32
+            if (mF < floorM) { mF = floorM; fix.add("estilo $floorM (não se encolher demais)") }
+            if (drought && tF < 66) { tF = 66; fix.add("ritmo 66 (sair rápido)") }
+            if (drought && (Formations.lines(fF).lastOrNull() ?: 2) < 2) {
+                val alt = listOf("5-3-2", "4-4-2").firstOrNull { lineup(it, inp.players, inp.fitness) != null }
+                if (alt != null) {
+                    lineup(alt, inp.players, inp.fitness)?.let { rowsF = it.first }
+                    fF = alt
+                    fname = null
+                    fix.add("$alt: dois atacantes em vez de um isolado")
+                }
+            }
+            if (fix.isNotEmpty()) {
+                notes.add(0, (if (drought) "⚠ Sem gols nos últimos jogos: " else "Azarão: ") + fix.joinToString(", ") + ".")
+            }
         }
         // Batalha: empate não serve. Sem ser bem mais fraco, avançados atacando e mentalidade para vencer.
         if (inp.mustWin && (diff ?: 0) >= -8) {

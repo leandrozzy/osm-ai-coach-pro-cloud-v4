@@ -319,13 +319,13 @@ class IntelTest {
 
     @Test fun communityModelLearnsFromRealResults() {
         val t = Meta.template(-10, true, "4-3-3 A")!!
-        assertEquals("5-4-1 A", t.formation)
+        assertEquals("5-3-2", t.formation)
         fun g(f: String, st: String, res: String, mentality: Int = 30) = JSONObject().put("formation", f).put("playStyle", st)
             .put("result", res).put("myStrength", 70).put("rivalStrength", 80).put("home", true).put("rivalFormationRead", "4-3-3 A")
             .put("pressure", 40).put("mentality", mentality).put("tempo", 60)
         // o modelo perdeu 3 vezes e o 4-5-1 Remate à vista ganhou 4: passa a ser o 4-5-1
         val logs = listOf(
-            g("5-4-1 A", "Contra-ataque", "D"), g("5-4-1 A", "Contra-ataque", "D"), g("5-4-1 A", "Contra-ataque", "D"),
+            g("5-3-2", "Contra-ataque", "D"), g("5-3-2", "Contra-ataque", "D"), g("5-3-2", "Contra-ataque", "D"),
             g("4-5-1", "Remate à vista", "V"), g("4-5-1", "Remate à vista", "V"), g("4-5-1", "Remate à vista", "V"), g("4-5-1", "Remate à vista", "V")
         )
         val a = MetaLearner.adapt(t, logs, -10, true, "4-3-3 A")
@@ -334,9 +334,9 @@ class IntelTest {
         // sem jogos parecidos (favorito), o modelo fica como está
         assertEquals(t, MetaLearner.adapt(t, logs.map { it.put("myStrength", 90) }, -10, true, "4-3-3 A"))
         // vitórias com o próprio modelo puxam os controles para os valores que venceram
-        val wins = (1..4).map { g("5-4-1 A", "Contra-ataque", "V", mentality = 40) }
+        val wins = (1..4).map { g("5-3-2", "Contra-ataque", "V", mentality = 60) }
         val b = MetaLearner.adapt(t, wins, -10, true, "4-3-3 A")
-        assertEquals("5-4-1 A", b.formation)
+        assertEquals("5-3-2", b.formation)
         assertTrue(b.mentality > t.mentality)
     }
 }
