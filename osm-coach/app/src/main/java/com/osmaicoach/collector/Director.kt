@@ -883,6 +883,9 @@ object Director {
             "Contra rival HUMANO prefira a tática que não perde para as táticas que ele já usou. " +
             "Se DADOS.batalha existir, o jogo é de BATALHA: só a vitória conta; prefira a tática com mais chance de VENCER, " +
             "não a que só evita a derrota (avançados atacando, mentalidade acima de 55 se não for bem mais fraco). " +
+            "Contra rival MAIS FORTE: NÃO se encolha demais (mentality >= 32, advAttack \"Atacar apenas\", de preferência 2 " +
+            "atacantes como 5-3-2): o histórico mostra 0 gols em 7 jogos com 5-4-1/4-5-1, estilo 18-30 e atacante ajudando a defender. " +
+            "Se HISTÓRICO tiver jogos recentes sem gol, aumente ritmo e presença na área. " +
             "Avançados (advAttack): com 3 atacantes e sem ser bem mais fraco use \"Atacar apenas\"; \"Apoiar meio-campo\" só " +
             "se o meio-campo dele for claramente mais forte que o seu e o seu ataque não superar a defesa dele. " +
             "Se o rival joga Contra-ataque, não responda com Contra-ataque (os dois esperam e sai empate). " +
@@ -1034,6 +1037,11 @@ object Director {
                     // a IA também segue a regra dos avançados pelos setores (ex.: 4-3-3 mais forte não "apoia o meio")
                     val sa = TacticEngine.smartAttack(it.advAttack, it.formation, res.diff, inp.myMid, inp.rivalMid, inp.myAtk, inp.rivalDef)
                     if (sa != null && !(inp.mustWin && sa.first != "Atacar apenas")) it.copy(advAttack = sa.first, notes = it.notes + "Avançados: ${sa.second}.") else it
+                }.let {
+                    // azarão: nada de recuar o time inteiro (7 jogos sem gol assim contra humanos mais fortes)
+                    if ((res.diff ?: 0) <= -5 && (Osm.attack(it.advAttack) != "Atacar apenas" || it.mentality < 32)) {
+                        it.copy(advAttack = "Atacar apenas", mentality = maxOf(it.mentality, 32), notes = it.notes + "Azarão: avançados na frente e estilo mínimo 32 para o contra-ataque ter quem finalize.")
+                    } else it
                 }
                 aiWhy = t.notes.joinToString(" ")
                 // a IA decide: só fica fora uma escolha que a simulação mostra claramente pior ou que foge muito do jogo

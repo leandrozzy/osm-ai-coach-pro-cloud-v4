@@ -21,6 +21,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -61,13 +62,18 @@ object OsmColors {
     val TRACK = Color(0xFF1A2742)
 }
 
-private val PANEL_SHAPE = RoundedCornerShape(10.dp)
+private val PANEL_SHAPE = RoundedCornerShape(16.dp)
 
-/** Painel do OSM: degradê azul-marinho e um filete claro no topo. */
+/**
+ * Painel "vidro" sobre o estádio: sombra suave azulada, degradê translúcido, brilho no canto de cima e borda
+ * iluminada que some para baixo.
+ */
 fun Modifier.osmPanel(shape: RoundedCornerShape = PANEL_SHAPE): Modifier = this
+    .shadow(10.dp, shape, ambientColor = Color(0xFF02081A), spotColor = Color(0xFF000814))
     .clip(shape)
-    .background(Brush.verticalGradient(listOf(OsmColors.PANEL_TOP, OsmColors.PANEL_BOTTOM)))
-    .border(1.dp, Brush.verticalGradient(listOf(OsmColors.PANEL_EDGE.copy(alpha = 0.55f), Color.Transparent)), shape)
+    .background(Brush.verticalGradient(listOf(OsmColors.PANEL_TOP.copy(alpha = 0.92f), OsmColors.PANEL_BOTTOM.copy(alpha = 0.94f))))
+    .background(Brush.radialGradient(listOf(Color(0x1F5FA8FF), Color.Transparent), center = Offset(0f, 0f), radius = 700f))
+    .border(1.dp, Brush.verticalGradient(listOf(Color(0x8072B8FF), Color(0x2272B8FF), Color(0x0872B8FF))), shape)
 
 /** Fundo da tela: céu de estádio à noite. */
 val OSM_BACKGROUND = Brush.verticalGradient(listOf(OsmColors.NIGHT_TOP, OsmColors.NIGHT_MID, OsmColors.NIGHT_BOTTOM))

@@ -63,6 +63,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.ui.draw.rotate
+import androidx.compose.animation.animateContentSize
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -486,8 +489,13 @@ private fun <T> rememberLoaded(initial: T, tick: Int, key: Any?, loader: suspend
 // ------------------------------------------------------------------ componentes visuais
 
 @Composable
-private fun Title(text: String) =
-    Text(text, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 14.dp, bottom = 6.dp))
+private fun Title(text: String) {
+    Row(Modifier.padding(top = 16.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(width = 4.dp, height = 20.dp).clip(RoundedCornerShape(50)).background(Brush.verticalGradient(listOf(OsmColors.YELLOW, Color(0xFFFF8A00)))))
+        Spacer(Modifier.width(10.dp))
+        Text(text, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
+    }
+}
 
 @Composable
 private fun KV(label: String, value: String) {
@@ -500,20 +508,24 @@ private fun KV(label: String, value: String) {
 @Composable
 private fun Panel(content: @Composable () -> Unit) {
     Card(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp).osmPanel(),
-        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).osmPanel(),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = Color.Transparent)
-    ) { Column(Modifier.padding(14.dp)) { content() } }
+    ) { Column(Modifier.padding(16.dp)) { content() } }
 }
 
 @Composable
 private fun Pill(text: String, ok: Boolean? = null) {
-    val bg = when (ok) {
-        true -> Color(0xFF14532D)
-        false -> Color(0xFF6B1D1D)
-        null -> C.SURFACE2
+    val c = when (ok) {
+        true -> Color(0xFF22C55E)
+        false -> Color(0xFFEF4444)
+        null -> Color(0xFF5FA8FF)
     }
-    Box(Modifier.padding(end = 6.dp, top = 2.dp, bottom = 2.dp).clip(RoundedCornerShape(50)).background(bg).padding(horizontal = 10.dp, vertical = 3.dp)) {
+    Box(
+        Modifier.padding(end = 6.dp, top = 2.dp, bottom = 2.dp).clip(RoundedCornerShape(50))
+            .background(Brush.verticalGradient(listOf(c.copy(alpha = 0.32f), c.copy(alpha = 0.18f))))
+            .border(1.dp, c.copy(alpha = 0.45f), RoundedCornerShape(50)).padding(horizontal = 10.dp, vertical = 3.dp)
+    ) {
         Text(text, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
     }
 }
@@ -535,12 +547,13 @@ private fun Crest(slot: Int, size: Dp) {
 
 @Composable
 private fun Bar(pct: Int) {
-    LinearProgressIndicator(
-        progress = { pct.coerceIn(0, 100) / 100f },
-        modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50)),
-        color = C.PRIMARY,
-        trackColor = C.SURFACE2
-    )
+    val f by androidx.compose.animation.core.animateFloatAsState(pct.coerceIn(0, 100) / 100f, androidx.compose.animation.core.tween(800), label = "bar")
+    Box(Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50)).background(Color(0x33000000))) {
+        Box(
+            Modifier.fillMaxWidth(f).fillMaxHeight().clip(RoundedCornerShape(50))
+                .background(Brush.horizontalGradient(listOf(Color(0xFF1E6BFF), Color(0xFF3DB2FF), Color(0xFF6EE7FF))))
+        )
+    }
 }
 
 // ------------------------------------------------------------------ desenhos e blocos visuais (menos texto)
@@ -568,18 +581,21 @@ private fun Hint(text: String, label: String = "como funciona") {
 private fun Fold(icon: String, title: String, badge: String? = null, startOpen: Boolean = false, content: @Composable () -> Unit) {
     var open by rememberSaveable(title) { mutableStateOf(startOpen) }
     Card(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp).osmPanel(),
-        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).osmPanel(),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = Color.Transparent)
     ) {
-        Column {
+        Column(Modifier.animateContentSize()) {
             Row(
                 Modifier.fillMaxWidth().clickable { open = !open }.padding(horizontal = 14.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Box(Modifier.size(32.dp).clip(RoundedCornerShape(10.dp)).background(C.SURFACE2), contentAlignment = Alignment.Center) {
-                    Text(icon, fontSize = 16.sp)
-                }
+                Box(
+                    Modifier.size(34.dp).clip(RoundedCornerShape(11.dp))
+                        .background(Brush.linearGradient(listOf(Color(0xFF2B5BB8), Color(0xFF14306E))))
+                        .border(1.dp, Color(0x4072B8FF), RoundedCornerShape(11.dp)),
+                    contentAlignment = Alignment.Center
+                ) { Text(icon, fontSize = 16.sp) }
                 Spacer(Modifier.width(10.dp))
                 Text(title, fontWeight = FontWeight.Bold, fontSize = 14.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (badge != null) {
@@ -587,7 +603,8 @@ private fun Fold(icon: String, title: String, badge: String? = null, startOpen: 
                         Text(badge, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = C.GOLD, maxLines = 1)
                     }
                 }
-                Text(if (open) "▲" else "▼", fontSize = 12.sp, color = C.MUTED)
+                val rot by androidx.compose.animation.core.animateFloatAsState(if (open) 180f else 0f, label = "chev")
+                Text("▼", fontSize = 12.sp, color = C.MUTED, modifier = Modifier.rotate(rot))
             }
             if (open) Column(Modifier.padding(start = 14.dp, end = 14.dp, bottom = 14.dp)) { content() }
         }
@@ -598,8 +615,10 @@ private fun Fold(icon: String, title: String, badge: String? = null, startOpen: 
 @Composable
 private fun StatTile(icon: String, value: String, label: String, color: Color, modifier: Modifier = Modifier) {
     Column(
-        modifier.clip(RoundedCornerShape(10.dp)).background(color.copy(alpha = 0.16f))
-            .border(1.dp, color.copy(alpha = 0.35f), RoundedCornerShape(10.dp)).padding(vertical = 10.dp, horizontal = 6.dp),
+        modifier.clip(RoundedCornerShape(14.dp))
+            .background(Brush.verticalGradient(listOf(color.copy(alpha = 0.26f), color.copy(alpha = 0.08f))))
+            .border(1.dp, Brush.verticalGradient(listOf(color.copy(alpha = 0.6f), color.copy(alpha = 0.12f))), RoundedCornerShape(14.dp))
+            .padding(vertical = 10.dp, horizontal = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(icon, fontSize = 18.sp)
@@ -611,12 +630,17 @@ private fun StatTile(icon: String, value: String, label: String, color: Color, m
 /** Anel de progresso com o texto no meio. */
 @Composable
 private fun Ring(pct: Int, size: Dp, color: Color, center: String, sub: String? = null) {
+    val ringAnim by androidx.compose.animation.core.animateFloatAsState(pct.coerceIn(0, 100) / 100f, androidx.compose.animation.core.tween(900), label = "ring")
     Box(Modifier.size(size), contentAlignment = Alignment.Center) {
         Canvas(Modifier.size(size)) {
             val sw = this.size.width * 0.11f
             val arc = Size(this.size.width - sw, this.size.height - sw)
             drawArc(C.SURFACE2, -90f, 360f, false, topLeft = Offset(sw / 2f, sw / 2f), size = arc, style = Stroke(sw))
-            drawArc(color, -90f, 360f * pct.coerceIn(0, 100) / 100f, false, topLeft = Offset(sw / 2f, sw / 2f), size = arc, style = Stroke(sw, cap = StrokeCap.Round))
+            drawArc(color.copy(alpha = 0.22f), -90f, 360f * ringAnim, false, topLeft = Offset(sw / 2f, sw / 2f), size = arc, style = Stroke(sw * 2f, cap = StrokeCap.Round))
+            drawArc(
+                Brush.sweepGradient(listOf(color.copy(alpha = 0.7f), color, Color.White.copy(alpha = 0.9f), color)),
+                -90f, 360f * ringAnim, false, topLeft = Offset(sw / 2f, sw / 2f), size = arc, style = Stroke(sw, cap = StrokeCap.Round)
+            )
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(center, fontSize = (size.value * (if (center.length >= 4) 0.2f else 0.24f)).sp, fontWeight = FontWeight.ExtraBold, color = Color.White, maxLines = 1)

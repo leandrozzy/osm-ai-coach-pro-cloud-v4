@@ -764,7 +764,7 @@ object Coach {
         val l = Lessons(need(mid), need(def), need(atk), discipline, avoid)
         val plan = ArrayList<String>()
         if (l.midNeed > 0) plan.add("Reforçar o meio-campo: formação com mais meias e meias em \"Manter posições\" para não perder a posse de novo.")
-        if (l.defNeed > 0) plan.add("Proteger a defesa: mentalidade mais baixa, sem linha de impedimento arriscada e atacantes ajudando quando o rival for forte.")
+        if (l.defNeed > 0) plan.add("Proteger a defesa: bloco mais compacto e sem linha de impedimento arriscada — mas os avançados ficam na frente para o contra-ataque.")
         if (l.atkNeed > 0) plan.add("Mais presença na área: um atacante a mais ou \"Remate à vista\" quando a defesa rival for fraca.")
         if (l.discipline) plan.add("Disciplina: as faltas passaram de 16 por jogo. O desarme segue o árbitro, mas cuidado com cartões.")
         for (k in avoid) {
@@ -901,12 +901,14 @@ object Meta {
         val rl = rf?.let { Formations.lines(it) }?.takeIf { it.isNotEmpty() }
         val away = home == false
         if (edge <= -5) {
-            // azarão: fechado e saindo rápido (5-4-1 A, contra-ataque, estilo super defensivo, ritmo de passes rápidos)
+            // azarão: bloco compacto e saída rápida com DOIS atacantes que ficam na frente (5-3-2 em contra-ataque).
+            // O antigo 5-4-1 com estilo 18-25 e atacante "ajudando a defender" deixava o time sem ataque:
+            // 7 jogos seguidos sem gol contra humanos mais fortes (diagnóstico de 19/10).
             val deep = edge <= -12
             return Template(
-                "rival mais forte", "5-4-1 A", "Contra-ataque",
-                (if (deep) 32 else 36) - (if (away) 2 else 0), (if (deep) 18 else 25) - (if (away) 3 else 0), if (deep) 66 else 64,
-                "Atacar apenas", "Ajudar a defesa", "Defender atrás"
+                "rival mais forte", "5-3-2", "Contra-ataque",
+                (if (deep) 36 else 40) - (if (away) 2 else 0), (if (deep) 36 else 42) - (if (away) 3 else 0), if (deep) 70 else 68,
+                "Atacar apenas", if (deep) "Ajudar a defesa" else "Manter posições", "Defender atrás"
             )
         }
         if (edge >= 5) {
