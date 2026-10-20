@@ -273,6 +273,13 @@ object Notifier {
         post(ctx, CH_GAME, 990, "✅ Notificações funcionando", "Você receberá o aviso 20 minutos antes de cada jogo para reler o pré-jogo e a análise do rival.", 0, 0, false)
     }
 
+    /** O rival mudou algo depois da tática gerada: abre direto na aba Tática do slot. */
+    fun rivalChanged(ctx: Context, slot: Int, rival: String, changes: List<RivalWatch.Change>) {
+        val body = changes.take(3).joinToString("\n") { "• " + it.label + ": " + it.from + " → " + it.to + " — " + it.why } +
+            "\nToque para gerar uma nova tática."
+        post(ctx, CH_GAME, slot * 10 + 6, "⚠ S$slot: $rival mudou a tática", body, slot, 4, false)
+    }
+
     private fun post(ctx: Context, channel: String, id: Int, title: String, text: String, slot: Int, tab: Int, withOsm: Boolean) {
         if (!canPost(ctx)) return
         val open = Intent(ctx, MainActivity::class.java)

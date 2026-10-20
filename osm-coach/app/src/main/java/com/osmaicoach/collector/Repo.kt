@@ -120,6 +120,38 @@ class Repo(private val ctx: Context) {
     suspend fun apply(slot: Int?, ex: Extraction, source: String, now: Long): Int {
         if (ex.type == ScreenType.HUB) return applyHub(ex, now)
         if (slot == null) return 0
+        val n = applyTyped(slot, ex, source, now)
+        if (n > 0 && ex.type in setOf(ScreenType.PREGAME, ScreenType.REPORT, ScreenType.SQUAD)) {
+            runCatching { checkRivalChange(slot, now) }
+        }
+        return n
+    }
+
+    /**
+     * Depois de gerar a tática, uma leitura nova mostrou o rival diferente (formação, estilo, marcação, árbitro…):
+     * guarda o que mudou e avisa (notificação + aviso por cima do OSM) uma vez por conjunto de mudanças.
+     */
+    suspend fun checkRivalChange(slot: Int, now: Long = System.currentTimeMillis()) {
+        val p = dao.plan(slot, "tactic") ?: return
+        val j = runCatching { org.json.JSONObject(p.json) }.getOrNull() ?: return
+        val f = fieldMap(slot)
+        if (!Director.tacticValid(j, p.at, f, now)) return
+        val changes = RivalWatch.diff(j.optJSONObject("basis"), f)
+        if (changes.isEmpty()) {
+            dao.deletePlan(slot, "rivalchange")
+            return
+        }
+        val sig = changes.joinToString("|") { it.key + "=" + it.to }
+        val old = dao.plan(slot, "rivalchange")?.json?.let { runCatching { org.json.JSONObject(it) }.getOrNull() }
+        if (old?.optString("sig") == sig) return
+        dao.putPlan(PlanEntity(slot, "rivalchange", RivalWatch.toJson(changes, now).put("sig", sig).toString(), now))
+        val rival = f[K.RIVAL_TEAM]?.value ?: "rival"
+        learn(slot, "rival", "Rival mudou depois da tática: " + RivalWatch.headline(changes) + ". Gere a tática de novo.", now)
+        Notifier.rivalChanged(ctx, slot, rival, changes)
+        CaptureService.instance?.notice("⚠ S$slot: $rival mudou — " + RivalWatch.headline(changes) + ". Gere uma nova tática.")
+    }
+
+    private suspend fun applyTyped(slot: Int, ex: Extraction, source: String, now: Long): Int {
         return when (ex.type) {
             ScreenType.PREGAME -> applyPregame(slot, ex, source, now)
             ScreenType.SQUAD -> applySquad(slot, ex, source, now)
