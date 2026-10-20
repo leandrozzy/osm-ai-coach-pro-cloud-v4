@@ -63,6 +63,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.ui.draw.rotate
 import androidx.compose.animation.animateContentSize
@@ -1026,6 +1027,13 @@ private fun Steps(s: SlotSummary) {
             }
         }
     }
+    if (s.rivalChanged.isNotEmpty() && now != 3) {
+        Text(
+            "⚠ O rival mudou (" + s.rivalChanged.joinToString(", ") { it.label.removeSuffix(" do rival").lowercase() } + "): gere uma nova tática",
+            fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFFB020), modifier = Modifier.padding(top = 6.dp)
+        )
+        return
+    }
     val msg = when (now) {
         3 -> "👉 Agora: registrar o resultado do jogo"
         1 -> "👉 Agora: gerar a tática" + if (!dataOk) " · faltam ${s.missing} dado${if (s.missing > 1) "s" else ""}" else ""
@@ -1103,6 +1111,58 @@ private fun HowItWorks() {
 
 // ------------------------------------------------------------------ dados de tela
 
+/** Cartão de alerta: o rival mudou depois da tática gerada — o que mudou, por quê e o botão para gerar de novo. */
+@Composable
+private fun RivalChangedCard(changes: List<RivalWatch.Change>, onGenerate: () -> Unit) {
+    val pulse = androidx.compose.animation.core.rememberInfiniteTransition(label = "pulse")
+    val glow by pulse.animateFloat(
+        initialValue = 0.35f, targetValue = 0.9f,
+        animationSpec = androidx.compose.animation.core.infiniteRepeatable(androidx.compose.animation.core.tween(900), androidx.compose.animation.core.RepeatMode.Reverse),
+        label = "glow"
+    )
+    Column(
+        Modifier.fillMaxWidth().padding(vertical = 6.dp).clip(RoundedCornerShape(16.dp))
+            .background(Brush.verticalGradient(listOf(Color(0xFF4A2A06), Color(0xFF2A1A08))))
+            .border(1.5.dp, Color(0xFFFFB020).copy(alpha = glow), RoundedCornerShape(16.dp)).padding(16.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(34.dp).clip(RoundedCornerShape(50)).background(Color(0xFFFFB020)), contentAlignment = Alignment.Center) {
+                Text("!", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF2A1A08))
+            }
+            Column(Modifier.padding(start = 12.dp)) {
+                Text("O rival mudou a tática dele", fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFFFFD27A))
+                Text("Sua tática foi montada antes disso. Gere uma nova.", fontSize = 12.sp, color = Color(0xCCFFFFFF))
+            }
+        }
+        for (c in changes) {
+            Column(Modifier.fillMaxWidth().padding(top = 10.dp).clip(RoundedCornerShape(12.dp)).background(Color(0x33000000)).padding(10.dp)) {
+                Text(c.label, fontSize = 11.sp, color = Color(0xFFFFB020), fontWeight = FontWeight.SemiBold)
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+                    Text(c.from, fontSize = 14.sp, color = Color(0x99FFFFFF), textDecoration = androidx.compose.ui.text.style.TextDecoration.LineThrough)
+                    Text("  →  ", fontSize = 14.sp, color = Color(0xFFFFB020), fontWeight = FontWeight.Bold)
+                    Text(c.to, fontSize = 15.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                }
+                Text("Por quê: " + c.why, fontSize = 12.sp, color = Color(0xDDFFFFFF), modifier = Modifier.padding(top = 4.dp))
+            }
+        }
+        Box(
+            Modifier.fillMaxWidth().padding(top = 12.dp).clip(RoundedCornerShape(12.dp))
+                .background(Brush.horizontalGradient(listOf(Color(0xFFFFC21A), Color(0xFFFF9500)))).clickable { onGenerate() }.padding(vertical = 12.dp),
+            contentAlignment = Alignment.Center
+        ) { Text("⚡ Gerar nova tática", fontSize = 15.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF2A1A08)) }
+    }
+}
+
+/** Mudanças do rival depois da tática atual (só vale para a tática deste jogo). */
+suspend fun rivalChangesOf(repo: Repo, slot: Int): List<RivalWatch.Change> {
+    val t = repo.dao.plan(slot, "tactic") ?: return emptyList()
+    val c = repo.dao.plan(slot, "rivalchange") ?: return emptyList()
+    if (c.at < t.at) return emptyList()
+    val tj = runCatching { JSONObject(t.json) }.getOrNull() ?: return emptyList()
+    if (!Director.tacticValid(tj, t.at, repo.fieldMap(slot), System.currentTimeMillis())) return emptyList()
+    return RivalWatch.fromJson(runCatching { JSONObject(c.json) }.getOrNull())
+}
+
 data class SlotSummary(
     val slot: Int,
     val title: String,
@@ -1126,7 +1186,9 @@ data class SlotSummary(
     /** Todas as rodadas da competição jogadas e nenhum jogo marcado: aguardando a próxima competição. */
     val ended: Boolean = false,
     /** Central do OSM: "vazio" (+ começar nova liga) ou "procurando" (batalha procurando adversário). */
-    val state: String? = null
+    val state: String? = null,
+    /** O rival mudou algo (formação, estilo, árbitro…) depois que a tática foi gerada. */
+    val rivalChanged: List<RivalWatch.Change> = emptyList()
 )
 
 data class TodayData(val active: Boolean = false, val slots: List<SlotSummary> = emptyList())
@@ -1163,6 +1225,8 @@ data class SlotData(
     val trainOv: Map<String, Boolean> = emptyMap(),
     /** Evolução: placar da tática, livro de caixa, treino e semana. */
     val progress: Repo.ProgressData? = null,
+    /** O rival mudou depois da tática gerada. */
+    val rivalChanged: List<RivalWatch.Change> = emptyList(),
     /** Resumo do fim da competição (posição, pontos, campeão, valor). */
     val season: JSONObject? = null
 )
@@ -1221,6 +1285,7 @@ private suspend fun loadSlot(ctx: Context, slot: Int): SlotData {
         trainScreen = dao.plan(slot, "trainscreen")?.json?.let { try { JSONObject(it) } catch (e: Exception) { null } },
         trainOv = repo.trainingOverrides(slot),
         progress = runCatching { repo.progress(slot) }.getOrNull(),
+        rivalChanged = runCatching { rivalChangesOf(repo, slot) }.getOrDefault(emptyList()),
         season = dao.plan(slot, "season")?.json?.let { try { JSONObject(it) } catch (e: Exception) { null } },
         win = tplan?.takeIf { tacticCurrent(it, f) }?.let { Director.winProb(repo, slot, it) },
         evidence = repo.evidence(slot),
@@ -1297,7 +1362,8 @@ private suspend fun loadToday(ctx: Context): TodayData {
                 nextAt = known(f, K.MATCH_AT)?.toLongOrNull(),
                 tacticReady = tacticFor(repo, slot, known(f, K.ROUND)?.toIntOrNull()),
                 needsResult = awaiting != null,
-                win = tplan?.takeIf { tacticCurrent(it, f) && !Fixtures.seasonEnded(f, all, now) }?.let { Director.winProb(repo, slot, it) }
+                win = tplan?.takeIf { tacticCurrent(it, f) && !Fixtures.seasonEnded(f, all, now) }?.let { Director.winProb(repo, slot, it) },
+                rivalChanged = rivalChangesOf(repo, slot)
             )
         )
     }
@@ -3339,6 +3405,7 @@ private fun SlotTactic(slot: Int, d: SlotData) {
         Hint(Director.ENDED_MSG)
         return
     }
+    if (d.rivalChanged.isNotEmpty()) RivalChangedCard(d.rivalChanged) { startGeneration(ctx, "tactic", slot) }
     // Checklist: o que ainda falta ler e em qual tela do OSM (a tática sai melhor com tudo lido).
     val secret = SecretTraining.on(d.fields)
     val human = secret || fv(d, K.RIVAL_HUMAN) == "Sim"

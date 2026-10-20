@@ -177,7 +177,9 @@ class CaptureService : AccessibilityService() {
                     if (p == null || j == null) "S$slot: nenhuma tática gerada. Gere no app (aba Tática)."
                     else {
                         val ok = Director.tacticValid(j, p.at, repo.fieldMap(slot), System.currentTimeMillis())
-                        "S$slot • vs ${j.optString("rival")}\n" + (if (ok) "" else "⚠ Tática de outro jogo: gere de novo.\n") + Director.tacticSummary(j)
+                        val ch = rivalChangesOf(repo, slot)
+                        val warn = if (ch.isNotEmpty()) "⚠ O rival mudou: " + RivalWatch.headline(ch) + ". Gere uma nova tática.\n" else ""
+                        "S$slot • vs ${j.optString("rival")}\n" + (if (ok) "" else "⚠ Tática de outro jogo: gere de novo.\n") + warn + Director.tacticSummary(j)
                     }
                 }
             } catch (e: Exception) {
