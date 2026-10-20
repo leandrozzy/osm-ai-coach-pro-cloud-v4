@@ -77,6 +77,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.conflate
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -481,8 +485,20 @@ private fun ResultDialog(slot: Int, kind: String, title: String, onDone: () -> U
 @Composable
 private fun <T> rememberLoaded(initial: T, tick: Int, key: Any?, loader: suspend () -> T): T {
     var state by remember { mutableStateOf(initial) }
-    LaunchedEffect(tick, key) {
-        state = withContext(Dispatchers.IO) { loader() }
+    val tickNow by rememberUpdatedState(tick)
+    val load by rememberUpdatedState(loader)
+    // Cada leitura termina antes da próxima começar: o relógio não cancela uma leitura lenta
+    // (antes, com leitura > 1 s, a aba Hoje ficava sem os slots).
+    LaunchedEffect(key) {
+        snapshotFlow { tickNow }.conflate().collect {
+            try {
+                state = withContext(Dispatchers.IO) { load() }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Diag.lastError = "Tela: " + (e.message ?: e.javaClass.simpleName)
+            }
+        }
     }
     return state
 }
@@ -1193,6 +1209,11 @@ data class SlotSummary(
 
 data class TodayData(val active: Boolean = false, val slots: List<SlotSummary> = emptyList())
 
+object TodayCache {
+    @Volatile var last = TodayData()
+    @Volatile var maintainedAt = 0L
+}
+
 data class SlotData(
     /** false enquanto o slot ainda está carregando (evita piscar "ainda não lido"). */
     val ready: Boolean = false,
@@ -1324,8 +1345,11 @@ private suspend fun loadToday(ctx: Context): TodayData {
     val repo = Repo(ctx)
     val list = ArrayList<SlotSummary>()
     val now = System.currentTimeMillis()
-    for (slot in 1..4) {
-        try {
+    // A arrumação dos dados é pesada; basta a cada 20 s (ou logo após dados novos).
+    val maintain = now - TodayCache.maintainedAt > 20000L || Diag.lastUpdateAt > TodayCache.maintainedAt
+    if (maintain) TodayCache.maintainedAt = now
+    for (slot in 1..4) try {
+        if (maintain) try {
             repo.relinkResults(slot)
             repo.validateHuman(slot)
             repo.purgeOverlayNames(slot)
@@ -1366,8 +1390,14 @@ private suspend fun loadToday(ctx: Context): TodayData {
                 rivalChanged = rivalChangesOf(repo, slot)
             )
         )
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        // um slot com problema não some com os outros
+        list.add(TodayCache.last.slots.firstOrNull { it.slot == slot } ?: SlotSummary(slot, "Slot $slot ainda não lido", false, null, null, null, null, null, null, 0, 0L))
+        Diag.lastError = "Hoje S$slot: " + (e.message ?: e.javaClass.simpleName)
     }
-    return TodayData(Control.activeSession(ctx) != null, list)
+    return TodayData(Control.activeSession(ctx) != null, list).also { TodayCache.last = it }
 }
 
 // ------------------------------------------------------------------ app
@@ -1727,7 +1757,7 @@ private fun TodayTab(onGoSettings: () -> Unit, onOpenSlot: (Int, Int) -> Unit) {
     val ctx = LocalContext.current
     val tick = rememberTick(1000L)
     val scope = rememberCoroutineScope()
-    val data = rememberLoaded(TodayData(), tick, UiBus.version) { loadToday(ctx) }
+    val data = rememberLoaded(TodayCache.last, tick, UiBus.version) { loadToday(ctx) }
     var msg by remember { mutableStateOf("") }
     val enabled = serviceEnabled(ctx)
     val connected = Diag.serviceConnected
@@ -2040,7 +2070,7 @@ private fun SessionsTab() {
 private fun SlotsTab(onOpen: (Int, Int) -> Unit) {
     val ctx = LocalContext.current
     val tick = rememberTick()
-    val data = rememberLoaded(TodayData(), tick, UiBus.version) { loadToday(ctx) }
+    val data = rememberLoaded(TodayCache.last, tick, UiBus.version) { loadToday(ctx) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
         Text("Slots", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
         for (s in data.slots) SlotCard(s, { onOpen(s.slot, 0) }, { onOpen(s.slot, 4) }, { onOpen(s.slot, 5) })
