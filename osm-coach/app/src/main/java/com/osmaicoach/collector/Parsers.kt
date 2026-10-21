@@ -648,7 +648,7 @@ object Parsers {
     }
 
     /** Meu estádio: o nível de cada card é o número de ESTRELAS douradas (o texto "Nível N" mostra o próximo nível). */
-    fun stadium(o: OcrResult, img: PixelProbe.Img?): Extraction {
+    fun stadium(o: OcrResult, img: PixelProbe.Img?, now: Long = System.currentTimeMillis()): Extraction {
         val f = LinkedHashMap<String, Reading>()
         if (img == null) return Extraction(ScreenType.STADIUM, fields = f)
         val cards = listOf(
@@ -696,7 +696,22 @@ object Parsers {
             if (st != null) status.add("$label: $st")
         }
         if (status.isNotEmpty()) f[K.MY_STAD_STATUS] = Reading(status.joinToString(" • "), 0.8)
-        return Extraction(ScreenType.STADIUM, fields = f)
+        // Obra em andamento: cronômetro no card (entre o desenho e a barra). Card sem cronômetro e com
+        // "Começar melhoramento" / "Concluir" / "Máximo" = sem obra (o aviso daquele card é apagado).
+        return Extraction(ScreenType.STADIUM, fields = f, timers = stadiumTimers(o, now))
+    }
+
+    fun stadiumTimers(o: OcrResult, now: Long): Map<String, Long?> {
+        val timers = LinkedHashMap<String, Long?>()
+        for ((word, label) in listOf("capacidade" to "Capacidade", "relvado" to "Relvado", "treino" to "Treino")) {
+            val ln = o.lines.firstOrNull { Txt.norm(it.text) == word && it.yc in 0.20f..0.45f } ?: continue
+            val near = o.lines.filter { abs(it.xc - ln.xc) <= 0.14f && it.yc > ln.yc + 0.15f && it.yc < ln.yc + 0.62f }
+            val secs = near.mapNotNull { timerSecs(it.text) }.firstOrNull()
+            val text = Txt.norm(near.joinToString(" ") { it.text })
+            if (secs != null) timers[label] = now + secs * 1000L
+            else if (text.contains("comecar") || text.contains("concluir") || text.contains("maximo")) timers[label] = null
+        }
+        return timers
     }
 
     // ------------------------------------------------------------------ resultado do jogo
@@ -853,7 +868,21 @@ object Parsers {
      * reclamar); "Seleciona" = livre. Quadros com a animação da recompensa (Épico/Lendário...) são ignorados, e
      * coluna sem estado claro fica de fora. É esta tela, não a camisa no plantel, que diz quem está treinando.
      */
-    fun training(o: OcrResult): List<TraineeRead> {
+    /**
+     * Cronômetro do jogo ("3h 09m 14s", "12h 43m 16s", "1d 4h", "45m 10s") em segundos. Precisa de 2 unidades:
+     * "18h" (custo do melhoramento), "24h" (selo do treinador universal) e "-2h" (anúncio) ficam de fora.
+     */
+    fun timerSecs(text: String): Long? {
+        val t = text.lowercase().replace(Regex("(?<=\\d)[oO]|[oO](?=\\d)"), "0")
+        if (t.trim().startsWith("-")) return null
+        val units = Regex("(\\d{1,3})\\s*([dhms])(?![a-z])").findAll(t).map { Pair(it.groupValues[1].toLong(), it.groupValues[2]) }.toList()
+        if (units.size < 2 || units.map { it.second }.distinct().size != units.size) return null
+        var s = 0L
+        for ((v, u) in units) s += v * when (u) { "d" -> 86400L; "h" -> 3600L; "m" -> 60L; else -> 1L }
+        return s.takeIf { it in 1L..(14L * 86400L) }
+    }
+
+    fun training(o: OcrResult, now: Long = System.currentTimeMillis()): List<TraineeRead> {
         fun n(t: String) = Txt.norm(t)
         if (o.lines.any { n(it.text) in RARITY }) return emptyList()
         val heads = o.lines.mapNotNull { ln ->
@@ -882,7 +911,8 @@ object Parsers {
                 empty && name == null -> "empty"
                 else -> null
             } ?: continue
-            out.add(TraineeRead(role, name, state))
+            val left = if (state == "active") col.mapNotNull { timerSecs(it.text) }.firstOrNull() else null
+            out.add(TraineeRead(role, name, state, left?.let { now + it * 1000L }))
         }
         return out
     }

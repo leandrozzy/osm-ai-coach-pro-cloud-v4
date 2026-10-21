@@ -1207,7 +1207,7 @@ data class SlotSummary(
     val rivalChanged: List<RivalWatch.Change> = emptyList()
 )
 
-data class TodayData(val active: Boolean = false, val slots: List<SlotSummary> = emptyList())
+data class TodayData(val active: Boolean = false, val slots: List<SlotSummary> = emptyList(), val timers: List<Timers.Entry> = emptyList())
 
 object TodayCache {
     @Volatile var last = TodayData()
@@ -1400,7 +1400,8 @@ private suspend fun loadToday(ctx: Context): TodayData {
         list.add(TodayCache.last.slots.firstOrNull { it.slot == slot } ?: SlotSummary(slot, "Slot $slot ainda não lido", false, null, null, null, null, null, null, 0, 0L))
         Diag.lastError = "Hoje S$slot: " + (e.message ?: e.javaClass.simpleName)
     }
-    return TodayData(Control.activeSession(ctx) != null, list).also { TodayCache.last = it }
+    val timers = (1..4).flatMap { s -> runCatching { repo.timers(s) }.getOrDefault(emptyList()) }.sortedBy { it.at }
+    return TodayData(Control.activeSession(ctx) != null, list, timers).also { TodayCache.last = it }
 }
 
 // ------------------------------------------------------------------ app
@@ -1845,6 +1846,25 @@ private fun TodayTab(onGoSettings: () -> Unit, onOpenSlot: (Int, Int) -> Unit) {
                         ActionPill(u, { onOpenSlot(u.slot, 4) }, { onOpenSlot(u.slot, 5) })
                     }
                 }
+            }
+        }
+
+        if (data.timers.isNotEmpty()) {
+            Title("⏱ Treinos e obras")
+            Panel {
+                val now = System.currentTimeMillis()
+                for (t in data.timers) {
+                    val done = t.at <= now
+                    Row(Modifier.fillMaxWidth().clickable { onOpenSlot(t.slot, 5) }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(if (t.training) "🏋" else "🏟", fontSize = 18.sp)
+                        Spacer(Modifier.width(8.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("S${t.slot} • " + t.label.replaceFirstChar { it.uppercase() }, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(if (done) "terminou: abra o OSM e reclame" else "termina ${fmtTime(t.at)} • ${Timers.left(t.at, now)}", fontSize = 11.sp, color = if (done) C.OK else C.MUTED)
+                        }
+                    }
+                }
+                Text("O app avisa no fim de cada um, mesmo fechado. Passe pelas telas de Treinamento e Estádio de cada slot para atualizar.", fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
             }
         }
 
@@ -4320,6 +4340,7 @@ private fun NotificationsPanel() {
     var tac by remember { mutableStateOf(Notifier.enabled(ctx, "tactic")) }
     var res by remember { mutableStateOf(Notifier.enabled(ctx, "result")) }
     var dir by remember { mutableStateOf(Notifier.enabled(ctx, "director")) }
+    var tim by remember { mutableStateOf(Notifier.enabled(ctx, "timers")) }
     fun toggle(key: String, v: Boolean) {
         Settings.put(ctx, "notif_$key", if (v) "1" else "0")
         AppScope.scope.launch(Dispatchers.IO) { Notifier.reschedule(ctx.applicationContext) }
@@ -4333,6 +4354,7 @@ private fun NotificationsPanel() {
         SwitchRow("1 h antes, se a tática da rodada ainda não foi gerada", tac) { tac = it; toggle("tactic", it) }
         SwitchRow("30 min depois do jogo: registrar ou ler o resultado", res) { res = it; toggle("result", it) }
         SwitchRow("Alertas do diretor (ao encerrar a leitura e a cada hora, com o app fechado)", dir) { dir = it; toggle("director", it) }
+        SwitchRow("Fim de cada treino e de cada obra do estádio (lidos nas telas do OSM)", tim) { tim = it; toggle("timers", it) }
         // Com o app fechado: alarme exato liberado e bateria sem restrição (senão o Android atrasa ou corta os avisos).
         val exact = Notifier.canExact(ctx)
         val battery = batteryUnrestricted(ctx)
