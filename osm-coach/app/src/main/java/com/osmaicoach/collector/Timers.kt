@@ -36,6 +36,20 @@ object Timers {
         }.sortedBy { it.at }
     }
 
+    /** Contador igual ao do jogo: "3h 09m 14s", "05m 48s", "1d 04h 10m". */
+    fun clock(at: Long, now: Long): String {
+        val s = ((at - now) / 1000).coerceAtLeast(0)
+        val d = s / 86400
+        val h = (s % 86400) / 3600
+        val m = (s % 3600) / 60
+        val sec = s % 60
+        return when {
+            d > 0 -> "%dd %02dh %02dm".format(d, h, m)
+            h > 0 -> "%dh %02dm %02ds".format(h, m, sec)
+            else -> "%02dm %02ds".format(m, sec)
+        }
+    }
+
     /** "em 3h 09m" / "em 12 min" / "terminou". */
     fun left(at: Long, now: Long): String {
         val s = (at - now) / 1000

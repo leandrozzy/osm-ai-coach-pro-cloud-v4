@@ -564,3 +564,72 @@ fun OffsideIllustration(offside: String?, modifier: Modifier = Modifier) {
         }
     }
 }
+
+/**
+ * Arte dos 3 cards do estádio (como no OSM): Capacidade = arquibancada iluminada, Relvado = gramado visto de
+ * cima, Treino = gol com cone e bola. [building] acende uma luz que corre (obra em andamento).
+ */
+@Composable
+fun StadiumArt(kind: String, building: Boolean, modifier: Modifier = Modifier) {
+    val ph = if (building) flowPhase(2400) else -1f
+    Canvas(modifier) {
+        val w = size.width
+        val h = size.height
+        when (kind) {
+            "Capacidade" -> {
+                drawRect(Brush.verticalGradient(listOf(Color(0xFF0B1E4A), Color(0xFF1B4FA8), Color(0xFF0E2C66))))
+                // refletores
+                for (x in listOf(0.18f, 0.82f)) {
+                    val c = Offset(w * x, h * 0.16f)
+                    drawCircle(Brush.radialGradient(listOf(Color(0x99FFFFFF), Color(0x00FFFFFF)), c, w * 0.32f), w * 0.32f, c)
+                    drawRect(Color(0xFF9FB8E8), Offset(c.x - w * 0.012f, c.y), Size(w * 0.024f, h * 0.30f))
+                    drawRoundRect(Color.White, Offset(c.x - w * 0.06f, c.y - h * 0.04f), Size(w * 0.12f, h * 0.07f), CornerRadius(4f))
+                }
+                // arquibancadas em degraus com torcida
+                val tiers = 5
+                for (i in 0 until tiers) {
+                    val top = h * (0.42f + i * 0.11f)
+                    drawRect(if (i % 2 == 0) Color(0xFF1A3C7E) else Color(0xFF15346E), Offset(0f, top), Size(w, h * 0.11f))
+                    val n = 14
+                    for (k in 0 until n) {
+                        val cx = w * (k + 0.5f + (i % 2) * 0.5f) / n
+                        val col = listOf(Color(0xFFE8EEF8), Color(0xFF6FA8FF), Color(0xFFFFD24A), Color(0xFFFF6B6B))[(k * 7 + i * 3) % 4]
+                        drawCircle(col.copy(alpha = 0.85f), w * 0.016f, Offset(cx, top + h * 0.045f))
+                    }
+                }
+            }
+            "Relvado" -> {
+                drawRect(Color(0xFF16325F))
+                val r = Rect(w * 0.10f, h * 0.08f, w * 0.90f, h * 0.92f)
+                pitch(r, vertical = true)
+                // arquibancadas nas laterais
+                drawRect(Brush.horizontalGradient(listOf(Color(0xFF243F73), Color(0xFF16325F))), Offset(0f, 0f), Size(w * 0.10f, h))
+                drawRect(Brush.horizontalGradient(listOf(Color(0xFF16325F), Color(0xFF243F73))), Offset(w * 0.90f, 0f), Size(w * 0.10f, h))
+            }
+            else -> {
+                drawRect(Brush.verticalGradient(listOf(Color(0xFF123A2A), Color(0xFF1F6B3A))))
+                // gramado
+                for (i in 0 until 6) drawRect(if (i % 2 == 0) Ill.GRASS_A else Ill.GRASS_B, Offset(0f, h * (0.55f + i * 0.075f)), Size(w, h * 0.075f))
+                // gol com rede
+                val gl = w * 0.22f; val gr = w * 0.78f; val gt = h * 0.22f; val gb = h * 0.60f
+                val net = Color(0x55FFFFFF)
+                for (k in 0..8) { val x = gl + (gr - gl) * k / 8f; drawLine(net, Offset(x, gt), Offset(x, gb), 1.5f) }
+                for (k in 0..5) { val y = gt + (gb - gt) * k / 5f; drawLine(net, Offset(gl, y), Offset(gr, y), 1.5f) }
+                drawLine(Color.White, Offset(gl, gb), Offset(gl, gt), w * 0.025f, StrokeCap.Round)
+                drawLine(Color.White, Offset(gl, gt), Offset(gr, gt), w * 0.025f, StrokeCap.Round)
+                drawLine(Color.White, Offset(gr, gt), Offset(gr, gb), w * 0.025f, StrokeCap.Round)
+                // cone
+                val cx = w * 0.20f; val cb = h * 0.90f
+                val cone = Path().apply { moveTo(cx, cb - h * 0.22f); lineTo(cx + w * 0.09f, cb); lineTo(cx - w * 0.09f, cb); close() }
+                drawPath(cone, Brush.verticalGradient(listOf(Color(0xFFFFB347), Color(0xFFE8650C))))
+                drawLine(Color.White, Offset(cx - w * 0.045f, cb - h * 0.10f), Offset(cx + w * 0.045f, cb - h * 0.10f), w * 0.02f)
+                ball(Offset(w * 0.62f, h * 0.82f), w * 0.07f)
+            }
+        }
+        if (ph >= 0f) {
+            // obra: faixa de luz passando
+            val x = w * (ph * 1.6f - 0.3f)
+            drawRect(Brush.horizontalGradient(listOf(Color(0x00FFFFFF), Color(0x33FFFFFF), Color(0x00FFFFFF)), x - w * 0.25f, x + w * 0.25f))
+        }
+    }
+}

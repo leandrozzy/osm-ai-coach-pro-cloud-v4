@@ -4853,60 +4853,108 @@ private fun LearnedCard(m: Learned.Model?) {
     }
 }
 
-/** Treinos e estádio de um slot, recolhido numa linha (abre com toque). */
+/** Treinos e estádio de um slot, recolhido numa linha (abre com toque). Os relógios contam segundo a segundo. */
 @Composable
 private fun WorkFold(w: SlotWork, startOpenForTest: Boolean = false, onOpen: () -> Unit) {
-    val tick = rememberTick(30000L)
+    val tick = rememberTick(1000L)
     val now = System.currentTimeMillis() + tick * 0L
     val need = w.needsAction(now)
     val next = w.nextEnd(now)
     val badge = when {
         need > 0 -> "⚠ $need livre" + (if (need > 1) "s" else "")
-        next != null -> Timers.left(next, now).removePrefix("em ")
+        next != null -> "⏱ " + Timers.clock(next, now)
         else -> null
     }
     Fold("S${w.slot}", w.team, badge, startOpen = startOpenForTest) {
-        if (w.seats.isNotEmpty()) {
-            Text("TREINADORES", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = C.MUTED, letterSpacing = 1.sp)
-            for (s in w.seats) WorkRow(
+        Text("TREINADORES", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = C.MUTED, letterSpacing = 1.sp)
+        if (w.seats.isEmpty()) {
+            Text("Passe pela tela de Treinamento deste slot para ver os treinadores.", fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(vertical = 4.dp))
+        }
+        for (s in w.seats) {
+            val ended = s.state == "done" || (s.endAt != null && s.endAt <= now)
+            WorkRow(
                 icon = when (s.role) { "UNI" -> "⭐"; "ATA" -> "⚽"; "MEI" -> "🎯"; "DEF" -> "🛡"; else -> "🧤" },
                 title = s.name ?: "Ninguém treinando",
                 sub = Timers.roleLabel(s.role).replaceFirstChar { it.uppercase() },
                 status = when {
                     s.state == "empty" -> Pair("Livre", C.WARN)
-                    s.state == "done" || (s.endAt != null && s.endAt <= now) -> Pair("Terminou: reclame", C.OK)
-                    s.endAt != null -> Pair(Timers.left(s.endAt, now), C.PRIMARY)
+                    ended -> Pair("Reclamar", C.OK)
+                    s.endAt != null -> Pair("⏱ " + Timers.clock(s.endAt, now), C.PRIMARY)
                     else -> Pair("Treinando", C.PRIMARY)
-                },
-                progress = null
+                }
             )
-        } else {
-            Text("Passe pela tela de Treinamento deste slot para ver os treinadores.", fontSize = 12.sp, color = C.MUTED)
         }
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(10.dp))
         Text("ESTÁDIO", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = C.MUTED, letterSpacing = 1.sp)
-        for (c in w.cards) WorkRow(
-            icon = Work.icon(c.label),
-            title = c.label + (c.level?.let { " • nível $it" } ?: ""),
-            sub = c.next?.takeIf { c.endAt == null }?.let { if (it == "máximo") "Nível máximo" else "Próximo: $it" } ?: if (c.endAt != null) "Em obra" else "Ainda não lido",
-            status = when {
-                c.endAt != null && c.endAt <= now -> Pair("Terminou: conclua", C.OK)
-                c.endAt != null -> Pair(Timers.left(c.endAt, now), C.PRIMARY)
-                c.next == "máximo" -> Pair("Máximo", C.MUTED)
-                c.next != null -> Pair("Pode melhorar", C.WARN)
-                else -> null
-            },
-            progress = null
-        )
+        Spacer(Modifier.height(6.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for (c in w.cards) StadiumCard(c, now, Modifier.weight(1f))
+        }
         Text(
             "Abrir o slot ›", color = C.PRIMARY, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(top = 8.dp).clickable { onOpen() }
+            modifier = Modifier.padding(top = 10.dp).clickable { onOpen() }
         )
     }
 }
 
+/** Card do estádio como no jogo: desenho, estrelas, barra do nível atual → próximo e o relógio ou o custo. */
 @Composable
-private fun WorkRow(icon: String, title: String, sub: String, status: Pair<String, Color>?, progress: Float?) {
+private fun StadiumCard(c: WorkCard, now: Long, modifier: Modifier = Modifier) {
+    val building = c.endAt != null && c.endAt > now
+    val ended = c.endAt != null && c.endAt <= now
+    val accent = when {
+        building -> C.PRIMARY
+        ended -> C.OK
+        c.next == "máximo" -> C.GOLD
+        else -> Color(0xFF5B7BB5)
+    }
+    Column(
+        modifier.clip(RoundedCornerShape(14.dp)).background(Color(0xFF0E2550))
+            .border(1.dp, Brush.verticalGradient(listOf(accent.copy(alpha = 0.9f), accent.copy(alpha = 0.25f))), RoundedCornerShape(14.dp))
+    ) {
+        Box(Modifier.fillMaxWidth().height(78.dp)) {
+            StadiumArt(c.label, building, Modifier.fillMaxSize())
+            Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0x99000000), Color(0x00000000), Color(0x66000000)))))
+            Column(Modifier.fillMaxWidth().padding(top = 5.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(c.label, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, color = Color.White, maxLines = 1)
+                val lv = c.level ?: 0
+                Row {
+                    for (i in 1..maxOf(3, lv)) Text("★", fontSize = 12.sp, color = if (i <= lv) Color(0xFFFFD24A) else Color(0x88FFFFFF))
+                }
+            }
+        }
+        // barra: nível atual → próximo
+        Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(c.level?.toString() ?: "?", fontSize = 10.sp, color = C.MUTED, fontWeight = FontWeight.Bold)
+            Box(Modifier.weight(1f).padding(horizontal = 4.dp).height(5.dp).clip(RoundedCornerShape(50)).background(Color(0xFF1B3D7A))) {
+                if (building || ended) Box(
+                    Modifier.fillMaxHeight().fillMaxWidth(if (ended) 1f else 0.5f)
+                        .background(Brush.horizontalGradient(listOf(Color(0xFF3DB2FF), Color(0xFF7FD3FF))))
+                )
+            }
+            Text(c.level?.let { (it + 1).toString() } ?: "?", fontSize = 10.sp, color = C.MUTED, fontWeight = FontWeight.Bold)
+        }
+        Box(
+            Modifier.fillMaxWidth().padding(start = 6.dp, end = 6.dp, bottom = 6.dp).clip(RoundedCornerShape(9.dp))
+                .background(accent.copy(alpha = 0.18f)).padding(vertical = 5.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                when {
+                    building -> Timers.clock(c.endAt!!, now)
+                    ended -> "Concluir"
+                    c.next == "máximo" -> "Máximo"
+                    c.next != null -> c.next
+                    else -> "Não lido"
+                },
+                fontSize = 11.sp, fontWeight = FontWeight.Bold, color = if (accent == Color(0xFF5B7BB5)) Color(0xFFCFE0FF) else accent, maxLines = 1
+            )
+        }
+    }
+}
+
+@Composable
+private fun WorkRow(icon: String, title: String, sub: String, status: Pair<String, Color>?) {
     Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(
             Modifier.size(30.dp).clip(RoundedCornerShape(9.dp)).background(C.SURFACE2),
