@@ -143,6 +143,25 @@ object Fixtures {
         return Clock(r, at, done)
     }
 
+    /**
+     * O jogo da rodada atual já começou (há mais de 10 min) e não há leitura nova: no OSM o pré-jogo já mostra o
+     * seguinte. Passa para a próxima rodada do calendário (horário: o do card, ou a mesma hora do dia do jogo
+     * anterior — os jogos do slot são diários na mesma hora). Antes o app ficava preso no jogo que já começou e
+     * descartava a tática recém-gerada como "do jogo anterior".
+     */
+    data class Advance(val clock: Clock, val match: MatchEntity)
+
+    fun advanceAfterKickoff(ms: List<MatchEntity>, c: Clock, now: Long): Advance? {
+        val r = c.round ?: return null
+        val at = c.at ?: return null
+        if (at > now - 10L * 60000L) return null
+        val next = ms.filter { it.round == r + 1 && !void(it, ms) }.firstOrNull() ?: return null
+        if (next.result != null || next.scoreMine != null) return null
+        val hhmm = next.time ?: java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).format(java.util.Date(at))
+        val nextAt = MatchClock.toMillis(next.date, hhmm, now)?.takeIf { it > now }
+        return Advance(Clock(r + 1, nextAt, c.lastDone), next)
+    }
+
     fun clock(ms: List<MatchEntity>, scored: Set<Int>, now: Long, f: Map<String, StoredField>): Clock =
         clock(
             ms, scored, now, f[K.ROUND]?.value?.toIntOrNull(), f[K.ROUND]?.updatedAt,
