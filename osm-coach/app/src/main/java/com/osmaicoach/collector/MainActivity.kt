@@ -1768,7 +1768,8 @@ private fun TodayTab(onGoSettings: () -> Unit, onOpenSlot: (Int, Int) -> Unit) {
     val ctx = LocalContext.current
     val tick = rememberTick(1000L)
     val scope = rememberCoroutineScope()
-    val data = rememberLoaded(TodayCache.last, tick, UiBus.version) { loadToday(ctx) }
+    // dados a cada 5 s (ou na hora, com dado novo); o relógio da tela continua a cada 1 s
+    val data = rememberLoaded(TodayCache.last, tick / 5, UiBus.version) { loadToday(ctx) }
     var msg by remember { mutableStateOf("") }
     val enabled = serviceEnabled(ctx)
     val connected = Diag.serviceConnected
@@ -2085,7 +2086,7 @@ private fun SessionsTab() {
 @Composable
 private fun SlotsTab(onOpen: (Int, Int) -> Unit) {
     val ctx = LocalContext.current
-    val tick = rememberTick()
+    val tick = rememberTick(5000L)
     val data = rememberLoaded(TodayCache.last, tick, UiBus.version) { loadToday(ctx) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
         Text("Slots", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
@@ -2196,7 +2197,8 @@ private suspend fun loadDirector(ctx: Context): List<DirSlot> {
 @Composable
 private fun DirectorTab(onOpen: (Int, Int) -> Unit) {
     val ctx = LocalContext.current
-    val tick = rememberTick(3000L)
+    // recarga pesada (4 slots): a cada 20 s ou na hora em que chega dado novo (UiBus)
+    val tick = rememberTick(20000L)
     val list = rememberLoaded(emptyList<DirSlot>(), tick, UiBus.version) { loadDirector(ctx) }
     val now = System.currentTimeMillis()
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
@@ -2286,7 +2288,7 @@ private fun DirectorTab(onOpen: (Int, Int) -> Unit) {
 @Composable
 private fun SlotScreen(slot: Int, tab: Int, onTab: (Int) -> Unit, onBack: () -> Unit) {
     val ctx = LocalContext.current
-    val tick = rememberTick(2000L)
+    val tick = rememberTick(6000L)
     val data = rememberLoaded(SlotData(), tick, Pair(slot, UiBus.version)) { loadSlot(ctx, slot) }
     val tabs = listOf("Resumo", "Pré-jogo", "Elenco", "Calendário", "Tática", "Resultado", "Diretor", "Aprendizado")
     val title = known(data.fields, K.TEAM) ?: known(data.fields, K.HUB_TITLE) ?: if (data.ready) "Slot $slot ainda não lido" else "carregando…"
