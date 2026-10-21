@@ -2768,7 +2768,7 @@ private fun ResultBadge(result: String?) {
 }
 
 @Composable
-private fun MatchCard(m: MatchEntity, modifier: Modifier, highlight: Boolean, void: Boolean = false, onClick: () -> Unit) {
+private fun MatchCard(m: MatchEntity, modifier: Modifier, highlight: Boolean, void: Boolean = false, live: Boolean = false, onClick: () -> Unit) {
     val cup = Fixtures.isCup(m)
     val tint = when (m.result) {
         "V" -> Color(0xFF12351F)
@@ -2783,14 +2783,28 @@ private fun MatchCard(m: MatchEntity, modifier: Modifier, highlight: Boolean, vo
         null -> ""
     }
     val shape = RoundedCornerShape(12.dp)
-    val frame = if (highlight) modifier.border(2.dp, C.GOLD, shape) else if (cup && !void) modifier.border(1.dp, Color(0x669B6BFF), shape) else modifier
+    val frame = if (live) modifier.border(2.dp, C.OK, shape) else if (highlight) modifier.border(2.dp, C.GOLD, shape) else if (cup && !void) modifier.border(1.dp, Color(0x669B6BFF), shape) else modifier
     Column(
         frame.clickable { onClick() }.height(140.dp).clip(shape).background(tint).graphicsLayer { alpha = if (void) 0.4f else 1f }.padding(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text((if (cup) "🏆" else place) + " " + (if (m.round != null) "J${m.round}" else m.label.take(8)), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = C.MUTED)
-            ResultBadge(m.result)
+            // selo no topo (antes ficava embaixo e era cortado pelo card)
+            val tag = when {
+                m.result != null -> null
+                void -> Pair("ELIMINADO", C.BAD)
+                live -> Pair("AGORA", C.OK)
+                highlight -> Pair("PRÓXIMO", C.GOLD)
+                cup -> Pair("COPA", Color(0xFFB79CFF))
+                else -> null
+            }
+            if (tag != null) {
+                Box(
+                    Modifier.clip(RoundedCornerShape(50)).background(tag.second.copy(alpha = 0.2f))
+                        .border(1.dp, tag.second.copy(alpha = 0.7f), RoundedCornerShape(50)).padding(horizontal = 6.dp, vertical = 2.dp)
+                ) { Text(tag.first, fontSize = 9.sp, color = tag.second, fontWeight = FontWeight.ExtraBold, maxLines = 1) }
+            } else ResultBadge(m.result)
         }
         Text(score, fontSize = 26.sp, fontWeight = FontWeight.ExtraBold)
         val opp = Fixtures.opponent(m)
@@ -2808,9 +2822,6 @@ private fun MatchCard(m: MatchEntity, modifier: Modifier, highlight: Boolean, vo
             )
         }
         Text(m.date ?: m.time ?: "", fontSize = 10.sp, color = C.MUTED, modifier = Modifier.padding(top = 2.dp))
-        if (void) Text("ELIMINADO", fontSize = 9.sp, color = C.BAD, fontWeight = FontWeight.Bold)
-        else if (highlight) Text("PRÓXIMO", fontSize = 9.sp, color = C.GOLD, fontWeight = FontWeight.Bold)
-        else if (cup && m.result == null) Text("COPA", fontSize = 9.sp, color = Color(0xFFB79CFF), fontWeight = FontWeight.Bold)
     }
 }
 
@@ -2883,7 +2894,14 @@ private fun SlotCalendar(slot: Int, d: SlotData) {
         FilterPill("Próximos", mode == 2) { mode = 2 }
     }
     // Próximo de verdade: ignora copa após eliminação e cards cujo horário já passou.
-    val nextRound = Fixtures.next(sorted, System.currentTimeMillis(), fv(d, K.ROUND).toIntOrNull(), fv(d, K.MATCH_AT).toLongOrNull())?.round
+    val nowC = System.currentTimeMillis()
+    val curRound = fv(d, K.ROUND).toIntOrNull()
+    val curAt = fv(d, K.MATCH_AT).toLongOrNull()
+    val nextRound = Fixtures.next(sorted, nowC, curRound, curAt)?.round
+    // jogo da rodada atual que começou há pouco e ainda não tem placar: "AGORA" (o próximo continua marcado)
+    val liveRound = curRound?.takeIf { r ->
+        curAt != null && curAt <= nowC && nowC - curAt < 3 * 3600000L && sorted.any { it.round == r && it.result == null && it.scoreMine == null }
+    }
     // Lista final: rodadas da liga em ordem (com "não lido" nos buracos), depois jogos de copa/outros.
     val cells = ArrayList<Pair<Int?, MatchEntity?>>()
     if (total != null && total > 0) {
@@ -2903,7 +2921,7 @@ private fun SlotCalendar(slot: Int, d: SlotData) {
         Row(Modifier.fillMaxWidth()) {
             for ((r, m) in row) {
                 val mod = Modifier.weight(1f).padding(3.dp)
-                if (m != null) MatchCard(m, mod, m.round != null && m.round == nextRound, Fixtures.void(m, sorted)) { if (m.round != null) editRound = m.round }
+                if (m != null) MatchCard(m, mod, m.round != null && m.round == nextRound, Fixtures.void(m, sorted), live = m.round != null && m.round == liveRound) { if (m.round != null) editRound = m.round }
                 else UnreadCard(r ?: 0, mod) { if (r != null) editRound = r }
             }
             repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }

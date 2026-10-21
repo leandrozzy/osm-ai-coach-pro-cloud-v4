@@ -79,7 +79,23 @@ object Learned {
         return Row(features(formation, style, m, t, str(j, "advAttack")), lm, lo, j.optInt("scoreMine").coerceIn(0, 6), j.optInt("scoreOpp").coerceIn(0, 6), w)
     }
 
+    @Volatile private var cacheKey: Int? = null
+    @Volatile private var cacheVal: Model? = null
+
+    /** Refaz a conta só quando entra jogo novo (antes: a cada abertura de tela e a cada tática). */
     fun fit(logs: List<JSONObject>): Model? {
+        val key = logs.joinToString("|") {
+            it.optString("formation") + it.optString("playStyle") + it.optInt("mentality") + it.optInt("tempo") + it.optString("advAttack") +
+                it.opt("scoreMine") + "-" + it.opt("scoreOpp") + it.optInt("myStrength") + "/" + it.optInt("rivalStrength") + it.optBoolean("archived")
+        }.hashCode()
+        if (key == cacheKey) return cacheVal
+        val m = fitNow(logs)
+        cacheVal = m
+        cacheKey = key
+        return m
+    }
+
+    private fun fitNow(logs: List<JSONObject>): Model? {
         val rows = logs.mapNotNull { runCatching { row(it) }.getOrNull() }
         if (rows.size < MIN_GAMES) return null
         val my = solve(rows.map { Triple(it.x, it.baseMy, it.gMy) }, rows.map { it.w })
