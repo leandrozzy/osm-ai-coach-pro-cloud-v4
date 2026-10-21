@@ -23,7 +23,21 @@ object Playbook {
         val roundTotal: Int?,
         val seats: List<WorkSeat>,
         val matchAt: Long?,
-        val now: Long
+        val now: Long,
+        /** Eventos do OSM ativos agora. */
+        val events: Set<OsmEvents.Kind> = emptySet(),
+        /** Teto de venda da liga (múltiplo do valor), lido na tela; padrão 2,5. */
+        val ceiling: Double = MAX_PRICE,
+        /** Quanto a CPU pagou de verdade nas suas vendas (múltiplo do valor, nº de vendas). */
+        val paid: Pair<Double, Int>? = null,
+        /** Ganho de força por dia de treino, por faixa de idade (aprendido). */
+        val trainRates: Map<String, Pair<Double, Int>> = emptyMap(),
+        /** Patrocínio lido: jogos restantes (null = não lido) e se a tela pedia para escolher/renovar. */
+        val sponsorGames: Int? = null,
+        val sponsorRenew: Boolean = false,
+        val sponsorReadAt: Long? = null,
+        /** Nacionalidade por jogador (nameKey -> país), quando lida. */
+        val nations: Map<String, String> = emptyMap()
     )
 
     const val MAX_LISTED = 4
@@ -42,10 +56,18 @@ object Playbook {
         else -> 0.6
     }
 
-    /** (preço máximo, preço para vender rápido) em milhões. No início da competição a CPU paga o máximo. */
-    fun prices(valueM: Double, early: Boolean): Pair<Double, Double> {
-        val max = valueM * MAX_PRICE
-        return Pair(max, if (early) max else max * quickShare(valueM))
+    /**
+     * (preço máximo, preço para vender rápido) em milhões. No início da competição a CPU paga o máximo; com
+     * vendas suas registradas, o "rápido" é o que a CPU pagou de verdade na sua liga.
+     */
+    fun prices(valueM: Double, early: Boolean, ceiling: Double = MAX_PRICE, paid: Double? = null): Pair<Double, Double> {
+        val max = valueM * ceiling
+        val quick = when {
+            early -> max
+            paid != null -> minOf(max, valueM * paid)
+            else -> max * quickShare(valueM)
+        }
+        return Pair(max, quick)
     }
 
     fun money(m: Double): String = if (m >= 1.0) "%.1fM".format(m).replace('.', ',').replace(",0M", "M") else "${(m * 1000).roundToInt()}K"
@@ -57,8 +79,12 @@ object Playbook {
             out.add(Tip("📋", "Leia o Plantel do seu time", "Sem o elenco eu não sei quem vender, comprar ou treinar. Abra o Plantel e role a lista inteira.", 100, 2))
             return out
         }
-        val early = (i.round ?: 99) <= 3
+        val early = (i.round ?: 99) <= 3 || OsmEvents.Kind.TRANSFER in i.events
         val late = i.round != null && i.roundTotal != null && i.round > i.roundTotal / 2
+        val maxListed = if (OsmEvents.Kind.TRANSFER in i.events) 6 else MAX_LISTED
+        val sessionH = if (OsmEvents.Kind.STAFF in i.events) 4 else 8
+        fun hhmm(t: Long) = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(t))
+        for (e in i.events) out.add(Tip("🎉", "Evento ativo: ${e.label}", "Aproveite: ${e.tip}.", 96, 6))
 
         // 1) mínimo por posição (o jogo exige 2 GL, 4 DEF, 4 MEI, 3 ATA)
         val byCat = mine.groupingBy { it.cat }.eachCount()
@@ -77,14 +103,28 @@ object Playbook {
         for (s in i.seats.filter { it.role != "UNI" && (it.state == "empty" || it.state == "done" || (it.endAt != null && it.endAt <= i.now)) }) {
             val cat = ROLE_CAT[s.role] ?: continue
             // jovem evolui mais rápido: o mais novo do setor que ainda não está treinando (empate: o mais forte)
-            val pick = mine.filter { it.cat == cat && it.nameKey !in training }
-                .sortedWith(compareBy<PlayerEntity> { it.age ?: 99 }.thenByDescending { it.strength ?: 0 }).firstOrNull()
+            // quem rende mais pontos por dia de treino (aprendido nos seus jogadores; sem dados, o mais jovem).
+            // Se a sessão acabaria depois do jogo, prefere um reserva (titular treinando joga pior).
+            val endIfNow = i.now + sessionH * 3600000L
+            val clashes = i.matchAt != null && i.matchAt > i.now && i.matchAt < endIfNow
+            val pool = mine.filter { it.cat == cat && it.nameKey !in training }
+            val pool2 = if (clashes) pool.filter { it.nameKey !in i.xi }.ifEmpty { pool } else pool
+            val picked = TrainLearn.pick(pool2, i.trainRates)
+            val pick = picked?.first
             val done = s.state == "done" || s.endAt != null
+            val why = StringBuilder("Treinador parado é evolução perdida ($sessionH h por sessão; termina às ${hhmm(endIfNow)}). ")
+            if (picked?.second != null) why.append("Na faixa de idade de ${pick!!.name} (${pick.age} anos) seus jogadores ganharam ${"%.1f".format(picked.second).replace('.', ',')} ponto(s) por dia de treino, a melhor taxa medida. ")
+            else if (pick?.age != null) why.append("Jovens sobem mais rápido: ${pick.name} tem ${pick.age} anos. ")
+            if (clashes) why.append("O jogo é às ${hhmm(i.matchAt!!)}, antes do fim: escolhi um reserva.")
+            out.add(Tip("🏋", (if (done) "Reclame o treino e " else "") + "coloque ${pick?.name ?: "alguém"} no treinador de ${Timers.roleLabel(s.role)}", why.toString().trim(), 90, 2))
+        }
+        // agenda: 2 sessões por dia sem pegar o jogo (uma logo depois do jogo, que termina de manhã)
+        if (i.matchAt != null && i.matchAt > i.now && i.seats.isNotEmpty()) {
+            val after = i.matchAt + 15 * 60000L
             out.add(
                 Tip(
-                    "🏋", (if (done) "Reclame o treino e " else "") + "coloque ${pick?.name ?: "alguém"} no treinador de ${Timers.roleLabel(s.role)}",
-                    "Treinador parado é evolução perdida (8 h por sessão). Jovens sobem mais rápido" +
-                        (pick?.age?.let { ": ${pick.name} tem $it anos." } ?: "."), 90, 2
+                    "🗓", "Agenda de treino: comece a próxima sessão às ${hhmm(after)} (logo após o jogo)",
+                    "Ela termina às ${hhmm(after + sessionH * 3600000L)}. Assim os titulares não jogam treinando e você encaixa ~2 sessões por dia.", 50, 2
                 )
             )
         }
@@ -102,7 +142,7 @@ object Playbook {
         }
 
         // 3) lista de transferências: máximo de 4, sempre cheia; quem vender e por quanto
-        val left = i.listedUsed?.let { (MAX_LISTED - it).coerceAtLeast(0) }
+        val left = i.listedUsed?.let { (maxListed - it).coerceAtLeast(0) }
         val reserves = mine.filter { it.nameKey !in i.xi && it.forSale != true }
         val size = mine.size
         val extra = (size - 21).coerceAtLeast(0)
@@ -113,15 +153,16 @@ object Playbook {
         if (left != null && left > 0 && sellOrder.isNotEmpty()) {
             val names = sellOrder.take(left).joinToString("; ") { p ->
                 val v = Money.parse(p.valueText)
-                val pr = v?.let { prices(it, early) }
+                val pr = v?.let { prices(it, early, i.ceiling, i.paid?.first) }
                 p.name + " (${p.age ?: "?"}a, ${p.strength ?: "?"})" + (pr?.let { " — máx. ${money(it.first)}" + (if (!early) ", rápido ${money(it.second)}" else "") } ?: "")
             }
             out.add(
                 Tip(
                     "💰", "Lista com $left vaga(s) livre(s): liste $names",
-                    "Até 4 jogadores na lista ao mesmo tempo, e a CPU compra até 9 vezes por dia. Vaga vazia é dinheiro parado. " +
+                    "Até $maxListed jogadores na lista ao mesmo tempo, e a CPU compra até 9 vezes por dia. Vaga vazia é dinheiro parado. " +
+                        (i.paid?.let { "Nas suas ${it.second} vendas a CPU pagou em média ${"%.2f".format(it.first).replace('.', ',')}× o valor: o preço rápido usa isso. " } ?: "") +
                         "Venda reservas mais velhos e fracos; mantenha jovens bons e titulares." +
-                        (if (early) " Início da competição: a CPU paga o preço máximo (2,5× o valor)." else " Para vender rápido, peça menos que o máximo."), 85, 6
+                        (if (early) " Agora a CPU paga o preço máximo (${"%.2f".format(i.ceiling).replace('.', ',').removeSuffix("0").removeSuffix(",0")}× o valor)." else " Para vender rápido, peça menos que o máximo."), 85, 6
                 )
             )
         }
@@ -154,6 +195,28 @@ object Playbook {
             )
         }
 
+        // olheiro: compra pelo valor (+15 BC) e revende até o teto
+        if ((i.cashM ?: 0.0) >= 1.0) {
+            val v = minOf(i.cashM!!, 10.0)
+            val pr = prices(v, early, i.ceiling, i.paid?.first)
+            out.add(
+                Tip(
+                    "🔎", "Olheiro: jogador de ~${money(v)} custa ${money(v)} + 15 BC e revende por ${money(pr.second)}",
+                    "O olheiro traz o jogador pelo valor (mais barato que a lista). Lucro estimado: ${money(pr.second - v)} por jogador" +
+                        (if (OsmEvents.Kind.SCOUT in i.events) " — e o olheiro está em promoção agora." else ". Abaixo de ~10M vende mais rápido."),
+                    if (OsmEvents.Kind.SCOUT in i.events) 80 else 40, 6
+                )
+            )
+        }
+        when {
+            i.sponsorRenew || i.sponsorGames == 0 -> out.add(Tip("🤝", "Escolha/renove o patrocinador", "O contrato acabou. Escolha a oferta que paga mais (ela melhora se você está acima da meta).", 88, 6))
+            i.sponsorReadAt == null || i.now - i.sponsorReadAt > 10L * 86400000L ->
+                out.add(Tip("🤝", "Confira o patrocínio", "Abra a tela de patrocinadores para eu ler quantos jogos faltam no contrato e avisar quando renovar.", 30, 6))
+        }
+        Nations.best(i.xi, i.nations)?.let { (country, n) ->
+            if (n in 4..5) out.add(Tip("🌍", "Faltam ${6 - n} titular(es) de $country para o bônus de nacionalidade", "A comunidade fala em bônus escondido com 6 titulares do mesmo país (algumas fontes dizem 5). Você tem $n.", 45, 2))
+        }
+
         // 5) estádio: Treino até 2★ → Capacidade → Relvado 1★ → Treino 3★ → equilibrar
         if (!i.stadiumBuilding && (i.capLevel != null || i.trainLevel != null || i.pitchLevel != null)) {
             val order = listOf(
@@ -168,7 +231,7 @@ object Playbook {
             )
             fun lvl(n: String) = when (n) { "Treino" -> i.trainLevel; "Capacidade" -> i.capLevel; else -> i.pitchLevel } ?: 0
             order.firstOrNull { (n, target, _) -> lvl(n) < target }?.let { (n, target, why) ->
-                out.add(Tip("🏟", "Próxima obra do estádio: $n (nível ${lvl(n)} → $target)", "Ordem da comunidade: Treino até 2★, Capacidade, Relvado 1★, Treino 3★ e depois equilibrar. Por quê: $why.", 55, 6))
+                out.add(Tip("🏟", "Próxima obra do estádio: $n (nível ${lvl(n)} → $target)" + (if (OsmEvents.Kind.FACILITIES in i.events) " — em promoção" else ""), "Ordem da comunidade: Treino até 2★, Capacidade, Relvado 1★, Treino 3★ e depois equilibrar. Por quê: $why.", 55, 6))
             }
         }
         return out.sortedByDescending { it.priority }
