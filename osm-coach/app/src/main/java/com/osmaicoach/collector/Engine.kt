@@ -130,6 +130,22 @@ object TacticEngine {
      * "Apoiar meio-campo" quando o meio dele é claramente mais forte e o seu ataque não leva vantagem sobre a defesa
      * dele. Devolve (escolha, motivo) quando muda a escolha recebida.
      */
+    /** Mínimos que valem para QUALQUER tática final (regra, simulação ou IA): azarão, seca de gols e batalha. */
+    data class Floors(val mentality: Int, val attackOnly: Boolean, val minStrikers: Int, val minTempo: Int)
+
+    fun floors(inp: Input, diff: Int?): Floors {
+        val d = diff ?: 0
+        val drought = d <= -5 && (inp.lessons?.atkNeed ?: 0) > 0
+        var m = 0
+        var atk = false
+        if (d <= -5) { atk = true; m = if (drought) 42 else 32 }
+        if (inp.mustWin && d >= -8) { atk = true; m = maxOf(m, 60) }
+        return Floors(m, atk, if (drought) 2 else 0, if (drought) 66 else 0)
+    }
+
+    /** Atacantes da formação (última linha). */
+    fun strikers(f: String): Int = Formations.lines(Formations.base(f)).lastOrNull() ?: 2
+
     fun smartAttack(current: String, formation: String, diff: Int?, myMid: Int?, rivalMid: Int?, myAtk: Int?, rivalDef: Int?): Pair<String, String>? {
         val fw = Formations.lines(formation).lastOrNull() ?: return null
         if (fw < 3 || (diff ?: 0) <= -5) return null
