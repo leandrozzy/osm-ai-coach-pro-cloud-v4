@@ -251,11 +251,28 @@ object Director {
     fun mustWin(f: Map<String, StoredField>): Boolean = f[K.COMP_TYPE]?.value == "Batalha"
     const val BATTLE_DRAW = 0.4
 
+    /** Jogadores cujo treino (cronômetro lido) termina depois do início do jogo. */
+    suspend fun busyAtKickoff(repo: Repo, slot: Int, f: Map<String, StoredField>, mine: List<PlayerEntity>): Set<String> {
+        val kick = f[K.MATCH_AT]?.value?.toLongOrNull() ?: return emptySet()
+        val now = System.currentTimeMillis()
+        if (kick <= now) return emptySet()
+        val ends = repo.timers(slot).filter { it.training && it.at > kick }.map { it.key.removePrefix("train_") }.toSet()
+        if (ends.isEmpty()) return emptySet()
+        val seats = TrainBoard.seats(repo.dao.plan(slot, "trainscreen")?.json?.let { runCatching { JSONObject(it) }.getOrNull() }, mine, now)
+        return seats.filter { it.role in ends && it.state == "active" }.mapNotNull { it.key }.toSet()
+    }
+
     suspend fun tacticInput(repo: Repo, slot: Int): TacticEngine.Input {
         val f = repo.fieldMap(slot)
-        val out = repo.unavailable(slot)
         repo.purgeOverlayNames(slot)
-        val players = repo.dao.playersOf(slot).filter { it.owner == "MY" && it.nameKey !in out }
+        val all = repo.dao.playersOf(slot).filter { it.owner == "MY" }
+        // fora do jogo: suspensos/lesionados marcados e quem ainda estará treinando na hora do jogo
+        // (se faltar gente para o XI, os que treinam voltam)
+        val out = repo.unavailable(slot)
+        val busy = runCatching { busyAtKickoff(repo, slot, f, all) }.getOrDefault(emptySet())
+        val players = all.filter { it.nameKey !in out && it.nameKey !in busy }.let { p ->
+            if (p.count { it.strength != null } >= 14) p else all.filter { it.nameKey !in out }
+        }
         return TacticEngine.Input(
             players = players,
             myStrength = f[K.MY_STRENGTH]?.value?.toIntOrNull(),
@@ -807,19 +824,26 @@ object Director {
             }
             return out
         }
-        out.add(Pair(base, if (readNow) 0.5 else 0.2))
-        val w = (if (readNow) 0.5 else 0.8) / past.size
-        for (e in past) {
+        // previsão pelo histórico do apelido (as mais usadas e as mais recentes pesam mais); quem troca muito na
+        // última hora deixa o lido agora valer menos
+        val pred = RivalPredict.of(repo.rivalProfile(slot)?.json?.let { runCatching { JSONObject(it) }.getOrNull() })
+        val sw = pred?.switchRate ?: 0
+        val nowW = if (readNow) (0.6 - sw / 250.0).coerceIn(0.3, 0.6) else 0.2
+        out.add(Pair(base, nowW))
+        val guesses = pred?.guesses?.take(4).orEmpty()
+        val totShare = guesses.sumOf { it.share }.coerceAtLeast(1)
+        for (g in guesses) {
+            val e = past.lastOrNull { Formations.canonical(it.optString("formation")) == g.formation && Osm.style(it.optString("plan")) == g.style } ?: past.last()
             out.add(
                 Pair(
                     base.copy(
-                        rivalFormation = Formations.canonical(e.optString("formation")) ?: base.rivalFormation,
-                        rivalStyle = Osm.style(e.optString("plan")) ?: base.rivalStyle,
+                        rivalFormation = g.formation,
+                        rivalStyle = g.style ?: base.rivalStyle,
                         rivalMarking = Osm.marking(e.optString("marking")) ?: base.rivalMarking,
                         rivalOffside = e.optString("offside").takeIf { it == "Sim" || it == "Não" } ?: base.rivalOffside,
                         rivalTackle = Osm.tackle(e.optString("tackle")) ?: base.rivalTackle
                     ),
-                    w
+                    (1.0 - nowW) * g.share / totShare
                 )
             )
         }

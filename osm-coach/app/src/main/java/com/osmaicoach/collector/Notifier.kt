@@ -405,6 +405,7 @@ class NotifyReceiver : BroadcastReceiver() {
         AppScope.scope.launch(Dispatchers.IO) {
             try {
                 if (kind == "tick") {
+                    EventsRefresh.ifStale(app)
                     Notifier.reschedule(app)
                     Notifier.directorSummary(app)
                 } else if (kind == "timer") {

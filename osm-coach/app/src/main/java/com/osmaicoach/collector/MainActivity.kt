@@ -1251,7 +1251,9 @@ data class SlotData(
     /** Resumo do fim da competição (posição, pontos, campeão, valor). */
     val season: JSONObject? = null,
     /** O que os gols reais dos 4 slots ensinaram ao modelo. */
-    val learned: Learned.Model? = null
+    val learned: Learned.Model? = null,
+    /** Táticas mais prováveis do rival humano (pelo histórico do apelido). */
+    val rivalPred: RivalPredict.View? = null
 )
 
 data class SessionRow(val s: SessionEntity, val counts: String, val unassigned: Int)
@@ -1283,6 +1285,7 @@ private suspend fun loadSlot(ctx: Context, slot: Int): SlotData {
     return SlotData(
         ready = true,
         learned = runCatching { Learned.fit(Director.allLogs(repo)) }.getOrNull(),
+        rivalPred = runCatching { RivalPredict.of(repo.rivalProfile(slot)?.json?.let { JSONObject(it) }) }.getOrNull(),
         fields = f, players = players, matches = dao.matchesOf(slot),
         tactic = dao.plan(slot, "tactic"), market = dao.plan(slot, "market"),
         learning = dao.learningOf(slot),
@@ -2118,6 +2121,8 @@ private suspend fun loadDirector(ctx: Context): List<DirSlot> {
     val repo = Repo(ctx)
     val today = loadToday(ctx)
     val out = ArrayList<DirSlot>()
+    // ganho de força por dia de treino, por idade, medido nos 4 slots
+    val trainRates = Hints.trainRates(repo)
     for (s in today.slots) {
         val f = repo.fieldMap(s.slot)
         val inp = Director.tacticInput(repo, s.slot)
@@ -2167,23 +2172,7 @@ private suspend fun loadDirector(ctx: Context): List<DirSlot> {
             seats.any { it.state == "unknown" } -> "abrir a tela de Treinamento no jogo"
             else -> null
         }
-        val tips = runCatching {
-            val now = System.currentTimeMillis()
-            val xi = res?.rows?.flatten()?.mapNotNull { it?.nameKey }?.toSet() ?: emptySet()
-            val used = Regex("^(\\d)\\s*/\\s*(\\d)$").find(f[K.SELLING]?.value?.trim() ?: "")?.groupValues?.get(1)?.toIntOrNull()
-            val timers = repo.timers(s.slot)
-            val work = Work.of(s.slot, s.title, repo.dao.plan(s.slot, "trainscreen")?.json?.let { JSONObject(it) }, timers, f)
-            Playbook.tips(
-                Playbook.Input(
-                    players = repo.playersOf(s.slot), xi = xi, cashM = Money.parse(f[K.CASH]?.value), listedUsed = used,
-                    capLevel = f[K.MY_STAD_CAP]?.value?.toIntOrNull(), pitchLevel = f[K.MY_STAD_PITCH]?.value?.toIntOrNull(),
-                    trainLevel = f[K.MY_STAD_TRAIN]?.value?.toIntOrNull(),
-                    stadiumBuilding = timers.any { !it.training && it.at > now },
-                    round = known(f, K.ROUND)?.toIntOrNull(), roundTotal = known(f, K.ROUND_TOTAL)?.toIntOrNull(),
-                    seats = work.seats, matchAt = s.nextAt, now = now
-                )
-            )
-        }.getOrDefault(emptyList())
+        val tips = Hints.slotTips(repo, s.slot, res?.rows?.flatten()?.mapNotNull { it?.nameKey }?.toSet() ?: emptySet(), s.nextAt, s.title, trainRates)
         out.add(
             DirSlot(
                 s = s,
@@ -2228,6 +2217,11 @@ private fun DirectorTab(onOpen: (Int, Int) -> Unit) {
             StatTile("🔔", list.sumOf { it.alerts.size }.toString(), "alertas", C.WARN, Modifier.weight(1f))
             StatTile("⚽", list.count { !it.s.ended && it.s.nextAt != null }.toString(), "jogos", C.OK, Modifier.weight(1f))
         }
+        val eventTips = list.flatMap { it.tips }.filter { it.icon == "🎉" }.distinctBy { it.title }
+        if (eventTips.isNotEmpty()) {
+            Title("🎉 Eventos do OSM agora")
+            for (t in eventTips) TipCard(t) {}
+        }
         Title("📋 Dicas primeiro")
         Text("O que fazer agora para evoluir rápido, com os seus dados e o que a comunidade do OSM confirma que funciona.", fontSize = 12.sp, color = C.MUTED)
         for (d in list.filter { it.tips.isNotEmpty() }) {
@@ -2236,8 +2230,9 @@ private fun DirectorTab(onOpen: (Int, Int) -> Unit) {
                 Spacer(Modifier.width(8.dp))
                 Text("S${d.s.slot} • ${d.s.title}", fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            for (t in d.tips.take(4)) TipCard(t) { onOpen(d.s.slot, t.tab) }
-            if (d.tips.size > 4) Fold("➕", "Mais ${d.tips.size - 4} dica(s) do S${d.s.slot}") { for (t in d.tips.drop(4)) TipCard(t) { onOpen(d.s.slot, t.tab) } }
+            val mineTips = d.tips.filter { it.icon != "🎉" }
+            for (t in mineTips.take(4)) TipCard(t) { onOpen(d.s.slot, t.tab) }
+            if (mineTips.size > 4) Fold("➕", "Mais ${mineTips.size - 4} dica(s) do S${d.s.slot}") { for (t in mineTips.drop(4)) TipCard(t) { onOpen(d.s.slot, t.tab) } }
         }
         Fold("📚", "O que a comunidade diz que funciona") {
             for ((rule, src) in Playbook.GUIDE) {
@@ -3509,6 +3504,7 @@ private fun SlotTactic(slot: Int, d: SlotData) {
         return
     }
     if (d.rivalChanged.isNotEmpty()) RivalChangedCard(d.rivalChanged) { startGeneration(ctx, "tactic", slot) }
+    d.rivalPred?.takeIf { it.guesses.isNotEmpty() }?.let { RivalPredictCard(it, known(d.fields, K.RIVAL_NICK)) }
     // Checklist: o que ainda falta ler e em qual tela do OSM (a tática sai melhor com tudo lido).
     val secret = SecretTraining.on(d.fields)
     val human = secret || fv(d, K.RIVAL_HUMAN) == "Sim"
@@ -5053,5 +5049,32 @@ private fun TipCard(t: Playbook.Tip, onClick: () -> Unit) {
             Text(t.why, fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 2.dp))
         }
         Text("›", fontSize = 18.sp, color = C.MUTED)
+    }
+}
+
+/** Táticas mais prováveis do rival humano, pelo que ele já usou contra você e contra os outros slots. */
+@Composable
+private fun RivalPredictCard(v: RivalPredict.View, nick: String?) {
+    Panel {
+        Text("🔮 O que ${nick ?: "o rival"} deve usar", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+        Text(
+            "Pelas ${v.guesses.sumOf { it.seen }} tática(s) dele já lidas (as recentes pesam mais). A simulação testa a sua tática contra estas.",
+            fontSize = 11.sp, color = C.MUTED
+        )
+        for (g in v.guesses.take(3)) {
+            Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(g.formation + (g.style?.let { " • $it" } ?: ""), fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                Text("${g.share}%", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = C.GOLD)
+            }
+            Box(Modifier.fillMaxWidth().padding(top = 3.dp).height(5.dp).clip(RoundedCornerShape(50)).background(C.SURFACE2)) {
+                Box(Modifier.fillMaxHeight().fillMaxWidth(g.share / 100f).background(Brush.horizontalGradient(listOf(Color(0xFFFFB74D), Color(0xFFFFD24A)))))
+            }
+        }
+        v.switchRate?.let {
+            Text(
+                "Trocou a tática na última hora em ${v.switches} de ${v.checked} jogos ($it%)" + if (it >= 40) ": releia a análise dele 20 min antes." else ".",
+                fontSize = 12.sp, color = if (it >= 40) C.WARN else C.MUTED, modifier = Modifier.padding(top = 8.dp)
+            )
+        }
     }
 }
