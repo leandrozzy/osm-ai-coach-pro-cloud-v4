@@ -83,7 +83,14 @@ class Repo(private val ctx: Context) {
     suspend fun syncRound(slot: Int, now: Long = System.currentTimeMillis()): Fixtures.Clock {
         val rows = dao.fieldsOf(slot)
         val f = rows.associate { it.fkey to StoredField(it.fvalue, it.conf, it.updatedAt) }
-        val c = Fixtures.clock(dao.matchesOf(slot), scoredRounds(slot), now, f)
+        val ms = dao.matchesOf(slot)
+        val c0 = Fixtures.clock(ms, scoredRounds(slot), now, f)
+        val adv = Fixtures.advanceAfterKickoff(ms, c0, now)
+        if (adv != null) {
+            advanceTo(slot, adv, f, now)
+            return adv.clock
+        }
+        val c = c0
         val cur = rows.firstOrNull { it.fkey == K.ROUND }
         val old = cur?.fvalue?.toIntOrNull()
         if (c.round != null && c.round != old && (cur?.source != "manual" || (old != null && c.round > old))) {
@@ -95,6 +102,35 @@ class Repo(private val ctx: Context) {
         }
         if (c.at == null && f.containsKey(K.MATCH_AT)) dao.deleteField(slot, K.MATCH_AT)
         return c
+    }
+
+    /** Passa o slot para o jogo seguinte do calendário: rodada, horário estimado e o rival do card (até ler o pré-jogo). */
+    private suspend fun advanceTo(slot: Int, adv: Fixtures.Advance, f: Map<String, StoredField>, now: Long) {
+        val r = adv.clock.round ?: return
+        dao.putField(FieldEntity(slot, K.ROUND, r.toString(), 0.8, now, "sync"))
+        if (adv.clock.at != null) dao.putField(FieldEntity(slot, K.MATCH_AT, adv.clock.at.toString(), 0.6, now, "sync"))
+        else dao.deleteField(slot, K.MATCH_AT)
+        val opp = Fixtures.opponent(adv.match)
+        val old = f[K.RIVAL_TEAM]?.value
+        if (opp != null && (old == null || Txt.sim(Txt.key(old), Txt.key(opp)) < 0.8)) {
+            // os dados lidos eram do rival do jogo que já começou
+            dao.deleteRivalFields(slot)
+            dao.deleteRivalPlayers(slot)
+            dao.deleteField(slot, K.MY_BONUS)
+            dao.deleteField(slot, K.REFEREE)
+            dao.deletePlan(slot, "evidence")
+            dao.putField(FieldEntity(slot, K.RIVAL_TEAM, opp, 0.6, now, "calendar"))
+            adv.match.opponentNick?.takeIf { Evidence.plausibleNick(it) }?.let {
+                dao.putField(FieldEntity(slot, K.RIVAL_NICK, it, 0.6, now, "calendar"))
+                dao.putField(FieldEntity(slot, K.RIVAL_HUMAN, "Sim", 0.6, now, "calendar"))
+            }
+        }
+        adv.match.home?.let { dao.putField(FieldEntity(slot, K.HOME, if (it) "Casa" else "Fora", 0.6, now, "calendar")) }
+        learn(
+            slot, "rodada",
+            "O J${r - 1} já começou: passei para o J$r" + (opp?.let { " vs $it" } ?: "") +
+                " pelo calendário. Abra o pré-jogo no OSM para ler o rival e gere a tática.", now
+        )
     }
 
     /** Identidades conhecidas de cada slot (para reconhecer o slot sem passar pela central). */
