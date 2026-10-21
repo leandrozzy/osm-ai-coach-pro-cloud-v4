@@ -892,17 +892,22 @@ object Director {
         // a simulação não pode desfazer as regras (antes: batalha com estilo 60 virava 48 e o 5-3-2 virava 5-4-1)
         // Regras de segurança só até o app ter jogos suficientes; depois o aprendido nos seus jogos decide.
         val fl = if (scen.firstOrNull()?.first?.learned?.trusted == true) NO_FLOORS else TacticEngine.floors(inp, res.diff)
+        // com aprendizado confiável a simulação também testa avançados e ritmo (o que der mais vitória nos seus jogos)
+        val learnedOn = scen.firstOrNull()?.first?.learned?.trusted == true
+        val atks = if (learnedOn) listOf(t0.advAttack, "Atacar apenas", "Apoiar meio-campo").distinct() else listOf(t0.advAttack)
+        val tempos = if (learnedOn) listOf(0, 12) else listOf(0)
         for (f in candidateFormations(res, inp)) {
             if (TacticEngine.strikers(f) < fl.minStrikers) continue
             val rows = TacticEngine.lineup(f, inp.players, inp.fitness)?.first ?: continue
             for (st in SIM_STYLES) for (dm in listOf(-12, 0, 12)) for (tk in Osm.allowedTackles(inp.referee).filter { it != "Cuidadoso" }.ifEmpty { listOf("Cuidadoso") })
-                for (off in if (inp.rivalSecret) listOf("Não") else listOf("Não", "Sim")) for (mk in listOf("À zona", "Homem-a-homem")) for (md in mids) {
+                for (off in if (inp.rivalSecret) listOf("Não") else listOf("Não", "Sim")) for (mk in listOf("À zona", "Homem-a-homem")) for (md in mids)
+                for (aa in atks) for (dt in tempos) {
                     // contra-ataque pede ritmo alto (transição rápida) e bloco baixo (pressão baixa)
                     val counter = st == "Contra-ataque"
                     val t = t0.copy(
                         formation = Formations.variant(f, st), playStyle = st, mentality = (t0.mentality + dm).coerceIn(fl.mentality, 100),
-                        tempo = maxOf(fl.minTempo, if (counter) maxOf(t0.tempo, 62) else t0.tempo),
-                        advAttack = if (fl.attackOnly) "Atacar apenas" else t0.advAttack,
+                        tempo = (maxOf(fl.minTempo, if (counter) maxOf(t0.tempo, 62) else t0.tempo) + dt).coerceAtMost(100),
+                        advAttack = if (fl.attackOnly) "Atacar apenas" else aa,
                         pressure = if (counter) minOf(t0.pressure, 42) else t0.pressure,
                         tackle = tk, offside = off, marking = mk, advMid = md, notes = emptyList()
                     )
@@ -915,7 +920,7 @@ object Director {
 
     private fun tacticRefinePrompt(
         context: JSONObject, draft: JSONObject, draftSim: String, table: String, statsText: String, learned: String,
-        allowed: List<String>, tackles: List<String>
+        allowed: List<String>, tackles: List<String>, trusted: Boolean = false
     ): String =
         "Você é o TREINADOR-CHEFE e analista tático do OSM 26 (Online Soccer Manager). VOCÊ decide a tática do próximo jogo. " +
             "Você recebe: (1) um RASCUNHO feito por regras a partir da tática que a comunidade do OSM usa nesta situação, já " +
@@ -927,6 +932,12 @@ object Director {
             "Não copie o rascunho por comodidade e não aplique a mesma receita para rivais diferentes: olhe a formação e o " +
             "estilo DESTE rival, a diferença exata de força e os setores (ataque × defesa dele, meio × meio, defesa × ataque dele). " +
             "Contra rival HUMANO prefira a tática que não perde para as táticas que ele já usou. " +
+            (if (trusted) "O OBJETIVO é VENCER. O app já aprendeu com os gols REAIS deste treinador (no HISTÓRICO: 'Aprendido nos seus N jogos'). " +
+                "Use esse aprendizado e o APRENDIZADO DOS 4 SLOTS como evidência principal: repita o que gerou gols e vitórias e evite o que travou " +
+                "o ataque ou levou gols, mesmo que contrarie o senso comum ou o rascunho. Não siga receitas fixas. " +
+                "Se DADOS.batalha existir, só a vitória conta (empate quase não vale). " +
+                "Se DADOS.treino_secreto_rival existir, a tática e a força dele estão escondidas: não use linha de impedimento. "
+            else (
             "Se DADOS.batalha existir, o jogo é de BATALHA: só a vitória conta; prefira a tática com mais chance de VENCER, " +
             "não a que só evita a derrota (avançados atacando, mentalidade acima de 55 se não for bem mais fraco). " +
             "Contra rival MAIS FORTE: NÃO se encolha demais (mentality >= 32, advAttack \"Atacar apenas\", de preferência 2 " +
@@ -937,10 +948,11 @@ object Director {
             "Se o rival joga Contra-ataque, não responda com Contra-ataque (os dois esperam e sai empate). " +
             "Se DADOS.treino_secreto_rival existir, o rival fez TREINO SECRETO: a tática e a força dele estão escondidas; " +
             "use a força estimada, NÃO use linha de impedimento (offside \"Não\"), proteja o meio-campo e não aposte em " +
-            "contra-golpe ao estilo dele (ele é desconhecido). " +
+            "contra-golpe ao estilo dele (ele é desconhecido). "
+            )) +
             "REGRAS: formation uma de $allowed; pressure, mentality e tempo de 0 a 100; tackle SÓ entre $tackles " +
             "(árbitro pela cor do termômetro: azul Extremo, verde Agressivo, amarelo Normal, laranja/vermelho Cuidadoso). " +
-            "Contra rival BEM MAIS FRACO use 3 atacantes, mentalidade ofensiva e estilo de ataque. " +
+            (if (trusted) "" else "Contra rival BEM MAIS FRACO use 3 atacantes, mentalidade ofensiva e estilo de ataque. ") +
             "Nomes EXATOS do OSM: playStyle ${Osm.STYLES}; marking ${Osm.MARKING}; tackle ${Osm.TACKLES}; " +
             "advAttack ${Osm.ATTACK}; advMid ${Osm.MIDFIELD}; advDef ${Osm.DEFENSE}. " +
             "Responda APENAS JSON com: formation, playStyle, pressure, mentality, tempo, marking, offside, tackle, advAttack, " +
@@ -1003,7 +1015,7 @@ object Director {
         val allowedNames = allowed.flatMap { Formations.variants(it).ifEmpty { listOf(it) } }
         val learned = learnedText(inp, res.diff)
 
-        val prompt = tacticRefinePrompt(context(repo, slot), draft, pct(draftProb), table, stats, learned, allowedNames, Osm.allowedTackles(inp.referee))
+        val prompt = tacticRefinePrompt(context(repo, slot), draft, pct(draftProb), table, stats, learned, allowedNames, Osm.allowedTackles(inp.referee), base.learned?.trusted == true)
         return Prep(inp, res, f, round, rival, hist, base, scen, lost, draftProb, draftPts, best, allowed, prompt)
     }
 
@@ -1082,7 +1094,7 @@ object Director {
                     if (inp.rivalSecret && it.offside == "Sim") it.copy(offside = "Não", notes = it.notes + "Treino secreto do rival: sem linha de impedimento.") else it
                 }.let {
                     // a IA também segue a regra dos avançados pelos setores (ex.: 4-3-3 mais forte não "apoia o meio")
-                    val sa = TacticEngine.smartAttack(it.advAttack, it.formation, res.diff, inp.myMid, inp.rivalMid, inp.myAtk, inp.rivalDef)
+                    val sa = if (base.learned?.trusted == true) null else TacticEngine.smartAttack(it.advAttack, it.formation, res.diff, inp.myMid, inp.rivalMid, inp.myAtk, inp.rivalDef)
                     if (sa != null && !(inp.mustWin && sa.first != "Atacar apenas")) it.copy(advAttack = sa.first, notes = it.notes + "Avançados: ${sa.second}.") else it
                 }.let {
                     // azarão: nada de recuar o time inteiro (7 jogos sem gol assim contra humanos mais fortes)
