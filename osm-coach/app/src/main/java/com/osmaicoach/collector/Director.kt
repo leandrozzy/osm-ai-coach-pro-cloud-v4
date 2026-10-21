@@ -283,7 +283,11 @@ object Director {
 
     /** Táticas usadas com resultado nos 4 slots: o modelo aprende com todas. */
     suspend fun allLogs(repo: Repo): List<JSONObject> =
-        (1..4).flatMap { s -> repo.dao.tacticLogs(s).mapNotNull { runCatching { JSONObject(it.json) }.getOrNull() } }
+        (1..4).flatMap { s ->
+            repo.dao.tacticLogs(s).mapNotNull { p ->
+                runCatching { JSONObject(p.json).also { if (p.kind.startsWith("tlog_X")) it.put("archived", true) } }.getOrNull()
+            }
+        }
 
     /** Jogos do slot para o treinador: táticas usadas + análises do jogo lidas. */
     suspend fun coachGames(repo: Repo, slot: Int): List<Coach.Game> = Coach.games(
@@ -356,6 +360,7 @@ object Director {
             recent = played.filter { !Fixtures.isCup(it) }.mapNotNull { it.result }.take(5),
             headToHead = h2h,
             calib = Calib.offset(repo.dao.tacticLogs(slot).mapNotNull { runCatching { JSONObject(it.json) }.getOrNull() }),
+            learned = runCatching { Learned.fit(allLogs(repo)) }.getOrNull(),
             meta = run {
                 val my = int(K.MY_STRENGTH)
                 val rv = SecretTraining.rivalStrength(f)
@@ -707,7 +712,8 @@ object Director {
                 ) + res1.tactic.notes
             )
         ) else res1
-        val json = tacticPlanJson(res2, round, rival, false, f[K.MATCH_AT]?.value?.toLongOrNull())
+        val res3 = learnedNote(base)?.let { res2.copy(tactic = res2.tactic.copy(notes = res2.tactic.notes + it)) } ?: res2
+        val json = tacticPlanJson(res3, round, rival, false, f[K.MATCH_AT]?.value?.toLongOrNull())
         json.put("basis", RivalWatch.basis(f))
         repo.dao.putPlan(PlanEntity(slot, "tactic", json.toString(), now))
         repo.dao.deletePlan(slot, "rivalchange")
@@ -738,7 +744,17 @@ object Director {
         return null
     }
 
+    /** O que os gols reais dos seus jogos ensinaram (entra na explicação da tática e na pergunta à IA). */
+    fun learnedNote(base: WinModel.Input): String? {
+        val m = base.learned ?: return null
+        val ex = Learned.explain(m)
+        if (ex.isEmpty()) return null
+        return "🧠 Aprendido nos seus ${m.n} jogos (gols reais): " + ex.joinToString("; ") + "." +
+            (if (m.trusted) "" else " Ainda poucos jogos: as regras de segurança continuam valendo.")
+    }
+
     const val PROVEN_MARGIN = 0.30
+    private val NO_FLOORS = TacticEngine.Floors(0, false, 0, 0)
 
     private fun pct(p: WinModel.Prob?): String = if (p == null) "?" else "V ${p.win}% / E ${p.draw}% / D ${p.loss}%"
 
@@ -874,7 +890,8 @@ object Director {
         // contra humano testa também o meio-campo mais protegido (ele pode mudar a tática na última hora)
         val mids = if (human) listOf(t0.advMid, "Manter posições", "Ajudar a defesa").distinct() else listOf(t0.advMid)
         // a simulação não pode desfazer as regras (antes: batalha com estilo 60 virava 48 e o 5-3-2 virava 5-4-1)
-        val fl = TacticEngine.floors(inp, res.diff)
+        // Regras de segurança só até o app ter jogos suficientes; depois o aprendido nos seus jogos decide.
+        val fl = if (scen.firstOrNull()?.first?.learned?.trusted == true) NO_FLOORS else TacticEngine.floors(inp, res.diff)
         for (f in candidateFormations(res, inp)) {
             if (TacticEngine.strikers(f) < fl.minStrikers) continue
             val rows = TacticEngine.lineup(f, inp.players, inp.fitness)?.first ?: continue
@@ -978,6 +995,7 @@ object Director {
             if (rv.wrong.isNotEmpty()) statLines.add("J${g.round} vs ${g.rival} (${g.result}): erros — ${rv.wrong.joinToString("; ")}")
         }
         inp.lessons?.plan?.forEach { statLines.add("LIÇÃO OBRIGATÓRIA do treinador: $it") }
+        learnedNote(base)?.let { statLines.add("$it (a simulação já usa isso; confie mais nisso do que em regras genéricas)") }
         for (b in repo.boardMessages(slot).take(3)) statLines.add("mensagem da diretoria / fim de temporada: $b")
         val stats = statLines.joinToString("\n").ifBlank { "sem jogos registrados ainda" }
         // a IA pode escolher qualquer formação que o elenco consiga montar (antes só as 3 do cálculo)
@@ -1068,11 +1086,11 @@ object Director {
                     if (sa != null && !(inp.mustWin && sa.first != "Atacar apenas")) it.copy(advAttack = sa.first, notes = it.notes + "Avançados: ${sa.second}.") else it
                 }.let {
                     // azarão: nada de recuar o time inteiro (7 jogos sem gol assim contra humanos mais fortes)
-                    if ((res.diff ?: 0) <= -5 && (Osm.attack(it.advAttack) != "Atacar apenas" || it.mentality < 32)) {
+                    if (base.learned?.trusted != true && (res.diff ?: 0) <= -5 && (Osm.attack(it.advAttack) != "Atacar apenas" || it.mentality < 32)) {
                         it.copy(advAttack = "Atacar apenas", mentality = maxOf(it.mentality, 32), notes = it.notes + "Azarão: avançados na frente e estilo mínimo 32 para o contra-ataque ter quem finalize.")
                     } else it
                 }
-                val fl = TacticEngine.floors(inp, res.diff)
+                val fl = if (base.learned?.trusted == true) NO_FLOORS else TacticEngine.floors(inp, res.diff)
                 val t2 = t.let {
                     var x = it
                     val fix = ArrayList<String>()
@@ -1127,6 +1145,7 @@ object Director {
         val pick = chosen ?: best ?: return Outcome(false, null, "Não consegui simular alternativas com o elenco lido.")
         val pickProb = prob(pick.tactic, pick.rows)
         notes.add("Chance com esta tática: ${pct(pickProb)} (rascunho: ${pct(draftProb)}).")
+        learnedNote(base)?.let { notes.add(it) }
         notes.addAll(res.tactic.notes)
         val aiInfo = JSONObject().put("used", chosen != null).put("by", reply.by ?: "").put("secs", secs)
             .put("why", aiWhy).put("problem", aiProblem ?: "")

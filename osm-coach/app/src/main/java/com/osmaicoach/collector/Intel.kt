@@ -353,7 +353,9 @@ object WinModel {
         /** Modelo do jogo (comunidade + aprendizado); null = o embutido. */
         val meta: Meta.Template? = null,
         /** Quanto vale um empate (1 = liga normal). Na batalha só a vitória conta: o empate vale bem menos. */
-        val drawValue: Double = 1.0
+        val drawValue: Double = 1.0,
+        /** Pesos corrigidos pelos gols reais dos seus jogos (Learned.fit); null = só o modelo de partida. */
+        val learned: Learned.Model? = null
     )
 
     /** Efeito de um fator: no log dos meus gols esperados, no log dos gols do rival e na imprevisibilidade. */
@@ -555,7 +557,18 @@ object WinModel {
             val wr = i.tacticRecord.count { it == "V" }.toDouble() / i.tacticRecord.size
             t.add(Term("Histórico desta tática (${i.tacticRecord.size} jogos)", ((wr - 0.45) * 0.3).coerceIn(-0.15, 0.15), 0.0))
         }
+        val lm = i.learned
+        if (lm != null && p != null) {
+            val (a, b) = lm.effect(Learned.features(p.formation, p.style, p.mentality, p.tempo, p.advAttack))
+            if (a != 0.0 || b != 0.0) t.add(Term("Aprendido nos seus ${lm.n} jogos", a, b))
+        }
         return t
+    }
+
+    /** Gols esperados (meus, do rival) só pelo modelo de partida: a base que o aprendizado corrige. */
+    fun baseGoals(i: Input): Pair<Double, Double>? {
+        val o = outcome(terms(i.copy(learned = null, calib = 0.0)) ?: return null)
+        return Pair(o[3], o[4])
     }
 
     private fun poisson(l: Double): DoubleArray {
