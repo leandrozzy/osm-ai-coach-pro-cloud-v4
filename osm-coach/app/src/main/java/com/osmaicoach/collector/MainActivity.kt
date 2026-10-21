@@ -2109,7 +2109,9 @@ data class DirSlot(
     /** A primeira coisa a fazer neste slot para o time evoluir. */
     val next: String? = null,
     /** Semana em uma linha: valor, caixa e treino. */
-    val week: String? = null
+    val week: String? = null,
+    /** Dicas primeiro: o que fazer agora para evoluir rápido (dados do slot + o que a comunidade confirma). */
+    val tips: List<Playbook.Tip> = emptyList()
 )
 
 private suspend fun loadDirector(ctx: Context): List<DirSlot> {
@@ -2165,9 +2167,27 @@ private suspend fun loadDirector(ctx: Context): List<DirSlot> {
             seats.any { it.state == "unknown" } -> "abrir a tela de Treinamento no jogo"
             else -> null
         }
+        val tips = runCatching {
+            val now = System.currentTimeMillis()
+            val xi = res?.rows?.flatten()?.mapNotNull { it?.nameKey }?.toSet() ?: emptySet()
+            val used = Regex("^(\\d)\\s*/\\s*(\\d)$").find(f[K.SELLING]?.value?.trim() ?: "")?.groupValues?.get(1)?.toIntOrNull()
+            val timers = repo.timers(s.slot)
+            val work = Work.of(s.slot, s.title, repo.dao.plan(s.slot, "trainscreen")?.json?.let { JSONObject(it) }, timers, f)
+            Playbook.tips(
+                Playbook.Input(
+                    players = repo.playersOf(s.slot), xi = xi, cashM = Money.parse(f[K.CASH]?.value), listedUsed = used,
+                    capLevel = f[K.MY_STAD_CAP]?.value?.toIntOrNull(), pitchLevel = f[K.MY_STAD_PITCH]?.value?.toIntOrNull(),
+                    trainLevel = f[K.MY_STAD_TRAIN]?.value?.toIntOrNull(),
+                    stadiumBuilding = timers.any { !it.training && it.at > now },
+                    round = known(f, K.ROUND)?.toIntOrNull(), roundTotal = known(f, K.ROUND_TOTAL)?.toIntOrNull(),
+                    seats = work.seats, matchAt = s.nextAt, now = now
+                )
+            )
+        }.getOrDefault(emptyList())
         out.add(
             DirSlot(
                 s = s,
+                tips = tips,
                 forecast = forecast,
                 sells = plan?.sell?.map { it.name + " (" + it.cat + " " + (it.strength ?: "?") + ")" } ?: emptyList(),
                 buys = plan?.buy?.map { it.name + " (+" + it.gain + ")" } ?: emptyList(),
@@ -2208,12 +2228,28 @@ private fun DirectorTab(onOpen: (Int, Int) -> Unit) {
             StatTile("🔔", list.sumOf { it.alerts.size }.toString(), "alertas", C.WARN, Modifier.weight(1f))
             StatTile("⚽", list.count { !it.s.ended && it.s.nextAt != null }.toString(), "jogos", C.OK, Modifier.weight(1f))
         }
+        Title("📋 Dicas primeiro")
+        Text("O que fazer agora para evoluir rápido, com os seus dados e o que a comunidade do OSM confirma que funciona.", fontSize = 12.sp, color = C.MUTED)
+        for (d in list.filter { it.tips.isNotEmpty() }) {
+            Row(Modifier.padding(top = 10.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Crest(d.s.slot, 26.dp)
+                Spacer(Modifier.width(8.dp))
+                Text("S${d.s.slot} • ${d.s.title}", fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            for (t in d.tips.take(4)) TipCard(t) { onOpen(d.s.slot, t.tab) }
+            if (d.tips.size > 4) Fold("➕", "Mais ${d.tips.size - 4} dica(s) do S${d.s.slot}") { for (t in d.tips.drop(4)) TipCard(t) { onOpen(d.s.slot, t.tab) } }
+        }
+        Fold("📚", "O que a comunidade diz que funciona") {
+            for ((rule, src) in Playbook.GUIDE) {
+                Text(rule, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
+                Text("Fonte: $src", fontSize = 10.sp, color = C.MUTED)
+            }
+        }
         if (Diag.lastError != null) Hint(Diag.lastError ?: "", "último erro")
 
         val alertLines = list.flatMap { it.alerts }
         if (alertLines.isNotEmpty()) {
-            Title("O que fazer agora")
-            for (a in alertLines) AlertCard(a)
+            Fold("🔔", "Alertas", alertLines.size.toString()) { for (a in alertLines) AlertCard(a) }
         }
         val upcoming = list.filter { !it.s.ended && it.s.nextAt != null && it.s.nextAt > now - 7200000L }.sortedBy { it.s.nextAt }
         if (upcoming.isNotEmpty()) {
@@ -2231,8 +2267,9 @@ private fun DirectorTab(onOpen: (Int, Int) -> Unit) {
             }
         }
 
+        if (list.isNotEmpty()) Title("Plano de cada slot")
         for (d in list) {
-            Panel {
+            Fold("S${d.s.slot}", d.s.title, if (d.alerts.isNotEmpty()) "${d.alerts.size} alerta(s)" else null) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Crest(d.s.slot, 44.dp)
                     Spacer(Modifier.width(10.dp))
@@ -4991,5 +5028,30 @@ private fun WorkRow(icon: String, title: String, sub: String, status: Pair<Strin
                     .border(1.dp, status.second.copy(alpha = 0.45f), RoundedCornerShape(50)).padding(horizontal = 9.dp, vertical = 3.dp)
             ) { Text(status.first, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = status.second, maxLines = 1) }
         }
+    }
+}
+
+@Composable
+private fun TipCard(t: Playbook.Tip, onClick: () -> Unit) {
+    val c = when {
+        t.priority >= 90 -> C.BAD
+        t.priority >= 75 -> C.WARN
+        else -> C.PRIMARY
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(RoundedCornerShape(14.dp))
+            .background(Brush.horizontalGradient(listOf(c.copy(alpha = 0.16f), C.SURFACE2.copy(alpha = 0.5f))))
+            .border(1.dp, c.copy(alpha = 0.45f), RoundedCornerShape(14.dp)).clickable { onClick() }.padding(12.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Box(Modifier.size(34.dp).clip(RoundedCornerShape(10.dp)).background(c.copy(alpha = 0.22f)), contentAlignment = Alignment.Center) {
+            Text(t.icon, fontSize = 17.sp)
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(t.title, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            Text(t.why, fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 2.dp))
+        }
+        Text("›", fontSize = 18.sp, color = C.MUTED)
     }
 }

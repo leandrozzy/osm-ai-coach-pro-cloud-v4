@@ -1,0 +1,42 @@
+package com.osmaicoach.collector
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class PlaybookTest {
+    private fun p(n: String, cat: String, age: Int, str: Int, value: String, training: Boolean = false) =
+        PlayerEntity(1, "MY", Txt.key(n), n, age, null, cat, str, value, training, false, 0L)
+
+    private val squad = listOf(
+        p("Gk A", "GOL", 28, 80, "5M"), p("Gk B", "GOL", 33, 70, "1,2M"),
+        p("Def A", "DEF", 24, 80, "6M"), p("Def B", "DEF", 25, 79, "6M"), p("Def C", "DEF", 26, 78, "5M"), p("Def D", "DEF", 31, 70, "2M"), p("Def E", "DEF", 20, 72, "3M"),
+        p("Mid A", "MEI", 22, 82, "9M"), p("Mid B", "MEI", 27, 80, "7M"), p("Mid C", "MEI", 30, 76, "3M"), p("Mid D", "MEI", 19, 70, "2M"), p("Mid E", "MEI", 32, 68, "900K"),
+        p("Atk A", "ATA", 23, 83, "10M"), p("Atk B", "ATA", 26, 80, "8M"), p("Atk C", "ATA", 30, 71, "2M")
+    )
+
+    @Test fun prioritizesFreeTrainerListingAndStadiumOrder() {
+        val xi = setOf("gka", "defa", "defb", "defc", "mida", "midb", "midc", "atka", "atkb", "atkc", "defd").toSet()
+        val tips = Playbook.tips(
+            Playbook.Input(
+                squad, xi, 3.0, listedUsed = 1, capLevel = 1, pitchLevel = 1, trainLevel = 1, stadiumBuilding = false,
+                round = 2, roundTotal = 22, seats = listOf(WorkSeat("MEI", null, "empty", null), WorkSeat("ATA", "ATK A", "active", 9_000L)),
+                matchAt = 5_000L, now = 0L
+            )
+        )
+        val titles = tips.map { it.title }
+        assertTrue(titles.any { it.contains("treinador de médios") && it.contains("Mid D") })   // o mais jovem
+        assertTrue(titles.any { it.startsWith("Lista com 3 vaga") && it.contains("Mid E") && !it.contains("Gk B") })  // reserva velho; goleiro no mínimo fica
+        assertTrue(titles.any { it.contains("Titular treinando") })
+        assertTrue(titles.any { it.contains("Elenco curto (15)") })
+        assertTrue(titles.any { it.contains("Próxima obra do estádio: Treino") })
+        assertTrue(tips.zipWithNext().all { (a, b) -> a.priority >= b.priority })
+    }
+
+    @Test fun sellPriceTable() {
+        assertEquals(25.0, Playbook.prices(10.0, early = true).second, 0.001)
+        assertEquals(20.0, Playbook.prices(10.0, early = false).second, 0.001)
+        assertEquals("2,5M", Playbook.money(2.5))
+        assertEquals("900K", Playbook.money(0.9))
+    }
+}
