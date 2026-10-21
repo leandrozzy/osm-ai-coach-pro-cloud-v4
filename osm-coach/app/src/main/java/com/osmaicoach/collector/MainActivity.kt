@@ -2122,14 +2122,7 @@ private suspend fun loadDirector(ctx: Context): List<DirSlot> {
     val today = loadToday(ctx)
     val out = ArrayList<DirSlot>()
     // ganho de força por dia de treino, por idade, medido nos 4 slots
-    val trainRates = runCatching {
-        val ages = HashMap<String, Int?>()
-        val hists = (1..4).mapNotNull { sl ->
-            repo.playersOf(sl).forEach { ages[it.nameKey] = it.age }
-            repo.dao.plan(sl, "phist")?.json?.let { JSONObject(it) }
-        }
-        TrainLearn.rates(hists, ages)
-    }.getOrDefault(emptyMap())
+    val trainRates = Hints.trainRates(repo)
     for (s in today.slots) {
         val f = repo.fieldMap(s.slot)
         val inp = Director.tacticInput(repo, s.slot)
@@ -2179,34 +2172,7 @@ private suspend fun loadDirector(ctx: Context): List<DirSlot> {
             seats.any { it.state == "unknown" } -> "abrir a tela de Treinamento no jogo"
             else -> null
         }
-        val tips = runCatching {
-            val now = System.currentTimeMillis()
-            val xi = res?.rows?.flatten()?.mapNotNull { it?.nameKey }?.toSet() ?: emptySet()
-            val used = Regex("^(\\d)\\s*/\\s*(\\d)$").find(f[K.SELLING]?.value?.trim() ?: "")?.groupValues?.get(1)?.toIntOrNull()
-            val timers = repo.timers(s.slot)
-            val work = Work.of(s.slot, s.title, repo.dao.plan(s.slot, "trainscreen")?.json?.let { JSONObject(it) }, timers, f)
-            val events = OsmEvents.active(OsmEvents.parse(repo.dao.plan(0, "events")?.json), now)
-            val sponsor = repo.dao.plan(s.slot, "sponsor")?.json?.let { JSONObject(it) }
-            val nations = repo.dao.plan(s.slot, "nations")?.json?.let { j -> JSONObject(j).let { o -> o.keys().asSequence().associateWith { o.optString(it) } } } ?: emptyMap()
-            Playbook.tips(
-                Playbook.Input(
-                    events = events,
-                    ceiling = repo.dao.plan(s.slot, "ceiling")?.json?.let { JSONObject(it).optDouble("r", Playbook.MAX_PRICE) } ?: Playbook.MAX_PRICE,
-                    paid = SellPrices.learnedRatio(Ledger.parse(repo.dao.plan(s.slot, "ledger")?.json), repo.dao.plan(s.slot, "phist")?.json?.let { JSONObject(it) } ?: JSONObject()),
-                    trainRates = trainRates,
-                    sponsorGames = sponsor?.takeIf { !it.isNull("games") }?.optInt("games"),
-                    sponsorRenew = sponsor?.optBoolean("renew") == true,
-                    sponsorReadAt = sponsor?.optLong("at"),
-                    nations = nations,
-                    players = repo.playersOf(s.slot), xi = xi, cashM = Money.parse(f[K.CASH]?.value), listedUsed = used,
-                    capLevel = f[K.MY_STAD_CAP]?.value?.toIntOrNull(), pitchLevel = f[K.MY_STAD_PITCH]?.value?.toIntOrNull(),
-                    trainLevel = f[K.MY_STAD_TRAIN]?.value?.toIntOrNull(),
-                    stadiumBuilding = timers.any { !it.training && it.at > now },
-                    round = known(f, K.ROUND)?.toIntOrNull(), roundTotal = known(f, K.ROUND_TOTAL)?.toIntOrNull(),
-                    seats = work.seats, matchAt = s.nextAt, now = now
-                )
-            )
-        }.getOrDefault(emptyList())
+        val tips = Hints.slotTips(repo, s.slot, res?.rows?.flatten()?.mapNotNull { it?.nameKey }?.toSet() ?: emptySet(), s.nextAt, s.title, trainRates)
         out.add(
             DirSlot(
                 s = s,
