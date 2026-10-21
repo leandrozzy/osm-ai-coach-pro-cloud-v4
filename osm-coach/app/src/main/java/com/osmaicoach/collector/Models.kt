@@ -218,15 +218,29 @@ object Overlay {
 }
 
 object Txt {
-    fun norm(s: String): String =
-        Normalizer.normalize(s.lowercase(), Normalizer.Form.NFD)
-            .replace(Regex("\\p{Mn}+"), "")
-            .replace(Regex("[^a-z0-9/:.,\\- ]+"), " ")
-            .replace(Regex("\\s+"), " ")
+    private val RX_MARKS = Regex("\\p{Mn}+")
+    private val RX_OTHER = Regex("[^a-z0-9/:.,\\- ]+")
+    private val RX_SPACES = Regex("\\s+")
+    private val RX_NONKEY = Regex("[^a-z0-9]")
+    /** Textos curtos se repetem muito (estilos, posições, rótulos): guarda o resultado. */
+    private val memo = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    fun norm(s: String): String {
+        if (s.length <= 48) memo[s]?.let { return it }
+        val r = Normalizer.normalize(s.lowercase(), Normalizer.Form.NFD)
+            .replace(RX_MARKS, "")
+            .replace(RX_OTHER, " ")
+            .replace(RX_SPACES, " ")
             .trim()
+        if (s.length <= 48) {
+            if (memo.size > 20000) memo.clear()
+            memo[s] = r
+        }
+        return r
+    }
 
     /** Chave só com letras/dígitos, para comparar nomes. */
-    fun key(s: String): String = norm(s).replace(Regex("[^a-z0-9]"), "")
+    fun key(s: String): String = norm(s).replace(RX_NONKEY, "")
 
     fun letters(s: String): Int = s.count { it.isLetter() }
 

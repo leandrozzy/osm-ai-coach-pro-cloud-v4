@@ -1768,7 +1768,8 @@ private fun TodayTab(onGoSettings: () -> Unit, onOpenSlot: (Int, Int) -> Unit) {
     val ctx = LocalContext.current
     val tick = rememberTick(1000L)
     val scope = rememberCoroutineScope()
-    val data = rememberLoaded(TodayCache.last, tick, UiBus.version) { loadToday(ctx) }
+    // dados a cada 5 s (ou na hora, com dado novo); o relógio da tela continua a cada 1 s
+    val data = rememberLoaded(TodayCache.last, tick / 5, UiBus.version) { loadToday(ctx) }
     var msg by remember { mutableStateOf("") }
     val enabled = serviceEnabled(ctx)
     val connected = Diag.serviceConnected
@@ -2085,7 +2086,7 @@ private fun SessionsTab() {
 @Composable
 private fun SlotsTab(onOpen: (Int, Int) -> Unit) {
     val ctx = LocalContext.current
-    val tick = rememberTick()
+    val tick = rememberTick(5000L)
     val data = rememberLoaded(TodayCache.last, tick, UiBus.version) { loadToday(ctx) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
         Text("Slots", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
@@ -2108,7 +2109,9 @@ data class DirSlot(
     /** A primeira coisa a fazer neste slot para o time evoluir. */
     val next: String? = null,
     /** Semana em uma linha: valor, caixa e treino. */
-    val week: String? = null
+    val week: String? = null,
+    /** Dicas primeiro: o que fazer agora para evoluir rápido (dados do slot + o que a comunidade confirma). */
+    val tips: List<Playbook.Tip> = emptyList()
 )
 
 private suspend fun loadDirector(ctx: Context): List<DirSlot> {
@@ -2164,9 +2167,27 @@ private suspend fun loadDirector(ctx: Context): List<DirSlot> {
             seats.any { it.state == "unknown" } -> "abrir a tela de Treinamento no jogo"
             else -> null
         }
+        val tips = runCatching {
+            val now = System.currentTimeMillis()
+            val xi = res?.rows?.flatten()?.mapNotNull { it?.nameKey }?.toSet() ?: emptySet()
+            val used = Regex("^(\\d)\\s*/\\s*(\\d)$").find(f[K.SELLING]?.value?.trim() ?: "")?.groupValues?.get(1)?.toIntOrNull()
+            val timers = repo.timers(s.slot)
+            val work = Work.of(s.slot, s.title, repo.dao.plan(s.slot, "trainscreen")?.json?.let { JSONObject(it) }, timers, f)
+            Playbook.tips(
+                Playbook.Input(
+                    players = repo.playersOf(s.slot), xi = xi, cashM = Money.parse(f[K.CASH]?.value), listedUsed = used,
+                    capLevel = f[K.MY_STAD_CAP]?.value?.toIntOrNull(), pitchLevel = f[K.MY_STAD_PITCH]?.value?.toIntOrNull(),
+                    trainLevel = f[K.MY_STAD_TRAIN]?.value?.toIntOrNull(),
+                    stadiumBuilding = timers.any { !it.training && it.at > now },
+                    round = known(f, K.ROUND)?.toIntOrNull(), roundTotal = known(f, K.ROUND_TOTAL)?.toIntOrNull(),
+                    seats = work.seats, matchAt = s.nextAt, now = now
+                )
+            )
+        }.getOrDefault(emptyList())
         out.add(
             DirSlot(
                 s = s,
+                tips = tips,
                 forecast = forecast,
                 sells = plan?.sell?.map { it.name + " (" + it.cat + " " + (it.strength ?: "?") + ")" } ?: emptyList(),
                 buys = plan?.buy?.map { it.name + " (+" + it.gain + ")" } ?: emptyList(),
@@ -2196,7 +2217,8 @@ private suspend fun loadDirector(ctx: Context): List<DirSlot> {
 @Composable
 private fun DirectorTab(onOpen: (Int, Int) -> Unit) {
     val ctx = LocalContext.current
-    val tick = rememberTick(3000L)
+    // recarga pesada (4 slots): a cada 20 s ou na hora em que chega dado novo (UiBus)
+    val tick = rememberTick(20000L)
     val list = rememberLoaded(emptyList<DirSlot>(), tick, UiBus.version) { loadDirector(ctx) }
     val now = System.currentTimeMillis()
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
@@ -2206,12 +2228,28 @@ private fun DirectorTab(onOpen: (Int, Int) -> Unit) {
             StatTile("🔔", list.sumOf { it.alerts.size }.toString(), "alertas", C.WARN, Modifier.weight(1f))
             StatTile("⚽", list.count { !it.s.ended && it.s.nextAt != null }.toString(), "jogos", C.OK, Modifier.weight(1f))
         }
+        Title("📋 Dicas primeiro")
+        Text("O que fazer agora para evoluir rápido, com os seus dados e o que a comunidade do OSM confirma que funciona.", fontSize = 12.sp, color = C.MUTED)
+        for (d in list.filter { it.tips.isNotEmpty() }) {
+            Row(Modifier.padding(top = 10.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Crest(d.s.slot, 26.dp)
+                Spacer(Modifier.width(8.dp))
+                Text("S${d.s.slot} • ${d.s.title}", fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            for (t in d.tips.take(4)) TipCard(t) { onOpen(d.s.slot, t.tab) }
+            if (d.tips.size > 4) Fold("➕", "Mais ${d.tips.size - 4} dica(s) do S${d.s.slot}") { for (t in d.tips.drop(4)) TipCard(t) { onOpen(d.s.slot, t.tab) } }
+        }
+        Fold("📚", "O que a comunidade diz que funciona") {
+            for ((rule, src) in Playbook.GUIDE) {
+                Text(rule, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
+                Text("Fonte: $src", fontSize = 10.sp, color = C.MUTED)
+            }
+        }
         if (Diag.lastError != null) Hint(Diag.lastError ?: "", "último erro")
 
         val alertLines = list.flatMap { it.alerts }
         if (alertLines.isNotEmpty()) {
-            Title("O que fazer agora")
-            for (a in alertLines) AlertCard(a)
+            Fold("🔔", "Alertas", alertLines.size.toString()) { for (a in alertLines) AlertCard(a) }
         }
         val upcoming = list.filter { !it.s.ended && it.s.nextAt != null && it.s.nextAt > now - 7200000L }.sortedBy { it.s.nextAt }
         if (upcoming.isNotEmpty()) {
@@ -2229,8 +2267,9 @@ private fun DirectorTab(onOpen: (Int, Int) -> Unit) {
             }
         }
 
+        if (list.isNotEmpty()) Title("Plano de cada slot")
         for (d in list) {
-            Panel {
+            Fold("S${d.s.slot}", d.s.title, if (d.alerts.isNotEmpty()) "${d.alerts.size} alerta(s)" else null) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Crest(d.s.slot, 44.dp)
                     Spacer(Modifier.width(10.dp))
@@ -2286,7 +2325,7 @@ private fun DirectorTab(onOpen: (Int, Int) -> Unit) {
 @Composable
 private fun SlotScreen(slot: Int, tab: Int, onTab: (Int) -> Unit, onBack: () -> Unit) {
     val ctx = LocalContext.current
-    val tick = rememberTick(2000L)
+    val tick = rememberTick(6000L)
     val data = rememberLoaded(SlotData(), tick, Pair(slot, UiBus.version)) { loadSlot(ctx, slot) }
     val tabs = listOf("Resumo", "Pré-jogo", "Elenco", "Calendário", "Tática", "Resultado", "Diretor", "Aprendizado")
     val title = known(data.fields, K.TEAM) ?: known(data.fields, K.HUB_TITLE) ?: if (data.ready) "Slot $slot ainda não lido" else "carregando…"
@@ -2768,7 +2807,7 @@ private fun ResultBadge(result: String?) {
 }
 
 @Composable
-private fun MatchCard(m: MatchEntity, modifier: Modifier, highlight: Boolean, void: Boolean = false, onClick: () -> Unit) {
+private fun MatchCard(m: MatchEntity, modifier: Modifier, highlight: Boolean, void: Boolean = false, live: Boolean = false, onClick: () -> Unit) {
     val cup = Fixtures.isCup(m)
     val tint = when (m.result) {
         "V" -> Color(0xFF12351F)
@@ -2783,14 +2822,28 @@ private fun MatchCard(m: MatchEntity, modifier: Modifier, highlight: Boolean, vo
         null -> ""
     }
     val shape = RoundedCornerShape(12.dp)
-    val frame = if (highlight) modifier.border(2.dp, C.GOLD, shape) else if (cup && !void) modifier.border(1.dp, Color(0x669B6BFF), shape) else modifier
+    val frame = if (live) modifier.border(2.dp, C.OK, shape) else if (highlight) modifier.border(2.dp, C.GOLD, shape) else if (cup && !void) modifier.border(1.dp, Color(0x669B6BFF), shape) else modifier
     Column(
         frame.clickable { onClick() }.height(140.dp).clip(shape).background(tint).graphicsLayer { alpha = if (void) 0.4f else 1f }.padding(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text((if (cup) "🏆" else place) + " " + (if (m.round != null) "J${m.round}" else m.label.take(8)), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = C.MUTED)
-            ResultBadge(m.result)
+            // selo no topo (antes ficava embaixo e era cortado pelo card)
+            val tag = when {
+                m.result != null -> null
+                void -> Pair("ELIMINADO", C.BAD)
+                live -> Pair("AGORA", C.OK)
+                highlight -> Pair("PRÓXIMO", C.GOLD)
+                cup -> Pair("COPA", Color(0xFFB79CFF))
+                else -> null
+            }
+            if (tag != null) {
+                Box(
+                    Modifier.clip(RoundedCornerShape(50)).background(tag.second.copy(alpha = 0.2f))
+                        .border(1.dp, tag.second.copy(alpha = 0.7f), RoundedCornerShape(50)).padding(horizontal = 6.dp, vertical = 2.dp)
+                ) { Text(tag.first, fontSize = 9.sp, color = tag.second, fontWeight = FontWeight.ExtraBold, maxLines = 1) }
+            } else ResultBadge(m.result)
         }
         Text(score, fontSize = 26.sp, fontWeight = FontWeight.ExtraBold)
         val opp = Fixtures.opponent(m)
@@ -2808,9 +2861,6 @@ private fun MatchCard(m: MatchEntity, modifier: Modifier, highlight: Boolean, vo
             )
         }
         Text(m.date ?: m.time ?: "", fontSize = 10.sp, color = C.MUTED, modifier = Modifier.padding(top = 2.dp))
-        if (void) Text("ELIMINADO", fontSize = 9.sp, color = C.BAD, fontWeight = FontWeight.Bold)
-        else if (highlight) Text("PRÓXIMO", fontSize = 9.sp, color = C.GOLD, fontWeight = FontWeight.Bold)
-        else if (cup && m.result == null) Text("COPA", fontSize = 9.sp, color = Color(0xFFB79CFF), fontWeight = FontWeight.Bold)
     }
 }
 
@@ -2883,7 +2933,14 @@ private fun SlotCalendar(slot: Int, d: SlotData) {
         FilterPill("Próximos", mode == 2) { mode = 2 }
     }
     // Próximo de verdade: ignora copa após eliminação e cards cujo horário já passou.
-    val nextRound = Fixtures.next(sorted, System.currentTimeMillis(), fv(d, K.ROUND).toIntOrNull(), fv(d, K.MATCH_AT).toLongOrNull())?.round
+    val nowC = System.currentTimeMillis()
+    val curRound = fv(d, K.ROUND).toIntOrNull()
+    val curAt = fv(d, K.MATCH_AT).toLongOrNull()
+    val nextRound = Fixtures.next(sorted, nowC, curRound, curAt)?.round
+    // jogo da rodada atual que começou há pouco e ainda não tem placar: "AGORA" (o próximo continua marcado)
+    val liveRound = curRound?.takeIf { r ->
+        curAt != null && curAt <= nowC && nowC - curAt < 3 * 3600000L && sorted.any { it.round == r && it.result == null && it.scoreMine == null }
+    }
     // Lista final: rodadas da liga em ordem (com "não lido" nos buracos), depois jogos de copa/outros.
     val cells = ArrayList<Pair<Int?, MatchEntity?>>()
     if (total != null && total > 0) {
@@ -2903,7 +2960,7 @@ private fun SlotCalendar(slot: Int, d: SlotData) {
         Row(Modifier.fillMaxWidth()) {
             for ((r, m) in row) {
                 val mod = Modifier.weight(1f).padding(3.dp)
-                if (m != null) MatchCard(m, mod, m.round != null && m.round == nextRound, Fixtures.void(m, sorted)) { if (m.round != null) editRound = m.round }
+                if (m != null) MatchCard(m, mod, m.round != null && m.round == nextRound, Fixtures.void(m, sorted), live = m.round != null && m.round == liveRound) { if (m.round != null) editRound = m.round }
                 else UnreadCard(r ?: 0, mod) { if (r != null) editRound = r }
             }
             repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
@@ -4971,5 +5028,30 @@ private fun WorkRow(icon: String, title: String, sub: String, status: Pair<Strin
                     .border(1.dp, status.second.copy(alpha = 0.45f), RoundedCornerShape(50)).padding(horizontal = 9.dp, vertical = 3.dp)
             ) { Text(status.first, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = status.second, maxLines = 1) }
         }
+    }
+}
+
+@Composable
+private fun TipCard(t: Playbook.Tip, onClick: () -> Unit) {
+    val c = when {
+        t.priority >= 90 -> C.BAD
+        t.priority >= 75 -> C.WARN
+        else -> C.PRIMARY
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(RoundedCornerShape(14.dp))
+            .background(Brush.horizontalGradient(listOf(c.copy(alpha = 0.16f), C.SURFACE2.copy(alpha = 0.5f))))
+            .border(1.dp, c.copy(alpha = 0.45f), RoundedCornerShape(14.dp)).clickable { onClick() }.padding(12.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Box(Modifier.size(34.dp).clip(RoundedCornerShape(10.dp)).background(c.copy(alpha = 0.22f)), contentAlignment = Alignment.Center) {
+            Text(t.icon, fontSize = 17.sp)
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(t.title, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            Text(t.why, fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 2.dp))
+        }
+        Text("›", fontSize = 18.sp, color = C.MUTED)
     }
 }

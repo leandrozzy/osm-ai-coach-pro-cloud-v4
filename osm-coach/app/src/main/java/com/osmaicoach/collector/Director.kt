@@ -896,24 +896,45 @@ object Director {
         val learnedOn = scen.firstOrNull()?.first?.learned?.trusted == true
         val atks = if (learnedOn) listOf(t0.advAttack, "Atacar apenas", "Apoiar meio-campo").distinct() else listOf(t0.advAttack)
         val tempos = if (learnedOn) listOf(0, 12) else listOf(0)
+        // Busca em 2 etapas (antes: todas as combinações de uma vez = dezenas de milhares de simulações, lento no celular).
+        // 1) formação × estilo × mentalidade com o resto da regra; 2) nas 8 melhores, os detalhes (desarme, impedimento,
+        // marcação, meias, avançados, ritmo).
+        fun build(f: String, st: String, dm: Int, tk: String, off: String, mk: String, md: String, aa: String, dt: Int): Tactic {
+            // contra-ataque pede ritmo alto (transição rápida) e bloco baixo (pressão baixa)
+            val counter = st == "Contra-ataque"
+            return t0.copy(
+                formation = Formations.variant(f, st), playStyle = st, mentality = (t0.mentality + dm).coerceIn(fl.mentality, 100),
+                tempo = (maxOf(fl.minTempo, if (counter) maxOf(t0.tempo, 62) else t0.tempo) + dt).coerceAtMost(100),
+                advAttack = if (fl.attackOnly) "Atacar apenas" else aa,
+                pressure = if (counter) minOf(t0.pressure, 42) else t0.pressure,
+                tackle = tk, offside = off, marking = mk, advMid = md, notes = emptyList()
+            )
+        }
+        val tackles = Osm.allowedTackles(inp.referee).filter { it != "Cuidadoso" }.ifEmpty { listOf("Cuidadoso") }
+        val tk0 = t0.tackle.takeIf { it in tackles } ?: tackles.first()
+        val offs = if (inp.rivalSecret) listOf("Não") else listOf("Não", "Sim")
+        val off0 = t0.offside.takeIf { it in offs } ?: "Não"
+        val rowsBy = HashMap<String, List<List<PlayerEntity?>>>()
+        data class Coarse(val f: String, val st: String, val dm: Int, val pts: Double)
+        val coarse = ArrayList<Coarse>()
         for (f in candidateFormations(res, inp)) {
             if (TacticEngine.strikers(f) < fl.minStrikers) continue
             val rows = TacticEngine.lineup(f, inp.players, inp.fitness)?.first ?: continue
-            for (st in SIM_STYLES) for (dm in listOf(-12, 0, 12)) for (tk in Osm.allowedTackles(inp.referee).filter { it != "Cuidadoso" }.ifEmpty { listOf("Cuidadoso") })
-                for (off in if (inp.rivalSecret) listOf("Não") else listOf("Não", "Sim")) for (mk in listOf("À zona", "Homem-a-homem")) for (md in mids)
-                for (aa in atks) for (dt in tempos) {
-                    // contra-ataque pede ritmo alto (transição rápida) e bloco baixo (pressão baixa)
-                    val counter = st == "Contra-ataque"
-                    val t = t0.copy(
-                        formation = Formations.variant(f, st), playStyle = st, mentality = (t0.mentality + dm).coerceIn(fl.mentality, 100),
-                        tempo = (maxOf(fl.minTempo, if (counter) maxOf(t0.tempo, 62) else t0.tempo) + dt).coerceAtMost(100),
-                        advAttack = if (fl.attackOnly) "Atacar apenas" else aa,
-                        pressure = if (counter) minOf(t0.pressure, 42) else t0.pressure,
-                        tackle = tk, offside = off, marking = mk, advMid = md, notes = emptyList()
-                    )
-                    val ep = score(t, rows, scen, hist, lost) ?: continue
-                    out.add(Cand(t, rows, ep))
-                }
+            rowsBy[f] = rows
+            for (st in SIM_STYLES) for (dm in listOf(-12, 0, 12)) {
+                val t = build(f, st, dm, tk0, off0, t0.marking, t0.advMid, t0.advAttack, 0)
+                val ep = score(t, rows, scen, hist, lost) ?: continue
+                coarse.add(Coarse(f, st, dm, ep))
+                out.add(Cand(t, rows, ep))
+            }
+        }
+        for (c in coarse.sortedByDescending { it.pts }.take(8)) {
+            val rows = rowsBy[c.f] ?: continue
+            for (tk in tackles) for (off in offs) for (mk in listOf("À zona", "Homem-a-homem")) for (md in mids) for (aa in atks) for (dt in tempos) {
+                val t = build(c.f, c.st, c.dm, tk, off, mk, md, aa, dt)
+                val ep = score(t, rows, scen, hist, lost) ?: continue
+                out.add(Cand(t, rows, ep))
+            }
         }
         return out.sortedByDescending { it.points }
     }
