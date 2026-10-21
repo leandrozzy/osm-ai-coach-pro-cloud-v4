@@ -222,6 +222,8 @@ object Evidence {
         if (words.any { w -> w in JUNK_WORDS || JUNK_PREFIX.any { w.startsWith(it) } }) return false
         val n = Txt.norm(t)
         if (Regex("^\\d+\\s").containsMatchIn(n)) return false
+        // "Árbitro" lido com erro ("Arbifro") não é apelido do rival
+        if (words.size == 1 && Txt.sim(Txt.key(t), "arbitro") >= 0.7) return false
         // lixo de OCR: vírgula/ponto-e-vírgula no meio ou palavra "quebrada" (minúscula seguida de várias maiúsculas: "sARY")
         if (t.contains(',') || t.contains(';')) return false
         // "Melhor marcador:", "Valor:": rótulo de tela, não nome de usuário

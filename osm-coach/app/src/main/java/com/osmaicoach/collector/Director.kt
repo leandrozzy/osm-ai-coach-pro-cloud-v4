@@ -671,7 +671,9 @@ object Director {
         val alt = top?.let { t -> cands.firstOrNull { it.tactic.formation != t.tactic.formation || it.tactic.playStyle != t.tactic.playStyle } }
         val explore = top != null && alt != null && top.points - alt.points < 0.02 && used(alt) < used(top) && hist.size >= 3
         val best = if (explore) alt else top
-        val res = if (best != null && draftPts != null && best.points > draftPts + 0.03) {
+        val provenDraft = proven(hist, rules.tactic)
+        val margin = if (provenDraft != null) PROVEN_MARGIN else 0.03
+        val res = if (best != null && draftPts != null && best.points > draftPts + margin) {
             val why = ArrayList<String>()
             if (explore && top != null) {
                 why.add("Testando ${best.tactic.formation} • ${best.tactic.playStyle}: empata com ${top.tactic.formation} • ${top.tactic.playStyle} na simulação e foi menos usada — o resultado ensina qual é melhor.")
@@ -683,6 +685,8 @@ object Director {
             if (scen.size > 1) why.add("Rival humano: testada contra ${scen.size - 1} táticas que ele pode usar (as dele já vistas ou as mais comuns entre humanos), não só a atual.")
             if (lost.isNotEmpty()) why.add("Evitei o que já perdeu para este rival: ${lost.keys.joinToString { it.replace("|", " • ") }}.")
             rules.copy(tactic = best.tactic.copy(notes = why + rules.tactic.notes), rows = best.rows)
+        } else if (provenDraft != null && best != null && draftPts != null && best.points > draftPts + 0.03) {
+            rules.copy(tactic = rules.tactic.copy(notes = listOf("✅ Mantive a tática que vem ganhando ($provenDraft): a simulação só achou diferença pequena.") + rules.tactic.notes))
         } else rules
         // Contra humano sem os dados dele a tática é às cegas: avisa o que ler antes do jogo.
         val miss = listOfNotNull(
@@ -716,6 +720,25 @@ object Director {
     private val SIM_STYLES = Osm.STYLES
 
     data class Cand(val tactic: Tactic, val rows: List<List<PlayerEntity?>>, val points: Double)
+
+    /**
+     * Formação + estilo que já vem ganhando neste slot (2+ jogos sem derrota, ou 4+ jogos do estilo com 2 pts/jogo).
+     * A simulação é estimativa: para trocar uma tática comprovada ela precisa achar algo MUITO melhor.
+     */
+    fun proven(hist: List<HistRow>, t: Tactic): String? {
+        fun pts(r: String?) = when (r) { "V" -> 3; "E" -> 1; else -> 0 }
+        val st = Osm.style(t.playStyle) ?: t.playStyle
+        val byStyle = hist.filter { it.result != null && (Osm.style(it.playStyle) ?: it.playStyle) == st }
+        val combo = byStyle.filter { Formations.base(it.formation) == Formations.base(t.formation) }
+        fun txt(g: List<HistRow>) = "${g.count { it.result == "V" }}V ${g.count { it.result == "E" }}E ${g.count { it.result == "D" }}D"
+        if (combo.size >= 2 && combo.none { it.result == "D" }) return "${Formations.base(t.formation)} • ${t.playStyle}: ${txt(combo)} neste slot"
+        if (byStyle.size >= 4 && combo.none { it.result == "D" } && byStyle.sumOf { pts(it.result) }.toDouble() / byStyle.size >= 2.0) {
+            return "${t.playStyle}: ${txt(byStyle)} neste slot"
+        }
+        return null
+    }
+
+    const val PROVEN_MARGIN = 0.30
 
     private fun pct(p: WinModel.Prob?): String = if (p == null) "?" else "V ${p.win}% / E ${p.draw}% / D ${p.loss}%"
 
@@ -827,7 +850,7 @@ object Director {
 
     /** As 3 melhores das regras e, contra rival bem mais fraco, sempre as formações de 3 atacantes. */
     private fun candidateFormations(res: TacticEngine.Result, inp: TacticEngine.Input): List<String> {
-        val out = res.ranking.take(3).map { it.first }.ifEmpty { listOf(Formations.base(res.tactic.formation)) }.toMutableList()
+        val out = (listOf(Formations.base(res.tactic.formation)) + res.ranking.take(3).map { it.first }).distinct().toMutableList()
         val diff = res.diff
         // contra-tática da comunidade para a formação do rival entra sempre no teste
         CounterBook.suggestion(inp.rivalFormation, diff ?: 0)?.let { Formations.base(it.first) }
@@ -850,15 +873,19 @@ object Director {
         val human = inp.rivalHuman == true
         // contra humano testa também o meio-campo mais protegido (ele pode mudar a tática na última hora)
         val mids = if (human) listOf(t0.advMid, "Manter posições", "Ajudar a defesa").distinct() else listOf(t0.advMid)
+        // a simulação não pode desfazer as regras (antes: batalha com estilo 60 virava 48 e o 5-3-2 virava 5-4-1)
+        val fl = TacticEngine.floors(inp, res.diff)
         for (f in candidateFormations(res, inp)) {
+            if (TacticEngine.strikers(f) < fl.minStrikers) continue
             val rows = TacticEngine.lineup(f, inp.players, inp.fitness)?.first ?: continue
             for (st in SIM_STYLES) for (dm in listOf(-12, 0, 12)) for (tk in Osm.allowedTackles(inp.referee).filter { it != "Cuidadoso" }.ifEmpty { listOf("Cuidadoso") })
                 for (off in if (inp.rivalSecret) listOf("Não") else listOf("Não", "Sim")) for (mk in listOf("À zona", "Homem-a-homem")) for (md in mids) {
                     // contra-ataque pede ritmo alto (transição rápida) e bloco baixo (pressão baixa)
                     val counter = st == "Contra-ataque"
                     val t = t0.copy(
-                        formation = Formations.variant(f, st), playStyle = st, mentality = (t0.mentality + dm).coerceIn(0, 100),
-                        tempo = if (counter) maxOf(t0.tempo, 62) else t0.tempo,
+                        formation = Formations.variant(f, st), playStyle = st, mentality = (t0.mentality + dm).coerceIn(fl.mentality, 100),
+                        tempo = maxOf(fl.minTempo, if (counter) maxOf(t0.tempo, 62) else t0.tempo),
+                        advAttack = if (fl.attackOnly) "Atacar apenas" else t0.advAttack,
                         pressure = if (counter) minOf(t0.pressure, 42) else t0.pressure,
                         tackle = tk, offside = off, marking = mk, advMid = md, notes = emptyList()
                     )
@@ -1045,19 +1072,34 @@ object Director {
                         it.copy(advAttack = "Atacar apenas", mentality = maxOf(it.mentality, 32), notes = it.notes + "Azarão: avançados na frente e estilo mínimo 32 para o contra-ataque ter quem finalize.")
                     } else it
                 }
-                aiWhy = t.notes.joinToString(" ")
+                val fl = TacticEngine.floors(inp, res.diff)
+                val t2 = t.let {
+                    var x = it
+                    val fix = ArrayList<String>()
+                    if (x.mentality < fl.mentality) { x = x.copy(mentality = fl.mentality); fix.add("estilo mínimo ${fl.mentality}") }
+                    if (x.tempo < fl.minTempo) { x = x.copy(tempo = fl.minTempo); fix.add("ritmo ${fl.minTempo}") }
+                    if (fl.attackOnly && Osm.attack(x.advAttack) != "Atacar apenas") { x = x.copy(advAttack = "Atacar apenas"); fix.add("avançados só atacam") }
+                    if (fix.isNotEmpty()) x.copy(notes = x.notes + ((if (inp.mustWin) "Batalha" else "Azarão") + ": " + fix.joinToString(", ") + ".")) else x
+                }
+                aiWhy = t2.notes.joinToString(" ")
                 // a IA decide: só fica fora uma escolha que a simulação mostra claramente pior ou que foge muito do jogo
-                val okLimits = fromChat || (Formations.base(t.formation) in allowed && Math.abs(t.pressure - res.tactic.pressure) <= 30 &&
-                    Math.abs(t.mentality - res.tactic.mentality) <= 30 && Math.abs(t.tempo - res.tactic.tempo) <= 30)
-                val rows = TacticEngine.lineup(t.formation, inp.players, inp.fitness)?.first
+                val okLimits = TacticEngine.strikers(t2.formation) >= fl.minStrikers && (fromChat || (Formations.base(t2.formation) in allowed &&
+                    Math.abs(t2.pressure - res.tactic.pressure) <= 30 && Math.abs(t2.mentality - res.tactic.mentality) <= 30 && Math.abs(t2.tempo - res.tactic.tempo) <= 30))
+                val rows = TacticEngine.lineup(t2.formation, inp.players, inp.fitness)?.first
                 if (okLimits && rows != null) {
+                    val t = t2
                     val pts = score(t, rows, scen, hist, lost) ?: prob(t, rows)?.points ?: 0.0
                     val bestPts = best?.points ?: pts
                     val repeated = same(t, res.tactic)
+                    val provenT = proven(hist, t)
                     if (fromChat && pts >= bestPts - 0.30) {
                         chosen = Cand(t.copy(notes = t.notes), rows, pts)
                         notes.add("💬 Tática da resposta do chat de IA (${"%.2f".format(pts)} pontos esperados na simulação; melhor simulada ${"%.2f".format(bestPts)}).")
                         notes.addAll(t.notes)
+                    } else if (provenT != null && pts >= bestPts - PROVEN_MARGIN) {
+                        chosen = Cand(t.copy(notes = t.notes), rows, pts)
+                        notes.add("✅ Mantive a tática que vem ganhando ($provenT).")
+                        notes.addAll(t.notes.map { "🤖 $it" })
                     } else if (repeated && best != null && bestPts > draftPts + 0.12) {
                         aiProblem = "a IA repetiu o rascunho, mas a simulação achou bem melhor (${"%.2f".format(bestPts)} x ${"%.2f".format(draftPts)})"
                         notes.add("A IA manteve o rascunho, mas a simulação achou opção bem melhor: apliquei a melhor.")
@@ -1069,7 +1111,8 @@ object Director {
                         notes.add("A sugestão da IA (${t.formation} • ${t.playStyle}) rende bem menos na simulação: apliquei a melhor simulada.")
                     }
                 } else {
-                    aiProblem = "a IA saiu dos limites (formação que o elenco não monta ou barras muito longe do jogo)"
+                    aiProblem = if (TacticEngine.strikers(t2.formation) < fl.minStrikers) "a IA usou 1 atacante, mas sem gols nos últimos jogos são 2 atacantes"
+                        else "a IA saiu dos limites (formação que o elenco não monta ou barras muito longe do jogo)"
                     notes.add("A IA saiu dos limites: apliquei a melhor simulada.")
                 }
             } else {
