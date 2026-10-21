@@ -901,7 +901,8 @@ object Parsers {
             }.minByOrNull { it.yc }
             // a tela escreve "19 BUKAYO SAKA" em maiúsculas; nome em letra normal é de outra janela por cima
             val name = nameLn?.text?.trim()?.takeIf { TrainBoard.plausible(it) }?.replace(Regex("^\\d+\\s*"), "")?.takeIf { Txt.letters(it) >= 3 }
-            val timer = texts.any { RX_TIMER.containsMatchIn(it) || it == "concluir" }
+            // cronômetro em qualquer formato ("3h 09m 14s", "05m 48s") ou os botões de quem está treinando
+            val timer = col.any { timerSecs(it.text) != null } || texts.any { RX_TIMER.containsMatchIn(it) || it == "concluir" || it.startsWith("nao autorizado") }
             val done = texts.any { it.contains("treino conclu") || it.contains("treino concu") }
             // "Seleciona" = livre; universal bloqueado ("Desbloquear treinador") também não tem ninguém treinando
             val empty = texts.any { it.startsWith("seleciona") || it.contains("desbloquear") }

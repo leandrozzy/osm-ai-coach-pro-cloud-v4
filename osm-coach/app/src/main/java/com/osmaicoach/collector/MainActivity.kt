@@ -1207,7 +1207,7 @@ data class SlotSummary(
     val rivalChanged: List<RivalWatch.Change> = emptyList()
 )
 
-data class TodayData(val active: Boolean = false, val slots: List<SlotSummary> = emptyList(), val timers: List<Timers.Entry> = emptyList())
+data class TodayData(val active: Boolean = false, val slots: List<SlotSummary> = emptyList(), val work: List<SlotWork> = emptyList())
 
 object TodayCache {
     @Volatile var last = TodayData()
@@ -1400,8 +1400,15 @@ private suspend fun loadToday(ctx: Context): TodayData {
         list.add(TodayCache.last.slots.firstOrNull { it.slot == slot } ?: SlotSummary(slot, "Slot $slot ainda não lido", false, null, null, null, null, null, null, 0, 0L))
         Diag.lastError = "Hoje S$slot: " + (e.message ?: e.javaClass.simpleName)
     }
-    val timers = (1..4).flatMap { s -> runCatching { repo.timers(s) }.getOrDefault(emptyList()) }.sortedBy { it.at }
-    return TodayData(Control.activeSession(ctx) != null, list, timers).also { TodayCache.last = it }
+    val work = (1..4).mapNotNull { s ->
+        runCatching {
+            val f = repo.fieldMap(s)
+            val team = known(f, K.TEAM) ?: known(f, K.HUB_TITLE) ?: "Slot $s"
+            val screen = repo.dao.plan(s, "trainscreen")?.json?.let { JSONObject(it) }
+            Work.of(s, team, screen, repo.timers(s), f).takeIf { it.hasData }
+        }.getOrNull()
+    }
+    return TodayData(Control.activeSession(ctx) != null, list, work).also { TodayCache.last = it }
 }
 
 // ------------------------------------------------------------------ app
@@ -1849,23 +1856,9 @@ private fun TodayTab(onGoSettings: () -> Unit, onOpenSlot: (Int, Int) -> Unit) {
             }
         }
 
-        if (data.timers.isNotEmpty()) {
-            Title("⏱ Treinos e obras")
-            Panel {
-                val now = System.currentTimeMillis()
-                for (t in data.timers) {
-                    val done = t.at <= now
-                    Row(Modifier.fillMaxWidth().clickable { onOpenSlot(t.slot, 5) }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(if (t.training) "🏋" else "🏟", fontSize = 18.sp)
-                        Spacer(Modifier.width(8.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text("S${t.slot} • " + t.label.replaceFirstChar { it.uppercase() }, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(if (done) "terminou: abra o OSM e reclame" else "termina ${fmtTime(t.at)} • ${Timers.left(t.at, now)}", fontSize = 11.sp, color = if (done) C.OK else C.MUTED)
-                        }
-                    }
-                }
-                Text("O app avisa no fim de cada um, mesmo fechado. Passe pelas telas de Treinamento e Estádio de cada slot para atualizar.", fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
-            }
+        if (data.work.isNotEmpty()) {
+            Title("⏱ Treinos e estádio")
+            for (w in data.work) WorkFold(w) { onOpenSlot(w.slot, 5) }
         }
 
         Title("Seus slots")
@@ -4856,6 +4849,127 @@ private fun LearnedCard(m: Learned.Model?) {
                     )
                 }
             }
+        }
+    }
+}
+
+/** Treinos e estádio de um slot, recolhido numa linha (abre com toque). Os relógios contam segundo a segundo. */
+@Composable
+private fun WorkFold(w: SlotWork, startOpenForTest: Boolean = false, onOpen: () -> Unit) {
+    val tick = rememberTick(1000L)
+    val now = System.currentTimeMillis() + tick * 0L
+    val need = w.needsAction(now)
+    val next = w.nextEnd(now)
+    val badge = when {
+        need > 0 -> "⚠ $need livre" + (if (need > 1) "s" else "")
+        next != null -> "⏱ " + Timers.clock(next, now)
+        else -> null
+    }
+    Fold("S${w.slot}", w.team, badge, startOpen = startOpenForTest) {
+        Text("TREINADORES", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = C.MUTED, letterSpacing = 1.sp)
+        if (w.seats.isEmpty()) {
+            Text("Passe pela tela de Treinamento deste slot para ver os treinadores.", fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(vertical = 4.dp))
+        }
+        for (s in w.seats) {
+            val ended = s.state == "done" || (s.endAt != null && s.endAt <= now)
+            WorkRow(
+                icon = when (s.role) { "UNI" -> "⭐"; "ATA" -> "⚽"; "MEI" -> "🎯"; "DEF" -> "🛡"; else -> "🧤" },
+                title = s.name ?: "Ninguém treinando",
+                sub = Timers.roleLabel(s.role).replaceFirstChar { it.uppercase() },
+                status = when {
+                    s.state == "empty" -> Pair("Livre", C.WARN)
+                    ended -> Pair("Reclamar", C.OK)
+                    s.endAt != null -> Pair("⏱ " + Timers.clock(s.endAt, now), C.PRIMARY)
+                    else -> Pair("Treinando", C.PRIMARY)
+                }
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        Text("ESTÁDIO", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = C.MUTED, letterSpacing = 1.sp)
+        Spacer(Modifier.height(6.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for (c in w.cards) StadiumCard(c, now, Modifier.weight(1f))
+        }
+        Text(
+            "Abrir o slot ›", color = C.PRIMARY, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(top = 10.dp).clickable { onOpen() }
+        )
+    }
+}
+
+/** Card do estádio como no jogo: desenho, estrelas, barra do nível atual → próximo e o relógio ou o custo. */
+@Composable
+private fun StadiumCard(c: WorkCard, now: Long, modifier: Modifier = Modifier) {
+    val building = c.endAt != null && c.endAt > now
+    val ended = c.endAt != null && c.endAt <= now
+    val accent = when {
+        building -> C.PRIMARY
+        ended -> C.OK
+        c.next == "máximo" -> C.GOLD
+        else -> Color(0xFF5B7BB5)
+    }
+    Column(
+        modifier.clip(RoundedCornerShape(14.dp)).background(Color(0xFF0E2550))
+            .border(1.dp, Brush.verticalGradient(listOf(accent.copy(alpha = 0.9f), accent.copy(alpha = 0.25f))), RoundedCornerShape(14.dp))
+    ) {
+        Box(Modifier.fillMaxWidth().height(78.dp)) {
+            StadiumArt(c.label, building, Modifier.fillMaxSize())
+            Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0x99000000), Color(0x00000000), Color(0x66000000)))))
+            Column(Modifier.fillMaxWidth().padding(top = 5.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(c.label, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, color = Color.White, maxLines = 1)
+                val lv = c.level ?: 0
+                Row {
+                    for (i in 1..maxOf(3, lv)) Text("★", fontSize = 12.sp, color = if (i <= lv) Color(0xFFFFD24A) else Color(0x88FFFFFF))
+                }
+            }
+        }
+        // barra: nível atual → próximo
+        Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(c.level?.toString() ?: "?", fontSize = 10.sp, color = C.MUTED, fontWeight = FontWeight.Bold)
+            Box(Modifier.weight(1f).padding(horizontal = 4.dp).height(5.dp).clip(RoundedCornerShape(50)).background(Color(0xFF1B3D7A))) {
+                if (building || ended) Box(
+                    Modifier.fillMaxHeight().fillMaxWidth(if (ended) 1f else 0.5f)
+                        .background(Brush.horizontalGradient(listOf(Color(0xFF3DB2FF), Color(0xFF7FD3FF))))
+                )
+            }
+            Text(c.level?.let { (it + 1).toString() } ?: "?", fontSize = 10.sp, color = C.MUTED, fontWeight = FontWeight.Bold)
+        }
+        Box(
+            Modifier.fillMaxWidth().padding(start = 6.dp, end = 6.dp, bottom = 6.dp).clip(RoundedCornerShape(9.dp))
+                .background(accent.copy(alpha = 0.18f)).padding(vertical = 5.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                when {
+                    building -> Timers.clock(c.endAt!!, now)
+                    ended -> "Concluir"
+                    c.next == "máximo" -> "Máximo"
+                    c.next != null -> c.next
+                    else -> "Não lido"
+                },
+                fontSize = 11.sp, fontWeight = FontWeight.Bold, color = if (accent == Color(0xFF5B7BB5)) Color(0xFFCFE0FF) else accent, maxLines = 1
+            )
+        }
+    }
+}
+
+@Composable
+private fun WorkRow(icon: String, title: String, sub: String, status: Pair<String, Color>?) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier.size(30.dp).clip(RoundedCornerShape(9.dp)).background(C.SURFACE2),
+            contentAlignment = Alignment.Center
+        ) { Text(icon, fontSize = 14.sp) }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(sub, fontSize = 11.sp, color = C.MUTED, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        if (status != null) {
+            Box(
+                Modifier.clip(RoundedCornerShape(50)).background(status.second.copy(alpha = 0.16f))
+                    .border(1.dp, status.second.copy(alpha = 0.45f), RoundedCornerShape(50)).padding(horizontal = 9.dp, vertical = 3.dp)
+            ) { Text(status.first, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = status.second, maxLines = 1) }
         }
     }
 }
