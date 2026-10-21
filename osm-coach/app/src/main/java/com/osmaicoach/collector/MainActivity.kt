@@ -1249,7 +1249,9 @@ data class SlotData(
     /** O rival mudou depois da tática gerada. */
     val rivalChanged: List<RivalWatch.Change> = emptyList(),
     /** Resumo do fim da competição (posição, pontos, campeão, valor). */
-    val season: JSONObject? = null
+    val season: JSONObject? = null,
+    /** O que os gols reais dos 4 slots ensinaram ao modelo. */
+    val learned: Learned.Model? = null
 )
 
 data class SessionRow(val s: SessionEntity, val counts: String, val unassigned: Int)
@@ -1280,6 +1282,7 @@ private suspend fun loadSlot(ctx: Context, slot: Int): SlotData {
     val tplan = dao.plan(slot, "tactic")?.json?.let { try { JSONObject(it) } catch (e: Exception) { null } }
     return SlotData(
         ready = true,
+        learned = runCatching { Learned.fit(Director.allLogs(repo)) }.getOrNull(),
         fields = f, players = players, matches = dao.matchesOf(slot),
         tactic = dao.plan(slot, "tactic"), market = dao.plan(slot, "market"),
         learning = dao.learningOf(slot),
@@ -4176,6 +4179,7 @@ private fun GameCard(g: Coach.Game, rv: Coach.Review?) {
 @Composable
 private fun SlotLearning(slot: Int, d: SlotData) {
     d.progress?.let { ScoreboardCard(it.score) }
+    LearnedCard(d.learned)
     data class Row2(
         val kind: String, val round: Int, val formation: String, val style: String, val rival: String,
         val result: String?, val score: String, val human: Boolean?, val home: Boolean?
@@ -4791,4 +4795,45 @@ private fun SettingsTab() {
     }
 }
 
-
+/** O que o app aprendeu com os gols reais: cada escolha de tática e quanto ela mexeu nos gols. */
+@Composable
+private fun LearnedCard(m: Learned.Model?) {
+    Title("🧠 O que os seus jogos ensinaram")
+    Panel {
+        if (m == null) {
+            Text(
+                "Preciso de pelo menos ${Learned.MIN_GAMES} jogos com placar (somando os 4 slots) para aprender o que funciona para você. " +
+                    "Abra a análise de cada jogo depois que ele acabar.",
+                color = C.MUTED, fontSize = 13.sp
+            )
+            return@Panel
+        }
+        Text(
+            "Aprendido com ${m.n} jogos reais: a simulação usa isso para escolher a tática." +
+                if (m.trusted) "" else " Com menos de ${Learned.TRUSTED_GAMES} jogos, as regras de segurança ainda valem.",
+            color = C.MUTED, fontSize = 12.sp
+        )
+        Spacer(Modifier.height(6.dp))
+        val rows = Learned.LABELS.indices.map { i -> Triple(Learned.LABELS[i], m.my[i], m.opp[i]) }
+            .filter { kotlin.math.abs(it.second) >= 0.08 || kotlin.math.abs(it.third) >= 0.08 }
+            .sortedByDescending { kotlin.math.abs(it.second) + kotlin.math.abs(it.third) }
+        if (rows.isEmpty()) Text("Nenhuma escolha mudou os gols de forma clara até agora.", fontSize = 13.sp)
+        for ((label, a, b) in rows) {
+            val pa = ((kotlin.math.exp(a) - 1) * 100).toInt()
+            val pb = ((kotlin.math.exp(b) - 1) * 100).toInt()
+            // bom = mais gols meus e menos do rival
+            val good = a - b
+            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(if (good >= 0.08) "▲" else if (good <= -0.08) "▼" else "•", color = if (good >= 0.08) C.OK else if (good <= -0.08) C.BAD else C.MUTED, fontSize = 16.sp)
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(label, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    Text(
+                        "seus gols ${if (pa >= 0) "+" else ""}$pa% • gols do rival ${if (pb >= 0) "+" else ""}$pb%",
+                        color = C.MUTED, fontSize = 12.sp
+                    )
+                }
+            }
+        }
+    }
+}
