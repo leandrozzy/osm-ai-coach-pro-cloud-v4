@@ -224,9 +224,9 @@ class FramePipeline private constructor(private val ctx: Context) {
         ScreenType.CALENDAR -> Parsers.calendar(ocr, img)
         ScreenType.MARKET -> Parsers.market(ocr)
         ScreenType.REPORT -> Parsers.report(ocr)
-        ScreenType.STADIUM -> Parsers.stadium(ocr, img)
+        ScreenType.STADIUM -> Parsers.stadium(ocr, img, now)
         ScreenType.RESULT -> Parsers.matchResult(ocr)
-        ScreenType.TRAINING -> Extraction(ScreenType.TRAINING, trainees = Parsers.training(ocr))
+        ScreenType.TRAINING -> Extraction(ScreenType.TRAINING, trainees = Parsers.training(ocr, now))
         else -> Extraction(type)
     }
 

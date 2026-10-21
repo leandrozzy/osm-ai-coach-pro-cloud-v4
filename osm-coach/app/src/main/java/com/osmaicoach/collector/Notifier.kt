@@ -61,6 +61,7 @@ object MatchClock {
 object Notifier {
     const val CH_GAME = "jogos"
     const val CH_DIRECTOR = "diretor"
+    const val CH_TIMER = "cronometros"
     private const val MIN = 60000L
 
     data class Alarm(val kind: String, val at: Long)
@@ -84,8 +85,11 @@ object Notifier {
         game.description = "20 minutos antes de cada jogo, tática pendente e resultado"
         val dir = NotificationChannel(CH_DIRECTOR, "Alertas do diretor", NotificationManager.IMPORTANCE_DEFAULT)
         dir.description = "Treino livre, preço do mercado, estádio e meta da temporada"
+        val tm = NotificationChannel(CH_TIMER, "Treinos e estádio", NotificationManager.IMPORTANCE_HIGH)
+        tm.description = "Quando um treino ou uma obra do estádio termina"
         nm.createNotificationChannel(game)
         nm.createNotificationChannel(dir)
+        nm.createNotificationChannel(tm)
     }
 
     private fun code(slot: Int, kind: String): Int =
@@ -103,6 +107,86 @@ object Notifier {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+    /**
+     * O alarme ainda existe no Android? Se o sistema limpou o app (ex.: ASUS ao deslizar o app para fora dos
+     * recentes, "Forçar parada"), os alarmes somem mas as preferências diziam que estavam marcados — e nunca
+     * eram refeitos. Agora confere de verdade antes de pular.
+     */
+    private fun exists(ctx: Context, code: Int, kind: String, slot: Int): Boolean =
+        PendingIntent.getBroadcast(
+            ctx, code, Intent(ctx, NotifyReceiver::class.java).putExtra("kind", kind).putExtra("slot", slot),
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+        ) != null
+
+    private fun timerCode(slot: Int, key: String): Int = 5000 + slot * 20 + Timers.KEYS.indexOf(key).coerceAtLeast(0)
+
+    private fun timerPending(ctx: Context, slot: Int, key: String): PendingIntent =
+        PendingIntent.getBroadcast(
+            ctx, timerCode(slot, key),
+            Intent(ctx, NotifyReceiver::class.java).putExtra("kind", "timer").putExtra("slot", slot).putExtra("key", key),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+    /** Um alarme para o fim de cada treino/obra de cada slot; os que acabaram ou sumiram são cancelados. */
+    suspend fun scheduleTimers(ctx: Context) {
+        ensureChannels(ctx)
+        val repo = Repo(ctx)
+        val am = ctx.getSystemService(AlarmManager::class.java)
+        val now = System.currentTimeMillis()
+        val on = enabled(ctx, "timers")
+        val p = prefs(ctx)
+        for (slot in 1..4) {
+            val list = repo.timers(slot).associateBy { it.key }
+            for (key in Timers.KEYS) {
+                val e = list[key]
+                val pk = "timer_${slot}_$key"
+                if (e == null || !on) {
+                    if (p.contains(pk)) { am.cancel(timerPending(ctx, slot, key)); p.edit().remove(pk).apply() }
+                    continue
+                }
+                if (e.at <= now) {
+                    // terminou enquanto o celular estava desligado/o alarme sumiu: avisa agora
+                    if (p.getLong(pk, -1L) != -2L) { fireTimer(ctx, slot, key); p.edit().putLong(pk, -2L).apply() }
+                    continue
+                }
+                val stored = p.getLong(pk, -1L)
+                val alive = PendingIntent.getBroadcast(
+                    ctx, timerCode(slot, key),
+                    Intent(ctx, NotifyReceiver::class.java).putExtra("kind", "timer").putExtra("slot", slot).putExtra("key", key),
+                    PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+                ) != null
+                if (!alive || kotlin.math.abs(stored - e.at) > MIN) {
+                    setAlarmPi(ctx, am, timerPending(ctx, slot, key), e.at, slot)
+                    p.edit().putLong(pk, e.at).apply()
+                }
+            }
+        }
+    }
+
+    /** Aviso de fim do treino/obra; o cronômetro sai da lista (a próxima leitura da tela traz o novo). */
+    suspend fun fireTimer(ctx: Context, slot: Int, key: String) {
+        val repo = Repo(ctx)
+        val e = repo.timers(slot).firstOrNull { it.key == key } ?: return
+        if (e.at > System.currentTimeMillis() + MIN) return
+        repo.removeTimer(slot, key)
+        if (!enabled(ctx, "timers") || !canPost(ctx)) return
+        ensureChannels(ctx)
+        val f = repo.fieldMap(slot)
+        val team = f[K.TEAM]?.value ?: f[K.HUB_TITLE]?.value ?: "Slot $slot"
+        val label = e.label.substringAfter(": ")
+        if (e.training) {
+            post(
+                ctx, CH_TIMER, timerCode(slot, key), "🏋 S$slot • Treino terminou: $label",
+                "$team: abra o OSM, reclame o treino e coloque outro jogador para não perder tempo de treino.", slot, 5, true
+            )
+        } else {
+            post(
+                ctx, CH_TIMER, timerCode(slot, key), "🏟 S$slot • Obra do estádio terminou: $label",
+                "$team: abra o OSM, conclua o melhoramento e veja se já dá para começar o próximo.", slot, 5, true
+            )
+        }
+    }
+
     /** O Android deixa este app agendar alarmes no minuto exato? (Android 12: permissão "Alarmes e lembretes".) */
     fun canExact(ctx: Context): Boolean =
         Build.VERSION.SDK_INT < 31 || ctx.getSystemService(AlarmManager::class.java).canScheduleExactAlarms()
@@ -111,12 +195,14 @@ object Notifier {
      * Alarme tipo despertador: dispara no minuto certo mesmo com o app fechado e o celular em economia de
      * bateria (o Android não adia esse tipo). Sem permissão de alarme exato, cai para o modo comum.
      */
-    private fun setAlarm(ctx: Context, am: AlarmManager, slot: Int, kind: String, at: Long) {
-        val pi = pending(ctx, slot, kind)
+    private fun setAlarm(ctx: Context, am: AlarmManager, slot: Int, kind: String, at: Long) =
+        setAlarmPi(ctx, am, pending(ctx, slot, kind), at, slot, 7000 + code(slot, kind))
+
+    private fun setAlarmPi(ctx: Context, am: AlarmManager, pi: PendingIntent, at: Long, slot: Int, showCode: Int = 7900 + slot) {
         try {
             if (canExact(ctx)) {
                 val show = PendingIntent.getActivity(
-                    ctx, 7000 + code(slot, kind), Intent(ctx, MainActivity::class.java).putExtra("slot", slot).putExtra("tab", 4),
+                    ctx, showCode, Intent(ctx, MainActivity::class.java).putExtra("slot", slot).putExtra("tab", 4),
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                 )
                 am.setAlarmClock(AlarmManager.AlarmClockInfo(at, show), pi)
@@ -156,7 +242,11 @@ object Notifier {
         val am = ctx.getSystemService(AlarmManager::class.java)
         val now = System.currentTimeMillis()
         val p = prefs(ctx)
-        if (force || !p.getBoolean("tick_armed", false)) {
+        val tickAlive = PendingIntent.getBroadcast(
+            ctx, 9001, Intent(ctx, NotifyReceiver::class.java).putExtra("kind", "tick").putExtra("slot", 0),
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+        ) != null
+        if (force || !tickAlive || !p.getBoolean("tick_armed", false)) {
             armTick(ctx, am)
             p.edit().putBoolean("tick_armed", true).apply()
         }
@@ -184,7 +274,7 @@ object Notifier {
                     continue
                 }
                 val stored = p.getLong(key, -1L)
-                if (force || stored < 0L || kotlin.math.abs(stored - at) > 2 * MIN) {
+                if (force || stored < 0L || kotlin.math.abs(stored - at) > 2 * MIN || !exists(ctx, code(slot, kind), kind, slot)) {
                     setAlarm(ctx, am, slot, kind, at)
                     p.edit().putLong(key, at).apply()
                 }
@@ -193,6 +283,7 @@ object Notifier {
                 if (p.getLong(firedKey(slot), -1L) != nextAt / MIN) fire(ctx, "pre", slot)
             }
         }
+        runCatching { scheduleTimers(ctx) }
     }
 
     @Suppress("UNUSED_PARAMETER")
@@ -316,6 +407,9 @@ class NotifyReceiver : BroadcastReceiver() {
                 if (kind == "tick") {
                     Notifier.reschedule(app)
                     Notifier.directorSummary(app)
+                } else if (kind == "timer") {
+                    Notifier.fireTimer(app, slot, intent.getStringExtra("key") ?: "")
+                    Notifier.scheduleTimers(app)
                 } else {
                     Notifier.fire(app, kind, slot)
                     Notifier.reschedule(app)

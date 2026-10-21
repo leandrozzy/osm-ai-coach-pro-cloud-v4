@@ -114,7 +114,9 @@ data class Extraction(
     val needsAi: Boolean = false,
     val note: String = "",
     val matchReport: MatchReportRead? = null,
-    val trainees: List<TraineeRead> = emptyList()
+    val trainees: List<TraineeRead> = emptyList(),
+    /** Estádio: obra em andamento por card ("Relvado" -> fim) ou null = card lido sem obra (limpa o aviso). */
+    val timers: Map<String, Long?> = emptyMap()
 )
 
 /**
@@ -122,7 +124,7 @@ data class Extraction(
  * jogo mostra, ex. "BUKAYO SAKA") e o estado: "active" (cronômetro/Concluir), "done" (Treino concluído, falta
  * reclamar) ou "empty" (Seleciona).
  */
-data class TraineeRead(val role: String, val name: String?, val state: String)
+data class TraineeRead(val role: String, val name: String?, val state: String, val endAt: Long? = null)
 
 /** Chaves dos campos escalares guardados por slot. */
 object K {

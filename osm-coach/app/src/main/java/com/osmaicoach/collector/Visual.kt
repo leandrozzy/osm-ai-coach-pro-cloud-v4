@@ -54,7 +54,7 @@ object TrainBoard {
         return hits.firstOrNull { cat(it) } ?: hits.singleOrNull()
     }
 
-    private fun pretty(n: String): String =
+    fun pretty(n: String): String =
         n.trim().replace(Regex("^\\d+\\s*"), "").lowercase().split(" ").joinToString(" ") { w -> w.replaceFirstChar { it.uppercase() } }
 
     /** manual = correção à mão do usuário (nameKey -> treinando?), feita depois da última leitura da tela. */

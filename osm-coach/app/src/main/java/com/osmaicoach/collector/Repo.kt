@@ -162,7 +162,10 @@ class Repo(private val ctx: Context) {
                 recordRivalProfile(slot, ex.fields, now)
                 n
             }
-            ScreenType.STADIUM -> putFields(slot, ex.fields, source, now)
+            ScreenType.STADIUM -> {
+                if (ex.timers.isNotEmpty()) runCatching { updateTimers(slot, ex.timers.mapKeys { "stad_" + it.key }.mapValues { (k, v) -> v?.let { Pair(it, "obra: ${k.removePrefix("stad_")}") } }, now) }
+                putFields(slot, ex.fields, source, now)
+            }
             ScreenType.RESULT -> applyResult(slot, ex, now)
             ScreenType.TRAINING -> applyTraining(slot, ex.trainees, now)
             else -> 0
@@ -640,6 +643,38 @@ class Repo(private val ctx: Context) {
         return changed
     }
 
+    // ------------------------------------------------------------------ cronômetros (treino e estádio)
+
+    /** Atualiza os cronômetros do slot (null = acabou/sem obra) e reagenda os avisos. */
+    suspend fun updateTimers(slot: Int, up: Map<String, Pair<Long, String>?>, now: Long) {
+        val j = planJson(slot, "timers")
+        var changed = false
+        for ((k, v) in up) {
+            if (v == null) {
+                if (j.has(k)) { j.remove(k); changed = true }
+            } else {
+                val old = j.optJSONObject(k)
+                // a mesma obra/treino relida: só muda se o fim andou mais de 1 minuto (acelerou, trocou de jogador)
+                if (old == null || kotlin.math.abs(old.optLong("at") - v.first) > 60000L || old.optString("label") != v.second) {
+                    j.put(k, JSONObject().put("at", v.first).put("label", v.second))
+                    changed = true
+                }
+            }
+        }
+        if (!changed) return
+        dao.putPlan(PlanEntity(slot, "timers", j.toString(), now))
+        Notifier.scheduleTimers(ctx)
+    }
+
+    suspend fun timers(slot: Int): List<Timers.Entry> = Timers.parse(slot, dao.plan(slot, "timers")?.json)
+
+    suspend fun removeTimer(slot: Int, key: String) {
+        val j = planJson(slot, "timers")
+        if (!j.has(key)) return
+        j.remove(key)
+        dao.putPlan(PlanEntity(slot, "timers", j.toString(), System.currentTimeMillis()))
+    }
+
     // ------------------------------------------------------------------ treinos (tela de Treinamento)
 
     /**
@@ -653,6 +688,16 @@ class Repo(private val ctx: Context) {
             j.put(t.role, JSONObject().put("name", t.name ?: JSONObject.NULL).put("state", t.state).put("at", now))
         }
         dao.putPlan(PlanEntity(slot, "trainscreen", j.toString(), now))
+        runCatching {
+            val up = LinkedHashMap<String, Pair<Long, String>?>()
+            for (t in list) {
+                when {
+                    t.state == "active" && t.endAt != null -> up["train_" + t.role] = Pair(t.endAt, "treino: " + (t.name?.let { TrainBoard.pretty(it) } ?: "jogador") + " (" + Timers.roleLabel(t.role) + ")")
+                    t.state == "done" || t.state == "empty" -> up["train_" + t.role] = null
+                }
+            }
+            if (up.isNotEmpty()) updateTimers(slot, up, now)
+        }
         // o que o usuário marcou à mão antes desta leitura deixa de valer (a tela do jogo é a fonte)
         dao.plan(slot, "trainov")?.let { if (it.at < now) dao.deletePlan(slot, "trainov") }
         return syncTraining(slot, now, log = true)
