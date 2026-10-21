@@ -1207,7 +1207,7 @@ data class SlotSummary(
     val rivalChanged: List<RivalWatch.Change> = emptyList()
 )
 
-data class TodayData(val active: Boolean = false, val slots: List<SlotSummary> = emptyList(), val timers: List<Timers.Entry> = emptyList())
+data class TodayData(val active: Boolean = false, val slots: List<SlotSummary> = emptyList(), val work: List<SlotWork> = emptyList())
 
 object TodayCache {
     @Volatile var last = TodayData()
@@ -1400,8 +1400,15 @@ private suspend fun loadToday(ctx: Context): TodayData {
         list.add(TodayCache.last.slots.firstOrNull { it.slot == slot } ?: SlotSummary(slot, "Slot $slot ainda não lido", false, null, null, null, null, null, null, 0, 0L))
         Diag.lastError = "Hoje S$slot: " + (e.message ?: e.javaClass.simpleName)
     }
-    val timers = (1..4).flatMap { s -> runCatching { repo.timers(s) }.getOrDefault(emptyList()) }.sortedBy { it.at }
-    return TodayData(Control.activeSession(ctx) != null, list, timers).also { TodayCache.last = it }
+    val work = (1..4).mapNotNull { s ->
+        runCatching {
+            val f = repo.fieldMap(s)
+            val team = known(f, K.TEAM) ?: known(f, K.HUB_TITLE) ?: "Slot $s"
+            val screen = repo.dao.plan(s, "trainscreen")?.json?.let { JSONObject(it) }
+            Work.of(s, team, screen, repo.timers(s), f).takeIf { it.hasData }
+        }.getOrNull()
+    }
+    return TodayData(Control.activeSession(ctx) != null, list, work).also { TodayCache.last = it }
 }
 
 // ------------------------------------------------------------------ app
@@ -1849,23 +1856,9 @@ private fun TodayTab(onGoSettings: () -> Unit, onOpenSlot: (Int, Int) -> Unit) {
             }
         }
 
-        if (data.timers.isNotEmpty()) {
-            Title("⏱ Treinos e obras")
-            Panel {
-                val now = System.currentTimeMillis()
-                for (t in data.timers) {
-                    val done = t.at <= now
-                    Row(Modifier.fillMaxWidth().clickable { onOpenSlot(t.slot, 5) }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(if (t.training) "🏋" else "🏟", fontSize = 18.sp)
-                        Spacer(Modifier.width(8.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text("S${t.slot} • " + t.label.replaceFirstChar { it.uppercase() }, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(if (done) "terminou: abra o OSM e reclame" else "termina ${fmtTime(t.at)} • ${Timers.left(t.at, now)}", fontSize = 11.sp, color = if (done) C.OK else C.MUTED)
-                        }
-                    }
-                }
-                Text("O app avisa no fim de cada um, mesmo fechado. Passe pelas telas de Treinamento e Estádio de cada slot para atualizar.", fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
-            }
+        if (data.work.isNotEmpty()) {
+            Title("⏱ Treinos e estádio")
+            for (w in data.work) WorkFold(w) { onOpenSlot(w.slot, 5) }
         }
 
         Title("Seus slots")
@@ -4856,6 +4849,79 @@ private fun LearnedCard(m: Learned.Model?) {
                     )
                 }
             }
+        }
+    }
+}
+
+/** Treinos e estádio de um slot, recolhido numa linha (abre com toque). */
+@Composable
+private fun WorkFold(w: SlotWork, startOpenForTest: Boolean = false, onOpen: () -> Unit) {
+    val tick = rememberTick(30000L)
+    val now = System.currentTimeMillis() + tick * 0L
+    val need = w.needsAction(now)
+    val next = w.nextEnd(now)
+    val badge = when {
+        need > 0 -> "⚠ $need livre" + (if (need > 1) "s" else "")
+        next != null -> Timers.left(next, now).removePrefix("em ")
+        else -> null
+    }
+    Fold("S${w.slot}", w.team, badge, startOpen = startOpenForTest) {
+        if (w.seats.isNotEmpty()) {
+            Text("TREINADORES", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = C.MUTED, letterSpacing = 1.sp)
+            for (s in w.seats) WorkRow(
+                icon = when (s.role) { "UNI" -> "⭐"; "ATA" -> "⚽"; "MEI" -> "🎯"; "DEF" -> "🛡"; else -> "🧤" },
+                title = s.name ?: "Ninguém treinando",
+                sub = Timers.roleLabel(s.role).replaceFirstChar { it.uppercase() },
+                status = when {
+                    s.state == "empty" -> Pair("Livre", C.WARN)
+                    s.state == "done" || (s.endAt != null && s.endAt <= now) -> Pair("Terminou: reclame", C.OK)
+                    s.endAt != null -> Pair(Timers.left(s.endAt, now), C.PRIMARY)
+                    else -> Pair("Treinando", C.PRIMARY)
+                },
+                progress = null
+            )
+        } else {
+            Text("Passe pela tela de Treinamento deste slot para ver os treinadores.", fontSize = 12.sp, color = C.MUTED)
+        }
+        Spacer(Modifier.height(8.dp))
+        Text("ESTÁDIO", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = C.MUTED, letterSpacing = 1.sp)
+        for (c in w.cards) WorkRow(
+            icon = Work.icon(c.label),
+            title = c.label + (c.level?.let { " • nível $it" } ?: ""),
+            sub = c.next?.takeIf { c.endAt == null }?.let { if (it == "máximo") "Nível máximo" else "Próximo: $it" } ?: if (c.endAt != null) "Em obra" else "Ainda não lido",
+            status = when {
+                c.endAt != null && c.endAt <= now -> Pair("Terminou: conclua", C.OK)
+                c.endAt != null -> Pair(Timers.left(c.endAt, now), C.PRIMARY)
+                c.next == "máximo" -> Pair("Máximo", C.MUTED)
+                c.next != null -> Pair("Pode melhorar", C.WARN)
+                else -> null
+            },
+            progress = null
+        )
+        Text(
+            "Abrir o slot ›", color = C.PRIMARY, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(top = 8.dp).clickable { onOpen() }
+        )
+    }
+}
+
+@Composable
+private fun WorkRow(icon: String, title: String, sub: String, status: Pair<String, Color>?, progress: Float?) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier.size(30.dp).clip(RoundedCornerShape(9.dp)).background(C.SURFACE2),
+            contentAlignment = Alignment.Center
+        ) { Text(icon, fontSize = 14.sp) }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(sub, fontSize = 11.sp, color = C.MUTED, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        if (status != null) {
+            Box(
+                Modifier.clip(RoundedCornerShape(50)).background(status.second.copy(alpha = 0.16f))
+                    .border(1.dp, status.second.copy(alpha = 0.45f), RoundedCornerShape(50)).padding(horizontal = 9.dp, vertical = 3.dp)
+            ) { Text(status.first, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = status.second, maxLines = 1) }
         }
     }
 }

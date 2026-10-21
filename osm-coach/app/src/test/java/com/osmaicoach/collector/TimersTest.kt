@@ -64,4 +64,35 @@ class TimersTest {
         assertEquals("em 3h 09m", Timers.left(10_000L + (3 * 3600L + 9 * 60 + 30) * 1000, 10_000L))
         assertEquals("terminou", Timers.left(1L, 2L))
     }
+
+    @Test fun shortTimerAndNotAuthorizedStillCountAsTraining() {
+        val tr = "Treinador universal@0.09,0.29 | 24h@0.04,0.36 | Desbloquear treinador@0.09,0.92 | " +
+            "Treinador de avançados@0.28,0.29 | 9 TYRESE CAMPBELL@0.28,0.48 | IDADE: 26@0.28,0.51 | 17%@0.28,0.68 | 05m 48s@0.29,0.79 | Não autorizado@0.28,0.92 | " +
+            "Treinador de médios@0.47,0.29 | Seleciona@0.47,0.92 | 8h@0.48,0.96 | " +
+            "Treinador de defesas@0.66,0.29 | 3 NIKOLA MILENKOVIC@0.66,0.48 | IDADE: 29@0.66,0.51 | 56%@0.66,0.68 | 05m 56s@0.67,0.79 | Não autorizado@0.66,0.92 | " +
+            "Treinador de guarda-redes@0.85,0.29 | 13 ANDRÉ FERREIRA@0.85,0.48 | IDADE: 30@0.85,0.51 | 16%@0.85,0.68 | 05m 58s@0.86,0.79 | Não autorizado@0.85,0.92"
+        val t = Parsers.training(ocr(tr), 0L).associateBy { it.role }
+        assertEquals("active", t["ATA"]?.state)
+        assertEquals(348_000L, t["ATA"]?.endAt)
+        assertEquals("empty", t["MEI"]?.state)
+        assertEquals(358_000L, t["GOL"]?.endAt)
+    }
+
+    @Test fun slotWorkGroupsSeatsAndThreeStadiumCards() {
+        val screen = org.json.JSONObject()
+            .put("ATA", org.json.JSONObject().put("name", "9 TYRESE CAMPBELL").put("state", "active"))
+            .put("MEI", org.json.JSONObject().put("name", org.json.JSONObject.NULL).put("state", "empty"))
+            .put("UNI", org.json.JSONObject().put("name", org.json.JSONObject.NULL).put("state", "empty"))
+        val f = mapOf(
+            K.MY_STAD_PITCH to StoredField("2", 0.85, 0L), K.MY_STAD_CAP to StoredField("1", 0.85, 0L),
+            K.MY_STAD_STATUS to StoredField("Capacidade: 760K + 18h • Treino: 665K + 18h", 0.8, 0L)
+        )
+        val w = Work.of(1, "Fortuna", screen, listOf(Timers.Entry(1, "stad_Relvado", 9_000L, "obra: Relvado"), Timers.Entry(1, "train_ATA", 5_000L, "x")), f)
+        assertEquals(listOf("ATA", "MEI"), w.seats.map { it.role })
+        assertEquals("Tyrese Campbell", w.seats[0].name)
+        assertEquals(3, w.cards.size)
+        assertEquals(9_000L, w.cards.first { it.label == "Relvado" }.endAt)
+        assertEquals("760K + 18h", w.cards.first { it.label == "Capacidade" }.next)
+        assertEquals(1, w.needsAction(0L))
+    }
 }
