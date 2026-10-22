@@ -46,6 +46,8 @@ object Playbook {
         val suspended: Set<String> = emptySet(),
         /** Quando a Preparação do jogo foi lida pela última vez (itens antigos podem já estar feitos). */
         val prepAt: Long? = null,
+        /** Situação de cada card do estádio como o jogo mostra ("Relvado" -> "concluir melhoria" ou "665K + 18h"). */
+        val stadiumStatus: Map<String, String> = emptyMap(),
         /** Jogadores com cartão amarelo (coluna Estado do plantel). */
         val yellow: Set<String> = emptySet(),
         /** Especialistas escolhidos no jogo (capitao/penalti/falta/escanteio -> nome na tela). */
@@ -325,8 +327,12 @@ object Playbook {
             )
         }
 
-        // 5) estádio: Treino até 2★ → Capacidade → Relvado 1★ → Treino 3★ → equilibrar
-        if (!i.stadiumBuilding && (i.capLevel != null || i.trainLevel != null || i.pitchLevel != null)) {
+        // 5) estádio: obra pronta para concluir; depois Treino até 2★ → Capacidade → Relvado 1★ → Treino 3★ → equilibrar
+        val toClaim = i.stadiumStatus.filter { it.value.contains("concluir") }.keys.toList()
+        if (toClaim.isNotEmpty()) {
+            out.add(Tip("🏗", "Conclua o melhoramento do estádio: ${toClaim.joinToString()}", "A obra já terminou: toque em Concluir no Estádio para liberar a próxima.", 87, 5))
+        }
+        if (toClaim.isEmpty() && !i.stadiumBuilding && (i.capLevel != null || i.trainLevel != null || i.pitchLevel != null)) {
             val order = listOf(
                 Triple("Treino", 2, "o centro de treino dá +25% de progresso no nível 2"),
                 Triple("Capacidade", 1, "mais público = mais renda em cada jogo em casa"),
@@ -339,6 +345,9 @@ object Playbook {
             )
             fun lvl(n: String) = when (n) { "Treino" -> i.trainLevel; "Capacidade" -> i.capLevel; else -> i.pitchLevel } ?: 0
             order.firstOrNull { (n, target, _) -> lvl(n) < target }?.let { (n, target, why) ->
+                // sem dinheiro para a obra não há o que fazer agora
+                val cost = i.stadiumStatus[n]?.substringBefore("+")?.trim()?.let { Money.parse(it) }
+                if (cost != null && i.cashM != null && i.cashM < cost) return@let
                 out.add(Tip("🏟", "Próxima obra do estádio: $n (nível ${lvl(n)} → $target)" + (if (OsmEvents.Kind.FACILITIES in i.events) " — em promoção" else ""), "Ordem da comunidade: Treino até 2★, Capacidade, Relvado 1★, Treino 3★ e depois equilibrar. Por quê: $why.", 55, 6))
             }
         }

@@ -13,7 +13,7 @@ object Hints {
     data class Hint(val icon: String, val title: String, val detail: String, val action: Boolean = false)
 
     /** Dicas que são "ainda não fiz": treinador parado, faltam jogadores, preparação, patrocínio vencido. Sugestão de melhoria não conta. */
-    private val ACTION_ICONS = setOf("🏋", "🚨", "📝", "🤝", "🔄")
+    private val ACTION_ICONS = setOf("🏋", "🚨", "📝", "🤝", "🔄", "🏗", "🏟", "⏰")
 
     fun asHint(t: Playbook.Tip): Hint = Hint(t.icon, t.title, t.why, t.icon in ACTION_ICONS && !(t.icon == "🤝" && t.priority < 88))
 
@@ -63,7 +63,8 @@ object Hints {
         Playbook.tips(
             Playbook.Input(
                 events = events, activeEvents = active, upcomingEvents = upcoming,
-                prep = prep, prepAt = prepAt, injured = inj, suspended = susp, yellow = yellow, spec = spec, needs = needs, spendBc = spendBc,
+                prep = prep, prepAt = prepAt,
+                stadiumStatus = f[K.MY_STAD_STATUS]?.value.orEmpty().split(" • ").mapNotNull { p -> val k = p.indexOf(": "); if (k <= 0) null else Pair(p.substring(0, k), p.substring(k + 2)) }.toMap(), injured = inj, suspended = susp, yellow = yellow, spec = spec, needs = needs, spendBc = spendBc,
                 ceiling = repo.dao.plan(slot, "ceiling")?.json?.let { JSONObject(it).optDouble("r", Playbook.MAX_PRICE) } ?: Playbook.MAX_PRICE,
                 paid = SellPrices.learnedRatio(Ledger.parse(repo.dao.plan(slot, "ledger")?.json), repo.dao.plan(slot, "phist")?.json?.let { JSONObject(it) } ?: JSONObject()),
                 trainRates = rates,
@@ -136,33 +137,20 @@ object Hints {
         if (activeSlot && tacticOk.not() && gameSoon) pend.add(Hint("⚡", "Gere a tática deste jogo no app", "Toque em 📱 App → Slots → Tática → Gerar.", true))
         if (activeSlot && ch.isNotEmpty()) pend.add(Hint("⚠", "O rival mudou: gere a tática de novo", RivalWatch.headline(ch), true))
 
-        // informação da tela aberta (não conta no número)
-        val info = ArrayList<Hint>()
-        tips.filter { it.icon == "🎉" }.forEach { info.add(asHint(it)) }
-        when (type) {
-            ScreenType.PREP -> {
-                val pendItems = Screens.PREP_DEFS.filter { d -> (!d.costsBc || spend) && repo.dao.plan(slot, "prep")?.json?.let { JSONObject(it).optJSONObject(d.key)?.optBoolean("done") } == false }
-                if (pendItems.isEmpty()) info.add(Hint("✅", "Preparação do jogo em dia", "Nenhum item pendente entre os que vi. Role a lista para eu ler os outros."))
-                pendItems.take(5).forEach { info.add(Hint("📝", it.title, it.why.replaceFirstChar { c -> c.uppercase() }, true)) }
-            }
-            ScreenType.SPECIALISTS -> tips.filter { it.icon == "🎖" }.forEach { info.add(asHint(it)) }
-            ScreenType.DOCTOR, ScreenType.LAWYER -> {
-                tips.filter { it.icon == "🚑" }.forEach { info.add(asHint(it)) }
-                if (tips.none { it.icon == "🚑" }) info.add(Hint("✅", "Ninguém fora do jogo", "Li esta tela: nenhum jogador do seu elenco aparece como " + (if (type == ScreenType.DOCTOR) "lesionado" else "suspenso") + "."))
-            }
-            ScreenType.SPONSORS -> tips.filter { it.icon == "🤝" }.forEach { info.add(asHint(it)) }
-            ScreenType.PREGAME, ScreenType.TACTIC, ScreenType.REPORT -> {
-                tips.filter { it.icon == "📝" || it.icon == "🗒" || it.icon == "🎖" || it.icon == "🚑" }.take(2).forEach { info.add(asHint(it)) }
-                if (tacticOk && tj != null) info.add(Hint("📋", "Monte: ${tj.optString("formation")} • ${tj.optString("playStyle")}", Director.tacticSummary(tj)))
-                else info.add(Hint("⚡", "Gere a tática deste jogo no app", "Toque em 📱 App → Slots → Tática → Gerar."))
-            }
-            else -> {
-                val keep = BY_SCREEN[type]
-                val list = if (keep != null) tips.filter { it.icon in keep } else tips.filter { it.icon != "🎉" && it.icon != "🔄" }.take(3)
-                list.forEach { info.add(asHint(it)) }
-            }
+        // tática gerada: montar no OSM é pendência até a tela de tática do jogo confirmar que está igual
+        val done = repo.dao.plan(slot, "tacticdone")?.json?.let { runCatching { JSONObject(it).optLong("at") }.getOrNull() }
+        if (activeSlot && tacticOk && tj != null && tp != null && done != tp.at) {
+            pend.add(Hint("📋", "Monte: ${tj.optString("formation")} • ${tj.optString("playStyle")}", Director.tacticSummary(tj), true))
         }
-        val out = pend + info.filter { h -> pend.none { it.title == h.title } }
+        // O cartão mostra SÓ o que falta fazer (o que já foi feito não aparece nem conta). Na tela de preparação, cada item.
+        val items = ArrayList<Hint>()
+        if (type == ScreenType.PREP) {
+            Screens.PREP_DEFS.filter { d -> (!d.costsBc || spend) && repo.dao.plan(slot, "prep")?.json?.let { JSONObject(it).optJSONObject(d.key)?.optBoolean("done") } == false }
+                .take(5).forEach { items.add(Hint("📝", it.title, it.why.replaceFirstChar { c -> c.uppercase() }, true)) }
+        }
+        // sugestão opcional da tela de Transferências (não conta no número)
+        val opt = if (type == ScreenType.MARKET) tips.filter { it.icon == "💰" }.map { asHint(it) } else emptyList()
+        val out = pend + items.filter { h -> pend.none { it.title == h.title } } + opt
         return out.filter { !dismissed(ctx, it.title) }
     }
 
