@@ -25,6 +25,8 @@ Código ativo: `osm-coach/` (applicationId `com.osmaicoach.collector`, minSdk 30
     `Learn` (`Learned`, regressão sobre gols reais), `Director` (validadores, geração de tática/mercado), `Smart`
     (`OsmEvents`, `SellPrices`, `Sponsors`, `TrainLearn`, `RivalPredict`), `Playbook` (dicas), `Hints` (bolha/Diretor),
     `Fresh` ("telas para atualizar"), `Screens` (leitores das telas novas), `Progress`, `RivalWatch`.
+  - Avisos: `Notifier` (alarmes locais) + `Push` (reserva na nuvem via ntfy.sh, opt-in em Ajustes: agenda cada aviso no
+    servidor com `sequence_id` fixo; cancela quando o alarme local toca).
   - IA: `Ai.kt` (`Settings`, `AiClient`, `Processor`, `MetaRefresh`): Gemini, Groq/compatível, OpenRouter, Mistral, Claude.
     Chaves ficam em SharedPreferences `settings` (nunca no código/repositório).
   - UI/avisos: `MainActivity` (5 mil linhas; abas Hoje, Sessões, Slots, Diretor, Ajustes), `OsmUi`, `Illustrations`,
@@ -70,8 +72,8 @@ Sem slot confiável nada é gravado. Texto de tela: sempre comparar com `Txt.nor
   comunidade (`source == "calendario"`); cronômetros de treino/estádio/olheiro/missões com alarmes; bolha por cima do
   jogo com dicas; "Telas para atualizar" com caminho de menu; Médico/Advogado (jogadores fora do 11); Especialistas;
   cartão amarelo (leitura); sponsors; diagnóstico exportável.
-- **Incompletas / não confirmadas:** avisos com o app fechado no ROG/ASUS (serviço refaz alarmes a cada minuto —
-  não validado em aparelho); leitura de Médico/Advogado **com jogadores na lista** (falta print real); aba "Lista de
+- **Incompletas / não confirmadas:** avisos com o app fechado no ROG/ASUS: o teste local "Testar fechado" **falhou**
+  no aparelho (o OEM apaga os alarmes ao fechar o app); a reserva `Push` (ntfy) foi criada, **não validada em aparelho**; leitura de Médico/Advogado **com jogadores na lista** (falta print real); aba "Lista de
   Afazeres" (Boss Coins grátis, Missões) não é lida.
 - **Ausentes:** forma recente do rival (bolinhas V/D) na decisão; escolha do 11 por cartão amarelo; compra com
   preço-alvo (≤1,5× valor); batalhas/crews.
