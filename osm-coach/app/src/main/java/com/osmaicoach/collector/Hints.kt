@@ -33,18 +33,20 @@ object Hints {
         val used = Regex("^(\\d)\\s*/\\s*(\\d)$").find(f[K.SELLING]?.value?.trim() ?: "")?.groupValues?.get(1)?.toIntOrNull()
         val timers = repo.timers(slot)
         val work = Work.of(slot, title, repo.dao.plan(slot, "trainscreen")?.json?.let { JSONObject(it) }, timers, f)
-        val events = OsmEvents.active(OsmEvents.parse(repo.dao.plan(0, "events")?.json), now)
-        val sponsor = repo.dao.plan(slot, "sponsor")?.json?.let { JSONObject(it) }
+        val allEv = OsmEvents.parse(repo.dao.plan(0, "events")?.json)
+        val active = OsmEvents.active(allEv, now)
+        val events = active.map { it.kind }.toSet()
+        val upcoming = OsmEvents.upcoming(allEv, now, 3)
+        val sponsor = Sponsors.fromJson(repo.dao.plan(slot, "sponsor")?.json)
         val nations = repo.dao.plan(slot, "nations")?.json?.let { j -> JSONObject(j).let { o -> o.keys().asSequence().associateWith { o.optString(it) } } } ?: emptyMap()
         Playbook.tips(
             Playbook.Input(
-                events = events,
+                events = events, activeEvents = active, upcomingEvents = upcoming,
                 ceiling = repo.dao.plan(slot, "ceiling")?.json?.let { JSONObject(it).optDouble("r", Playbook.MAX_PRICE) } ?: Playbook.MAX_PRICE,
                 paid = SellPrices.learnedRatio(Ledger.parse(repo.dao.plan(slot, "ledger")?.json), repo.dao.plan(slot, "phist")?.json?.let { JSONObject(it) } ?: JSONObject()),
                 trainRates = rates,
-                sponsorGames = sponsor?.takeIf { !it.isNull("games") }?.optInt("games"),
-                sponsorRenew = sponsor?.optBoolean("renew") == true,
-                sponsorReadAt = sponsor?.optLong("at"),
+                sponsorDeals = sponsor?.first.orEmpty(),
+                sponsorReadAt = sponsor?.second,
                 nations = nations,
                 players = repo.playersOf(slot), xi = xi, cashM = Money.parse(f[K.CASH]?.value), listedUsed = used,
                 capLevel = f[K.MY_STAD_CAP]?.value?.toIntOrNull(), pitchLevel = f[K.MY_STAD_PITCH]?.value?.toIntOrNull(),

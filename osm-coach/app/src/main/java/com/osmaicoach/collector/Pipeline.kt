@@ -416,7 +416,7 @@ class FramePipeline private constructor(private val ctx: Context) {
                 noSlot.clear()
             }
             var changed = repo.apply(asg.slot, ex, "ocr", now)
-            runCatching { repo.smartReads(asg.slot, type, ocr.fullText, now) }
+            runCatching { repo.smartReads(asg.slot, type, ocr, now) }
             // Fim da competição / diretoria: não é tela de adversário. Vai para o aprendizado do slot (reconhecido pela
             // navegação ou pelo nome do meu time na classificação) e "a época acabou" encerra a competição do slot.
             if (type == ScreenType.OTHER_OSM && SeasonScreens.isSeasonScreen(ocr.fullText)) {

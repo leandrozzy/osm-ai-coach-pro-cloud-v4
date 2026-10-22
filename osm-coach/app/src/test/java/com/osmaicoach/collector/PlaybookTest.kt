@@ -39,4 +39,19 @@ class PlaybookTest {
         assertEquals("2,5M", Playbook.money(2.5))
         assertEquals("900K", Playbook.money(0.9))
     }
+
+    @Test fun doesNotSellYoungGoodReservesAndKeepsPositionMinimums() {
+        val xi = setOf("gka", "defa", "defb", "defc", "defd", "mida", "midb", "midc", "midd", "atka", "atkb")
+        val extra = squad + listOf(p("Young 72", "MEI", 19, 72, "7M"), p("Old Mid", "MEI", 33, 66, "1M"))
+        val tips = Playbook.tips(
+            Playbook.Input(
+                extra, xi, 3.0, listedUsed = 2, capLevel = 2, pitchLevel = 2, trainLevel = 2, stadiumBuilding = false,
+                round = 8, roundTotal = 22, seats = emptyList(), matchAt = null, now = 0L
+            )
+        )
+        val sell = tips.first { it.title.startsWith("Lista com 2 vaga") }.title
+        assertTrue(sell.contains("Old Mid"))
+        assertTrue(!sell.contains("Young 72"))
+        assertTrue(!sell.contains("Gk B")) // 2 goleiros é o mínimo
+    }
 }

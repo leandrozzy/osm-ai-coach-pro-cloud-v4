@@ -14,38 +14,48 @@ import kotlinx.coroutines.launch
 // ---------------------------------------------------------------- 1) eventos do OSM
 
 object OsmEvents {
-    /** Tipos de evento e o que muda no Diretor. */
+    /** Tipos de evento e o que muda no Diretor (só o que as fontes confirmam; o resto manda ver no jogo). */
     enum class Kind(val label: String, val tip: String) {
-        TRANSFER("Loucura de transferências", "a CPU compra quase tudo pelo máximo e a lista aceita até 6: venda e revenda o máximo possível agora"),
-        STAFF("Super equipe técnica", "sessões de treino mais curtas: troque os treinos assim que terminarem"),
+        TRANSFER("Loucura de transferências", "a CPU compra quase tudo pelo máximo e a lista aceita até 6 jogadores: venda e revenda o máximo possível"),
+        STAFF("Super equipe técnica", "sessões de treino mais curtas (4 h): troque os treinos assim que terminarem"),
         EXTREME("Treino extremo", "o treino rende mais: mantenha os 4 treinadores sempre ocupados"),
-        OLDIES("Veteranos de ouro", "veteranos evoluem mais: treine os mais velhos que são titulares"),
-        CAMP("Estágio em promoção", "estágio mais barato: vale usar antes de um jogo decisivo"),
-        FACILITIES("Melhorias do estádio", "obras do estádio mais baratas/rápidas: comece a próxima obra"),
-        SCOUT("Olheiro barato", "o olheiro sai mais barato: use para comprar pelo valor e revender")
+        OLDIES("Veteranos de ouro × Lendas", "veteranos evoluem mais: treine os mais velhos que são titulares"),
+        CAMP("Mania de estágio", "estágios em promoção: veja o preço no jogo antes de um jogo decisivo"),
+        FACILITIES("Instalações de topo", "pode baratear ou acelerar obras do estádio: confira no jogo e comece a próxima obra"),
+        SCOUT("Olheiro barato", "o relatório do olheiro leva 2 h (normalmente 16 h) e os jogadores saem mais baratos: compre pelo valor e revenda"),
+        LEGENDS("Lendas", "evento de jogadores lendários: confira as ofertas no jogo"),
+        BLITZ("Blitz do estádio", "evento do estádio: confira as condições no jogo"),
+        FRIENDLY("Amistosos intensos", "amistosos rendem mais: confira as condições no jogo"),
+        OTHER("Evento do OSM", "confira os detalhes no jogo")
     }
 
-    data class Ev(val kind: Kind, val start: Long?, val end: Long?, val source: String)
+    /** [kind] + nome original do calendário; [start, end) em milissegundos. */
+    data class Ev(val kind: Kind, val start: Long?, val end: Long?, val source: String, val name: String = kind.label)
 
-    /** Palavras do evento em inglês (nome oficial) e em português (como o jogo e os sites costumam escrever). */
-    private val WORDS = listOf(
-        Kind.TRANSFER to listOf("transfer madness", "transfer rush", "loucura de transfer", "loucura das transfer", "febre de transfer"),
-        Kind.STAFF to listOf("super staff", "super equipa", "super equipe", "super treinador"),
-        Kind.EXTREME to listOf("extreme training", "treino extremo"),
-        Kind.OLDIES to listOf("golden oldies", "veteranos", "velha guarda"),
-        Kind.CAMP to listOf("training camp mania", "mania de estagio", "estagio mania"),
-        Kind.FACILITIES to listOf("top facilities", "instalacoes de topo", "super instalacoes"),
-        Kind.SCOUT to listOf("bargain scout", "olheiro barato", "olheiro em promocao", "pechincha")
-    )
+    const val SOURCE = "calendario"
+    const val URL = "https://www.osmnextlevel.com/en/osm-events/"
+    /** O calendário da fonte conta os dias no fuso de Istambul; a hora exata do jogo não é conhecida. */
+    private val TZ = java.util.TimeZone.getTimeZone("Europe/Istanbul")
 
-    /** Evento citado num texto (tela do jogo ou resposta da pesquisa). */
-    fun kindsIn(text: String): Set<Kind> {
-        val t = Txt.norm(text)
-        return WORDS.filter { (_, ws) -> ws.any { t.contains(it) } }.map { it.first }.toSet()
+    fun kindOf(name: String): Kind {
+        val t = Txt.norm(name)
+        return when {
+            t.contains("transfer") -> Kind.TRANSFER
+            t.contains("super staff") -> Kind.STAFF
+            t.contains("extreme training") -> Kind.EXTREME
+            t.contains("golden oldies") -> Kind.OLDIES
+            t.contains("training camp") -> Kind.CAMP
+            t.contains("top facilities") -> Kind.FACILITIES
+            t.contains("bargain scout") -> Kind.SCOUT
+            t.contains("stadium blitz") -> Kind.BLITZ
+            t.contains("friendl") -> Kind.FRIENDLY
+            t.contains("legends") -> Kind.LEGENDS
+            else -> Kind.OTHER
+        }
     }
 
     fun toJson(list: List<Ev>): String = JSONArray().apply {
-        for (e in list) put(JSONObject().put("k", e.kind.name).put("s", e.start ?: JSONObject.NULL).put("e", e.end ?: JSONObject.NULL).put("src", e.source))
+        for (e in list) put(JSONObject().put("k", e.kind.name).put("n", e.name).put("s", e.start ?: JSONObject.NULL).put("e", e.end ?: JSONObject.NULL).put("src", e.source))
     }.toString()
 
     fun parse(json: String?): List<Ev> {
@@ -53,62 +63,86 @@ object OsmEvents {
         return (0 until a.length()).mapNotNull { i ->
             val o = a.optJSONObject(i) ?: return@mapNotNull null
             val k = runCatching { Kind.valueOf(o.optString("k")) }.getOrNull() ?: return@mapNotNull null
-            Ev(k, if (o.isNull("s")) null else o.optLong("s"), if (o.isNull("e")) null else o.optLong("e"), o.optString("src"))
+            Ev(k, if (o.isNull("s")) null else o.optLong("s"), if (o.isNull("e")) null else o.optLong("e"), o.optString("src"), o.optString("n").ifBlank { k.label })
         }
     }
 
-    /** Ativos agora: dentro do período (evento visto na tela sem data vale 24 h). */
-    fun active(list: List<Ev>, now: Long): Set<Kind> =
-        list.filter { (it.start == null || it.start <= now) && (it.end == null || it.end > now) }.map { it.kind }.toSet()
+    /** Só vale o que veio do calendário e tem datas: texto de tela ou resposta de IA já deu evento falso. */
+    private fun trusted(e: Ev) = e.source == SOURCE && e.start != null && e.end != null
 
-    /** Junta eventos novos aos guardados (mesmo tipo: fica o mais novo) e descarta os que já acabaram. */
-    fun merge(old: List<Ev>, add: List<Ev>, now: Long): List<Ev> =
-        (old.filter { o -> add.none { it.kind == o.kind } } + add).filter { it.end == null || it.end > now - 86400000L }
+    /** Ativos agora (início ≤ agora < fim). */
+    fun active(list: List<Ev>, now: Long): List<Ev> = list.filter { trusted(it) && it.start!! <= now && now < it.end!! }
 
-    /** Resposta da pesquisa: [{"event":"Transfer Madness","start":"2026-10-22","end":"2026-10-24"}]. */
-    fun fromAi(json: JSONObject?, now: Long): List<Ev> {
-        val arr = json?.optJSONArray("events") ?: return emptyList()
-        val fmt = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+    /** Começam nos próximos [days] dias. */
+    fun upcoming(list: List<Ev>, now: Long, days: Int = 3): List<Ev> =
+        list.filter { trusted(it) && it.start!! > now && it.start - now <= days * 86400000L }.sortedBy { it.start }
+
+    /**
+     * Lê o calendário do mês embutido na página: `var D={"y":2026,"m":9,"e":[{"d":[10,11],"n":"Transfer Madness"}…]}`
+     * (m começa em 0). Devolve null se a estrutura mudou ou se a página é de outro mês (aí ninguém é dado como ativo).
+     */
+    fun fromCalendarHtml(html: String, now: Long): List<Ev>? {
+        val m = Regex("var D=(\\{.*?\\});\\s*var p=", RegexOption.DOT_MATCHES_ALL).find(html) ?: return null
+        val j = runCatching { JSONObject(m.groupValues[1]) }.getOrNull() ?: return null
+        val y = j.optInt("y", -1)
+        val mo = j.optInt("m", -1)
+        val arr = j.optJSONArray("e") ?: return null
+        if (y < 2000 || mo !in 0..11) return null
+        val cur = java.util.Calendar.getInstance(TZ).apply { timeInMillis = now }
+        // página do mês passado/seguinte: não dá para dizer o que está ativo
+        if (cur.get(java.util.Calendar.YEAR) != y || cur.get(java.util.Calendar.MONTH) != mo) return null
+        fun dayStart(d: Int): Long = java.util.Calendar.getInstance(TZ).apply {
+            clear(); set(y, mo, d, 0, 0, 0)
+        }.timeInMillis
         val out = ArrayList<Ev>()
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
-            val kinds = kindsIn(o.optString("event"))
-            val s = runCatching { fmt.parse(o.optString("start"))?.time }.getOrNull()
-            val e = runCatching { fmt.parse(o.optString("end"))?.time?.plus(86400000L) }.getOrNull()
-            if (e != null && e < now) continue
-            for (k in kinds) out.add(Ev(k, s, e, "internet"))
+            val name = o.optString("n")
+            if (name.isBlank()) continue
+            val days = o.optJSONArray("d") ?: continue
+            val ds = (0 until days.length()).map { days.optInt(it) }.filter { it in 1..31 }.sorted()
+            if (ds.isEmpty()) continue
+            // dias seguidos viram um período só
+            var runStart = ds[0]
+            var prev = ds[0]
+            fun flush(a: Int, b: Int) { out.add(Ev(kindOf(name), dayStart(a), dayStart(b) + 86400000L, SOURCE, name)) }
+            for (d in ds.drop(1)) {
+                if (d != prev + 1) { flush(runStart, prev); runStart = d }
+                prev = d
+            }
+            flush(runStart, prev)
         }
         return out
     }
 
-    const val PROMPT = "Pesquise na internet (osmhelper.com/events, fórum oficial do Online Soccer Manager, redes do OSM) quais " +
-        "EVENTOS do jogo Online Soccer Manager (OSM) estão ativos hoje ou começam nos próximos 7 dias: Transfer Madness, " +
-        "Super Staff, Extreme Training, Golden Oldies, Training Camp Mania, Top Facilities, Bargain Scout ou outros. " +
-        "Responda APENAS JSON: {\"events\":[{\"event\":\"nome em inglês\",\"start\":\"AAAA-MM-DD\",\"end\":\"AAAA-MM-DD\"}]}. " +
-        "Se não achar nenhum evento confirmado, responda {\"events\":[]}. Não invente datas."
+    /** Texto curto de um evento para o Diretor/bolha. */
+    fun describe(e: Ev, now: Long): String {
+        val fmt = java.text.SimpleDateFormat("dd/MM", java.util.Locale.getDefault()).apply { timeZone = TZ }
+        val last = fmt.format(java.util.Date(e.end!! - 1))
+        return if (e.start!! <= now) "até $last" else "começa em ${fmt.format(java.util.Date(e.start))}"
+    }
 }
 
-/** Pesquisa os eventos do OSM uma vez por dia (em segundo plano) e guarda no plano 0 "events". */
+/** Lê o calendário de eventos da comunidade (a cada 6 h, em segundo plano). Nada de IA: ela misturava os dias. */
 object EventsRefresh {
     @Volatile private var running = false
 
     fun ifStale(ctx: android.content.Context) {
-        if (running || !AiClient.hasAnyKey(ctx)) return
+        if (running) return
         val last = Settings.get(ctx, "events_try_at", "0").toLongOrNull() ?: 0L
-        if (System.currentTimeMillis() - last < 24L * 3600000L) return
+        if (System.currentTimeMillis() - last < 6L * 3600000L) return
         running = true
         Settings.put(ctx, "events_try_at", System.currentTimeMillis().toString())
         AppScope.scope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
-                val r = AiClient.askGrounded(ctx, OsmEvents.PROMPT)
                 val now = System.currentTimeMillis()
-                if (r.ok) {
-                    val add = OsmEvents.fromAi(AiClient.parseJson(r.text), now)
-                    val repo = Repo(ctx)
-                    val old = OsmEvents.parse(repo.dao.plan(0, "events")?.json)
-                    repo.dao.putPlan(PlanEntity(0, "events", OsmEvents.toJson(OsmEvents.merge(old.filter { it.source != "internet" }, add, now)), now))
-                    Diag.log("Eventos do OSM: " + (add.joinToString { it.kind.label }.ifBlank { "nenhum ativo" }))
-                }
+                val html = fetch(OsmEvents.URL)
+                val ev = html?.let { OsmEvents.fromCalendarHtml(it, now) }
+                val repo = Repo(ctx)
+                // falhou ou a página é de outro mês: apaga (melhor não dizer nada do que dizer errado)
+                repo.dao.putPlan(PlanEntity(0, "events", OsmEvents.toJson(ev ?: emptyList()), now))
+                if (ev != null) Settings.put(ctx, "events_ok_at", now.toString())
+                Diag.log("Eventos do OSM (calendário): " + (ev?.let { l -> OsmEvents.active(l, now).joinToString { it.name }.ifBlank { "nenhum hoje" } } ?: "não confirmado"))
             } catch (e: Exception) {
                 Diag.log("Eventos do OSM: " + (e.message ?: e.javaClass.simpleName))
             } finally {
@@ -116,6 +150,14 @@ object EventsRefresh {
             }
         }
     }
+
+    private fun fetch(url: String): String? = runCatching {
+        val c = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+        c.connectTimeout = 8000
+        c.readTimeout = 12000
+        c.setRequestProperty("User-Agent", "Mozilla/5.0 (Android) OSMCoach")
+        if (c.responseCode !in 200..299) null else c.inputStream.bufferedReader().use { it.readText() }
+    }.getOrNull()
 }
 
 // ---------------------------------------------------------------- 2/7) preço que realmente vende
@@ -135,6 +177,23 @@ object SellPrices {
         return Pair(med, ratios.size)
     }
 
+    /**
+     * Tela "Definir um preço para <jogador>": o preço do controle deslizante (começa no máximo) dividido pelo valor
+     * ("Ganhar imediatamente 4,4M"). Só conta se cair num teto que o OSM usa (2×, 2,25× ou 2,5×): o jogador pode ter
+     * mexido no controle, e aí a razão não diz nada.
+     */
+    fun fromScreen(o: OcrResult): Double? {
+        fun money(t: String): Double? = Money.extract(t)?.let { Money.parse(it) }
+        val quick = o.lines.firstOrNull { Txt.norm(it.text).contains("ganhar imediatamente") } ?: return null
+        val value = (money(quick.text) ?: o.tokens.filter { abs(it.yc - quick.yc) <= 0.03f && it.xc > quick.xc }.sortedBy { it.xc }
+            .firstNotNullOfOrNull { money(it.text) }) ?: return null
+        val head = o.lines.firstOrNull { Txt.norm(it.text).startsWith("definir um preco") } ?: return null
+        val price = o.tokens.filter { it.xc > 0.7f && it.yc > head.yc && it.yc < head.yc + 0.14f }.mapNotNull { money(it.text) }.maxOrNull() ?: return null
+        if (value <= 0) return null
+        val r = price / value
+        return listOf(2.0, 2.25, 2.5).minByOrNull { abs(it - r) }?.takeIf { abs(it - r) <= 0.06 }
+    }
+
     /** Teto lido na tela de venda: "Preço máximo 25M" com o valor 10M ao lado → 2,5. */
     fun ceilingFrom(text: String): Double? {
         val t = Txt.norm(text)
@@ -146,6 +205,42 @@ object SellPrices {
         val r = m / v
         // o OSM usa 2×, 2,25× ou 2,5×: arredonda para o mais perto
         return listOf(2.0, 2.25, 2.5).minByOrNull { abs(it - r) }?.takeIf { abs(it - r) <= 0.15 }
+    }
+}
+
+// ---------------------------------------------------------------- patrocínio
+
+object Sponsors {
+    /** Contrato de patrocínio: jogos em casa que faltam e quanto paga por jogo em casa (milhões). */
+    data class Deal(val games: Int, val perGameM: Double)
+
+    private val RX_GAMES = Regex("falt(?:a|am)\\s+(\\d{1,2})\\s+jog")
+    private val RX_PAY = Regex("(\\d{1,3}(?:[.,]\\d{1,2})?\\s*[km])\\s*por cada jogo")
+
+    /** Tela de patrocinadores: 4 cartões "Acordo de patrocínio / falta N jogo(s) em casa / + 92K por cada jogo em casa". */
+    fun parse(o: OcrResult): List<Deal> {
+        val heads = o.lines.filter { Txt.norm(it.text).contains("acordo de patrocinio") }
+        val out = ArrayList<Deal>()
+        for (h in heads) {
+            fun near(pred: (OcrLine) -> Boolean) = o.lines.filter { it !== h && abs(it.xc - h.xc) <= 0.10f && it.yc > h.yc && it.yc - h.yc <= 0.32f && pred(it) }
+                .minByOrNull { it.yc }
+            val g = near { RX_GAMES.containsMatchIn(Txt.norm(it.text)) }?.let { RX_GAMES.find(Txt.norm(it.text))?.groupValues?.get(1)?.toIntOrNull() }
+            val p = near { RX_PAY.containsMatchIn(Txt.norm(it.text)) }?.let {
+                RX_PAY.find(Txt.norm(it.text))?.groupValues?.get(1)?.replace(" ", "")?.uppercase()?.let { m -> Money.parse(m) }
+            }
+            if (g != null && p != null) out.add(Deal(g, p))
+        }
+        return out
+    }
+
+    fun toJson(deals: List<Deal>, at: Long): String = JSONObject().put("at", at).put("deals", JSONArray().apply {
+        for (d in deals) put(JSONObject().put("g", d.games).put("p", d.perGameM))
+    }).toString()
+
+    fun fromJson(json: String?): Pair<List<Deal>, Long>? {
+        val j = json?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return null
+        val a = j.optJSONArray("deals") ?: return null
+        return Pair((0 until a.length()).mapNotNull { a.optJSONObject(it) }.map { Deal(it.optInt("g"), it.optDouble("p")) }, j.optLong("at"))
     }
 }
 

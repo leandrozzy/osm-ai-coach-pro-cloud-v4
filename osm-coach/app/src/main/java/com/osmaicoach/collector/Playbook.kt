@@ -26,6 +26,8 @@ object Playbook {
         val now: Long,
         /** Eventos do OSM ativos agora. */
         val events: Set<OsmEvents.Kind> = emptySet(),
+        val activeEvents: List<OsmEvents.Ev> = emptyList(),
+        val upcomingEvents: List<OsmEvents.Ev> = emptyList(),
         /** Teto de venda da liga (múltiplo do valor), lido na tela; padrão 2,5. */
         val ceiling: Double = MAX_PRICE,
         /** Quanto a CPU pagou de verdade nas suas vendas (múltiplo do valor, nº de vendas). */
@@ -33,8 +35,7 @@ object Playbook {
         /** Ganho de força por dia de treino, por faixa de idade (aprendido). */
         val trainRates: Map<String, Pair<Double, Int>> = emptyMap(),
         /** Patrocínio lido: jogos restantes (null = não lido) e se a tela pedia para escolher/renovar. */
-        val sponsorGames: Int? = null,
-        val sponsorRenew: Boolean = false,
+        val sponsorDeals: List<Sponsors.Deal> = emptyList(),
         val sponsorReadAt: Long? = null,
         /** Nacionalidade por jogador (nameKey -> país), quando lida. */
         val nations: Map<String, String> = emptyMap()
@@ -84,7 +85,12 @@ object Playbook {
         val maxListed = if (OsmEvents.Kind.TRANSFER in i.events) 6 else MAX_LISTED
         val sessionH = if (OsmEvents.Kind.STAFF in i.events) 4 else 8
         fun hhmm(t: Long) = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(t))
-        for (e in i.events) out.add(Tip("🎉", "Evento ativo: ${e.label}", "Aproveite: ${e.tip}.", 96, 6))
+        for (e in i.activeEvents) {
+            out.add(Tip("🎉", "Evento hoje: ${e.name}", "Calendário da comunidade (${OsmEvents.describe(e, i.now)}, horário aproximado): ${e.kind.tip}. Confirme no jogo.", 96, 6))
+        }
+        for (e in i.upcomingEvents.take(2)) {
+            out.add(Tip("📅", "Em breve: ${e.name} (${OsmEvents.describe(e, i.now)})", "Prepare-se: ${e.kind.tip}.", 35, 6))
+        }
 
         // 1) mínimo por posição (o jogo exige 2 GL, 4 DEF, 4 MEI, 3 ATA)
         val byCat = mine.groupingBy { it.cat }.eachCount()
@@ -147,9 +153,18 @@ object Playbook {
         val size = mine.size
         val extra = (size - 21).coerceAtLeast(0)
         // vender: reservas mais velhos e mais fracos primeiro; jovens bons ficam (valor sobe com o treino)
-        val sellOrder = reserves.sortedWith(
-            compareByDescending<PlayerEntity> { (it.age ?: 0) >= 29 }.thenBy { it.strength ?: 0 }.thenByDescending { it.age ?: 0 }
-        ).filter { p -> (byCat[p.cat] ?: 0) > (MIN_POS[p.cat] ?: 0) }
+        // jovem bom (até 21 anos e 70+) vale mais no elenco; com elenco enxuto só sai quem é velho ou fraco
+        val remaining = byCat.toMutableMap()
+        val sellOrder = ArrayList<PlayerEntity>()
+        for (p in reserves.sortedWith(compareByDescending<PlayerEntity> { (it.age ?: 0) >= 29 }.thenBy { it.strength ?: 0 }.thenByDescending { it.age ?: 0 })) {
+            val young = (p.age ?: 99) <= 21 && (p.strength ?: 0) >= 70
+            val lean = size <= 18 && (p.age ?: 0) < 29 && (p.strength ?: 99) > 60
+            if (young || lean) continue
+            // nunca abaixo do mínimo da posição (conta o que já foi escolhido)
+            if ((remaining[p.cat] ?: 0) <= (MIN_POS[p.cat] ?: 0)) continue
+            remaining[p.cat] = (remaining[p.cat] ?: 0) - 1
+            sellOrder.add(p)
+        }
         if (left != null && left > 0 && sellOrder.isNotEmpty()) {
             val names = sellOrder.take(left).joinToString("; ") { p ->
                 val v = Money.parse(p.valueText)
@@ -208,10 +223,21 @@ object Playbook {
                 )
             )
         }
-        when {
-            i.sponsorRenew || i.sponsorGames == 0 -> out.add(Tip("🤝", "Escolha/renove o patrocinador", "O contrato acabou. Escolha a oferta que paga mais (ela melhora se você está acima da meta).", 88, 6))
-            i.sponsorReadAt == null || i.now - i.sponsorReadAt > 10L * 86400000L ->
-                out.add(Tip("🤝", "Confira o patrocínio", "Abra a tela de patrocinadores para eu ler quantos jogos faltam no contrato e avisar quando renovar.", 30, 6))
+        if (i.sponsorDeals.isNotEmpty()) {
+            val total = i.sponsorDeals.sumOf { it.perGameM }
+            val ending = i.sponsorDeals.count { it.games <= 1 }
+            if (i.sponsorDeals.any { it.games <= 0 }) {
+                out.add(Tip("🤝", "Escolha o patrocinador: contrato acabou", "Abra Patrocinadores e escolha a oferta que paga mais por jogo em casa (ela melhora se você está acima da meta).", 88, 6))
+            } else if (ending > 0) {
+                out.add(
+                    Tip(
+                        "🤝", "Patrocínio: $ending de ${i.sponsorDeals.size} contrato(s) acabam no próximo jogo em casa",
+                        "Hoje os contratos pagam ${money(total)} por jogo em casa. Quando acabar, escolha logo a oferta mais alta: contrato vago não rende.", 42, 6
+                    )
+                )
+            }
+        } else if (i.sponsorReadAt == null || i.now - i.sponsorReadAt > 10L * 86400000L) {
+            out.add(Tip("🤝", "Confira o patrocínio", "Abra Menu → Patrocinadores: eu leio quantos jogos faltam em cada contrato e quanto pagam, e aviso na hora de renovar.", 30, 6))
         }
         Nations.best(i.xi, i.nations)?.let { (country, n) ->
             if (n in 4..5) out.add(Tip("🌍", "Faltam ${6 - n} titular(es) de $country para o bônus de nacionalidade", "A comunidade fala em bônus escondido com 6 titulares do mesmo país (algumas fontes dizem 5). Você tem $n.", 45, 2))
