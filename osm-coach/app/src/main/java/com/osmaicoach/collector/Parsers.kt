@@ -365,7 +365,8 @@ object Parsers {
                     training = null,
                     forSale = null,
                     cond = img?.let { PixelProbe.barFill(it, 0.757f, 0.800f, a.yc) },
-                    morale = img?.let { PixelProbe.barFill(it, 0.808f, 0.850f, a.yc) }
+                    morale = img?.let { PixelProbe.barFill(it, 0.808f, 0.850f, a.yc) },
+                    yellow = img?.let { PixelProbe.goldBox(it, 0.875f, 0.915f, a.yc - 0.03f, a.yc + 0.03f) >= 0.06f }
                 )
             )
         }

@@ -22,6 +22,12 @@ object Hints {
 
     private fun kv(f: Map<String, StoredField>, k: String): String? = f[k]?.value?.takeIf { FieldMerge.known(it) }
 
+    /** Telas desatualizadas deste slot (com as regras do Fresh). */
+    suspend fun needsFor(repo: Repo, slot: Int, matchAt: Long?, active: Boolean, now: Long = System.currentTimeMillis()): List<Fresh.Need> {
+        val sp = Sponsors.fromJson(repo.dao.plan(slot, "sponsor")?.json)?.first.orEmpty()
+        return Fresh.needs(Fresh.In(slot, repo.seenMap(slot), repo.timers(slot), matchAt, sp.any { it.games <= 1 }, now, active))
+    }
+
     suspend fun slotTips(
         repo: Repo, slot: Int, xi0: Set<String>?, matchAt: Long?, title: String, rates: Map<String, Pair<Double, Int>>
     ): List<Playbook.Tip> = runCatching {
@@ -39,9 +45,17 @@ object Hints {
         val upcoming = OsmEvents.upcoming(allEv, now, 3)
         val sponsor = Sponsors.fromJson(repo.dao.plan(slot, "sponsor")?.json)
         val nations = repo.dao.plan(slot, "nations")?.json?.let { j -> JSONObject(j).let { o -> o.keys().asSequence().associateWith { o.optString(it) } } } ?: emptyMap()
+        val prep = repo.dao.plan(slot, "prep")?.json?.let { j -> JSONObject(j).let { o -> o.keys().asSequence().associateWith { k -> o.optJSONObject(k)?.optBoolean("done") ?: false } } } ?: emptyMap()
+        val (inj, susp) = repo.outByDoctorOrLawyer(slot)
+        val yellow = repo.dao.plan(slot, "cards")?.json?.let { j -> JSONObject(j).let { o -> o.keys().asSequence().filter { o.optBoolean(it) }.toSet() } } ?: emptySet()
+        val spec = repo.dao.plan(slot, "spec")?.json?.let { j -> JSONObject(j).let { o -> Screens.SPEC_ROLES.filter { o.has(it) }.associateWith { o.optString(it) } } } ?: emptyMap()
+        val state = f[K.SLOT_STATE]?.value
+        val matchTime = matchAt ?: f[K.MATCH_AT]?.value?.toLongOrNull()
+        val needs = needsFor(repo, slot, matchTime, (state == null || state == "ativo") && kv(f, K.TEAM) != null, now)
         Playbook.tips(
             Playbook.Input(
                 events = events, activeEvents = active, upcomingEvents = upcoming,
+                prep = prep, injured = inj, suspended = susp, yellow = yellow, spec = spec, needs = needs,
                 ceiling = repo.dao.plan(slot, "ceiling")?.json?.let { JSONObject(it).optDouble("r", Playbook.MAX_PRICE) } ?: Playbook.MAX_PRICE,
                 paid = SellPrices.learnedRatio(Ledger.parse(repo.dao.plan(slot, "ledger")?.json), repo.dao.plan(slot, "phist")?.json?.let { JSONObject(it) } ?: JSONObject()),
                 trainRates = rates,
@@ -62,7 +76,7 @@ object Hints {
         ScreenType.TRAINING to setOf("🏋", "🗓", "⏰"),
         ScreenType.MARKET to setOf("💰", "🔎", "➕", "➖", "🔁", "📉", "🚨"),
         ScreenType.STADIUM to setOf("🏟"),
-        ScreenType.SQUAD to setOf("➕", "➖", "🚨", "🌍", "💰")
+        ScreenType.SQUAD to setOf("➕", "➖", "🚨", "🌍", "💰", "🟨", "🚑")
     )
 
     fun screenLabel(t: ScreenType): String = when (t) {
@@ -73,6 +87,15 @@ object Hints {
         ScreenType.PREGAME -> "Pré-jogo"
         ScreenType.TACTIC -> "Tática"
         ScreenType.REPORT -> "Análise do rival"
+        ScreenType.PREP -> "Preparação"
+        ScreenType.DOCTOR -> "Médico"
+        ScreenType.LAWYER -> "Advogado"
+        ScreenType.SPECIALISTS -> "Especialistas"
+        ScreenType.SPONSORS -> "Patrocinadores"
+        ScreenType.SCOUT -> "Olheiro"
+        ScreenType.DEALS -> "Negociações"
+        ScreenType.STATS -> "Estatísticas"
+        ScreenType.MISSIONS -> "Missões"
         ScreenType.HUB -> "Central"
         else -> "OSM"
     }
@@ -86,8 +109,29 @@ object Hints {
         val tips = slotTips(repo, slot, null, null, title, trainRates(repo))
         val out = ArrayList<Hint>()
         tips.filter { it.icon == "🎉" }.forEach { out.add(Hint(it.icon, it.title, it.why)) }
+        // lembrete de quais telas visitar (menos a que está aberta agora)
+        val needs = runCatching {
+            val st = f[K.SLOT_STATE]?.value
+            needsFor(repo, slot, null, (st == null || st == "ativo") && kv(f, K.TEAM) != null)
+        }.getOrDefault(emptyList()).filter { it.type != type && it.urgency >= 1 }
+        needs.take(2).forEach { n ->
+            out.add(Hint("🔄", "Atualize: " + (Fresh.NAME[n.type] ?: n.type.name), n.reason.replaceFirstChar { it.uppercase() } + ". " + (Fresh.PATH[n.type] ?: "")))
+        }
         when (type) {
+            ScreenType.PREP -> {
+                val pend = Screens.PREP_DEFS.filter { d -> repo.dao.plan(slot, "prep")?.json?.let { JSONObject(it).optJSONObject(d.key)?.optBoolean("done") } == false }
+                if (pend.isEmpty()) out.add(Hint("✅", "Preparação do jogo em dia", "Nenhum item pendente entre os que vi. Role a lista para eu ler os outros."))
+                pend.take(5).forEach { out.add(Hint("📝", it.title, it.why.replaceFirstChar { c -> c.uppercase() })) }
+            }
+            ScreenType.SPECIALISTS -> tips.filter { it.icon == "🎖" }.forEach { out.add(Hint(it.icon, it.title, it.why)) }
+            ScreenType.DOCTOR, ScreenType.LAWYER -> {
+                tips.filter { it.icon == "🚑" }.forEach { out.add(Hint(it.icon, it.title, it.why)) }
+                if (tips.none { it.icon == "🚑" }) out.add(Hint("✅", "Ninguém fora do jogo", "Li esta tela: nenhum jogador do seu elenco aparece como " + (if (type == ScreenType.DOCTOR) "lesionado" else "suspenso") + "."))
+            }
+            ScreenType.SCOUT -> tips.filter { it.icon == "🔎" }.forEach { out.add(Hint(it.icon, it.title, it.why)) }
+            ScreenType.SPONSORS -> tips.filter { it.icon == "🤝" }.forEach { out.add(Hint(it.icon, it.title, it.why)) }
             ScreenType.PREGAME, ScreenType.TACTIC, ScreenType.REPORT -> {
+                tips.filter { it.icon == "📝" || it.icon == "🎖" || it.icon == "🚑" }.take(2).forEach { out.add(Hint(it.icon, it.title, it.why)) }
                 val ch = rivalChangesOf(repo, slot)
                 if (ch.isNotEmpty()) out.add(Hint("⚠", "O rival mudou: gere a tática de novo", RivalWatch.headline(ch)))
                 val p = repo.dao.plan(slot, "tactic")
@@ -100,7 +144,7 @@ object Hints {
             }
             else -> {
                 val keep = BY_SCREEN[type]
-                val list = if (keep != null) tips.filter { it.icon in keep } else tips.filter { it.icon != "🎉" }.take(3)
+                val list = if (keep != null) tips.filter { it.icon in keep } else tips.filter { it.icon != "🎉" && it.icon != "🔄" }.take(3)
                 list.forEach { out.add(Hint(it.icon, it.title, it.why)) }
             }
         }

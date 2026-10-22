@@ -11,11 +11,13 @@ object Timers {
     /** Ordem fixa: o índice entra no código do alarme (um alarme por cronômetro e por slot). */
     val KEYS = listOf(
         "train_UNI", "train_ATA", "train_MEI", "train_DEF", "train_GOL",
-        "stad_Capacidade", "stad_Relvado", "stad_Treino"
+        "stad_Capacidade", "stad_Relvado", "stad_Treino", "scout", "mission_new", "mission_week"
     )
 
     data class Entry(val slot: Int, val key: String, val at: Long, val label: String) {
         val training: Boolean get() = key.startsWith("train_")
+        val scout: Boolean get() = key == "scout"
+        val mission: Boolean get() = key.startsWith("mission_")
     }
 
     fun roleLabel(role: String): String = when (role) {

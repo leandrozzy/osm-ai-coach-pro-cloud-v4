@@ -1207,7 +1207,7 @@ data class SlotSummary(
     val rivalChanged: List<RivalWatch.Change> = emptyList()
 )
 
-data class TodayData(val active: Boolean = false, val slots: List<SlotSummary> = emptyList(), val work: List<SlotWork> = emptyList())
+data class TodayData(val active: Boolean = false, val slots: List<SlotSummary> = emptyList(), val work: List<SlotWork> = emptyList(), val needs: List<Fresh.Need> = emptyList())
 
 object TodayCache {
     @Volatile var last = TodayData()
@@ -1411,7 +1411,13 @@ private suspend fun loadToday(ctx: Context): TodayData {
             Work.of(s, team, screen, repo.timers(s), f).takeIf { it.hasData }
         }.getOrNull()
     }
-    return TodayData(Control.activeSession(ctx) != null, list, work).also { TodayCache.last = it }
+    val needs = ArrayList<Fresh.Need>()
+    for (s in list) {
+        if (s.ended || s.state != null && s.state != "ativo" || !s.known) continue
+        runCatching { needs.addAll(Hints.needsFor(repo, s.slot, s.nextAt, true, now)) }
+    }
+    runCatching { needs.addAll(Fresh.global(repo.timers(0), repo.seenMap(0), now)) }
+    return TodayData(Control.activeSession(ctx) != null, list, work, needs.sortedWith(compareByDescending<Fresh.Need> { it.urgency }.thenBy { it.slot })).also { TodayCache.last = it }
 }
 
 // ------------------------------------------------------------------ app
@@ -1860,6 +1866,7 @@ private fun TodayTab(onGoSettings: () -> Unit, onOpenSlot: (Int, Int) -> Unit) {
             }
         }
 
+        if (data.needs.any { it.urgency >= 1 }) NeedsCard(data.needs)
         if (data.work.isNotEmpty()) {
             Title("⏱ Treinos e estádio")
             for (w in data.work) WorkFold(w) { onOpenSlot(w.slot, 5) }
@@ -5076,5 +5083,31 @@ private fun RivalPredictCard(v: RivalPredict.View, nick: String?) {
                 fontSize = 12.sp, color = if (it >= 40) C.WARN else C.MUTED, modifier = Modifier.padding(top = 8.dp)
             )
         }
+    }
+}
+
+/** Quais telas do OSM visitar para o app voltar a decidir com dados novos (por slot, com o caminho no menu). */
+@Composable
+private fun NeedsCard(needs: List<Fresh.Need>) {
+    val urgent = needs.count { it.urgency >= 2 }
+    val shown = needs.filter { it.urgency >= 1 }
+    Fold("🔄", "Telas para atualizar", if (urgent > 0) "⚠ $urgent agora" else "${shown.size}", startOpen = urgent > 0) {
+        Text("O app só decide bem com o que leu há pouco. Abra estas telas no OSM (com a captura ligada):", fontSize = 12.sp, color = C.MUTED)
+        for (n in shown.take(12)) {
+            val c = if (n.urgency >= 2) C.BAD else C.WARN
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.Top) {
+                Box(Modifier.clip(RoundedCornerShape(9.dp)).background(c.copy(alpha = 0.2f)).border(1.dp, c.copy(alpha = 0.5f), RoundedCornerShape(9.dp)).padding(horizontal = 7.dp, vertical = 3.dp)) {
+                    Text(if (n.slot > 0) "S${n.slot}" else "Geral", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, color = c)
+                }
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(Fresh.NAME[n.type] ?: n.type.name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text(n.reason.replaceFirstChar { it.uppercase() }, fontSize = 11.sp, color = C.MUTED)
+                    Text(Fresh.PATH[n.type] ?: "", fontSize = 11.sp, color = C.PRIMARY)
+                }
+            }
+        }
+        val rest = needs.count { it.urgency == 0 }
+        if (rest > 0) Text("+ $rest tela(s) sem pressa (estatísticas, negociações…).", fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 8.dp))
     }
 }

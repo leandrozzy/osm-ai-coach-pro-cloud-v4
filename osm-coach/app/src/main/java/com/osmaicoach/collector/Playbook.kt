@@ -38,7 +38,18 @@ object Playbook {
         val sponsorDeals: List<Sponsors.Deal> = emptyList(),
         val sponsorReadAt: Long? = null,
         /** Nacionalidade por jogador (nameKey -> país), quando lida. */
-        val nations: Map<String, String> = emptyMap()
+        val nations: Map<String, String> = emptyMap(),
+        /** Preparação do jogo lida (chave do item -> feito). */
+        val prep: Map<String, Boolean> = emptyMap(),
+        /** Lesionados (Médico) e suspensos (Advogado) lidos: nameKeys. */
+        val injured: Set<String> = emptySet(),
+        val suspended: Set<String> = emptySet(),
+        /** Jogadores com cartão amarelo (coluna Estado do plantel). */
+        val yellow: Set<String> = emptySet(),
+        /** Especialistas escolhidos no jogo (capitao/penalti/falta/escanteio -> nome na tela). */
+        val spec: Map<String, String> = emptyMap(),
+        /** Telas desatualizadas deste slot. */
+        val needs: List<Fresh.Need> = emptyList()
     )
 
     const val MAX_LISTED = 4
@@ -214,10 +225,17 @@ object Playbook {
         if ((i.cashM ?: 0.0) >= 1.0) {
             val v = minOf(i.cashM!!, 10.0)
             val pr = prices(v, early, i.ceiling, i.paid?.first)
+            // filtro sugerido: o setor do XI com a média mais baixa, até 24 anos e qualidade acima dessa média
+            val xiPlayers = mine.filter { it.nameKey in i.xi && it.strength != null }
+            val weak = listOf("GOL", "DEF", "MEI", "ATA").mapNotNull { c ->
+                val l = xiPlayers.filter { it.cat == c }
+                if (l.isEmpty()) null else Triple(c, l.map { it.strength!! }.average(), l.size)
+            }.minByOrNull { it.second }
+            val filtro = weak?.let { " Filtro sugerido: ${CAT_LABEL[it.first]}, até 24 anos, qualidade acima de ${it.second.toInt()}." } ?: ""
             out.add(
                 Tip(
                     "🔎", "Olheiro: jogador de ~${money(v)} custa ${money(v)} + 15 BC e revende por ${money(pr.second)}",
-                    "O olheiro traz o jogador pelo valor (mais barato que a lista). Lucro estimado: ${money(pr.second - v)} por jogador" +
+                    "O olheiro traz o jogador pelo valor (mais barato que a lista).$filtro Lucro estimado: ${money(pr.second - v)} por jogador" +
                         (if (OsmEvents.Kind.SCOUT in i.events) " — e o olheiro está em promoção agora." else ". Abaixo de ~10M vende mais rápido."),
                     if (OsmEvents.Kind.SCOUT in i.events) 80 else 40, 6
                 )
@@ -241,6 +259,56 @@ object Playbook {
         }
         Nations.best(i.xi, i.nations)?.let { (country, n) ->
             if (n in 4..5) out.add(Tip("🌍", "Faltam ${6 - n} titular(es) de $country para o bônus de nacionalidade", "A comunidade fala em bônus escondido com 6 titulares do mesmo país (algumas fontes dizem 5). Você tem $n.", 45, 2))
+        }
+
+        // telas desatualizadas: o app só decide bem com o que leu há pouco
+        for (n in i.needs.filter { it.urgency >= 1 }.take(3)) {
+            out.add(
+                Tip(
+                    "🔄", "Atualize: ${Fresh.NAME[n.type] ?: n.type.name}",
+                    n.reason.replaceFirstChar { it.uppercase() } + ". " + (Fresh.PATH[n.type] ?: ""), if (n.urgency >= 2) 92 else 48, 0
+                )
+            )
+        }
+        // lesionados e suspensos (Médico/Advogado): o 11 já ignora; é hora de ter reposição
+        val nameOf = { k: String -> mine.firstOrNull { it.nameKey == k }?.name ?: k }
+        if (i.injured.isNotEmpty() || i.suspended.isNotEmpty()) {
+            val parts = i.injured.map { nameOf(it) + " (lesão)" } + i.suspended.map { nameOf(it) + " (suspenso)" }
+            out.add(Tip("🚑", "Fora do próximo jogo: " + parts.joinToString(), "O 11 sugerido já deixa de fora quem está no Médico ou no Advogado. Se faltar gente na posição, reforce o banco.", 72, 4))
+        }
+        // cartão amarelo nos titulares: risco de suspensão
+        val yTitulares = mine.filter { it.nameKey in i.yellow && it.nameKey in i.xi }
+        if (yTitulares.isNotEmpty()) {
+            out.add(Tip("🟨", "Titulares com cartão amarelo: " + yTitulares.joinToString { it.name }, "Mais um cartão pode custar um jogo. Com árbitro rigoroso, use desarme cuidadoso; confira o Advogado depois da partida.", 30, 4))
+        }
+        // especialistas (regras da comunidade): capitão mais velho, pênalti melhor atacante, falta/escanteio melhores meias
+        if (i.spec.isNotEmpty() && i.xi.isNotEmpty()) {
+            fun same(shown: String, p: PlayerEntity): Boolean {
+                val k = Txt.key(shown)
+                val last = Txt.key(p.name.trim().split(" ").last())
+                return Txt.sim(k, p.nameKey) >= 0.85 || (last.length >= 4 && k.contains(last))
+            }
+            val rec = Screens.recommendSpecialists(mine.filter { it.nameKey in i.xi })
+            val diffs = rec.filter { r -> i.spec[r.role]?.let { cur -> !same(cur, r.player) } ?: false }
+            if (diffs.isNotEmpty()) {
+                out.add(
+                    Tip(
+                        "🎖", "Especialistas: ajuste ${diffs.size} função(ões)",
+                        diffs.joinToString("; ") { "${Screens.SPEC_LABEL[it.role]}: ${it.player.name} (${it.why})" } + ". Menu ☰ → Especialistas.", 58, 4
+                    )
+                )
+            }
+        }
+        // preparação do jogo (lista do próprio jogo): faltas pesam perto da partida
+        val soonGame = i.matchAt != null && i.matchAt > i.now && i.matchAt - i.now <= 24L * 3600000L
+        val pend = Screens.PREP_DEFS.filter { i.prep[it.key] == false }
+        if (pend.isNotEmpty()) {
+            out.add(
+                Tip(
+                    "📝", "Preparação do jogo: falta${if (pend.size > 1) "m" else ""} ${pend.size} — " + pend.take(4).joinToString { it.title },
+                    "O jogo mostra a barra \"Preparação para o jogo\"; cada item pendente pesa. " + pend.first().let { "Primeiro: ${it.title} (${it.why})." }, if (soonGame) 66 else 40, pend.first().tab
+                )
+            )
         }
 
         // 5) estádio: Treino até 2★ → Capacidade → Relvado 1★ → Treino 3★ → equilibrar

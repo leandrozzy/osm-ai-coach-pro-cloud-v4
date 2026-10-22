@@ -1,13 +1,19 @@
 package com.osmaicoach.collector
 
 import java.text.Normalizer
+import org.json.JSONObject
 import kotlin.math.max
 
 const val OSM_PACKAGE = "com.gamebasics.osm"
 const val NI = "NI"
 const val MY_NICK = "leandrozzy"
 
-enum class ScreenType { HUB, PREGAME, SQUAD, CALENDAR, MARKET, TRAINING, TACTIC, REPORT, STADIUM, RESULT, OTHER_OSM, NOISE, NON_OSM }
+enum class ScreenType {
+    HUB, PREGAME, SQUAD, CALENDAR, MARKET, TRAINING, TACTIC, REPORT, STADIUM, RESULT, OTHER_OSM, NOISE, NON_OSM,
+    /** Preparação para o jogo (lista de afazeres do jogo), Médico, Advogado, Especialistas, Patrocinadores, Olheiro,
+     *  Negociações, Estatísticas da liga e Missões. */
+    PREP, DOCTOR, LAWYER, SPECIALISTS, SPONSORS, SCOUT, DEALS, STATS, MISSIONS
+}
 
 /** Coordenadas sempre normalizadas (0..1) em relação à largura/altura da captura. */
 data class OcrToken(val text: String, val l: Float, val t: Float, val r: Float, val b: Float) {
@@ -45,7 +51,9 @@ data class PlayerRead(
     val training: Boolean?,
     val forSale: Boolean?,
     val cond: Int? = null,
-    val morale: Int? = null
+    val morale: Int? = null,
+    /** Cartão amarelo na coluna "Estado" do plantel. */
+    val yellow: Boolean? = null
 )
 
 data class MatchRead(
@@ -115,6 +123,8 @@ data class Extraction(
     val note: String = "",
     val matchReport: MatchReportRead? = null,
     val trainees: List<TraineeRead> = emptyList(),
+    /** Leitura das telas novas (Screens): JSON simples por tipo de tela. */
+    val extra: JSONObject? = null,
     /** Estádio: obra em andamento por card ("Relvado" -> fim) ou null = card lido sem obra (limpa o aviso). */
     val timers: Map<String, Long?> = emptyMap()
 )

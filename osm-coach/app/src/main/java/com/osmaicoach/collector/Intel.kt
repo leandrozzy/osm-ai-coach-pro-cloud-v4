@@ -374,7 +374,9 @@ object WinModel {
         /** Quanto vale um empate (1 = liga normal). Na batalha só a vitória conta: o empate vale bem menos. */
         val drawValue: Double = 1.0,
         /** Pesos corrigidos pelos gols reais dos seus jogos (Learned.fit); null = só o modelo de partida. */
-        val learned: Learned.Model? = null
+        val learned: Learned.Model? = null,
+        /** Gols por jogo (os dois times) na liga do slot, lidos da tela de Estatísticas: calibra o nível de gols. */
+        val leagueGoals: Double? = null
     )
 
     /** Efeito de um fator: no log dos meus gols esperados, no log dos gols do rival e na imprevisibilidade. */
@@ -586,7 +588,7 @@ object WinModel {
 
     /** Gols esperados (meus, do rival) só pelo modelo de partida: a base que o aprendizado corrige. */
     fun baseGoals(i: Input): Pair<Double, Double>? {
-        val o = outcome(terms(i.copy(learned = null, calib = 0.0)) ?: return null)
+        val o = outcome(terms(i.copy(learned = null, calib = 0.0)) ?: return null, levelGoals(i))
         return Pair(o[3], o[4])
     }
 
@@ -601,9 +603,11 @@ object WinModel {
     }
 
     /** (vitória, empate, derrota, gols meus, gols rival) para um conjunto de fatores. */
-    private fun outcome(ts: List<Term>): DoubleArray {
-        val lm = (1.35 * exp(ts.sumOf { it.my })).coerceIn(0.1, 6.0)
-        val lo = (1.35 * exp(ts.sumOf { it.opp })).coerceIn(0.1, 6.0)
+    private fun levelGoals(i: Input): Double = i.leagueGoals?.takeIf { it in 1.4..4.6 }?.let { it / 2.0 } ?: 1.35
+
+    private fun outcome(ts: List<Term>, base: Double = 1.35): DoubleArray {
+        val lm = (base * exp(ts.sumOf { it.my })).coerceIn(0.1, 6.0)
+        val lo = (base * exp(ts.sumOf { it.opp })).coerceIn(0.1, 6.0)
         val a = poisson(lm)
         val b = poisson(lo)
         var w = 0.0
@@ -623,18 +627,19 @@ object WinModel {
 
     /** Pontos esperados (3V + 1E) sem detalhar fatores: rápido para comparar centenas de táticas. */
     fun expectedPoints(i: Input): Double? {
-        val o = outcome(terms(i) ?: return null)
+        val o = outcome(terms(i) ?: return null, levelGoals(i))
         return 3.0 * o[0] + i.drawValue * o[1]
     }
 
     fun predict(i: Input): Prob? {
         val ts = terms(i) ?: return null
-        val all = outcome(ts)
+        val base = levelGoals(i)
+        val all = outcome(ts, base)
         val win = (all[0] * 100).roundToInt().coerceIn(1, 98)
         val draw = (all[1] * 100).roundToInt().coerceIn(1, 99 - win)
         val loss = 100 - win - draw
         // quanto cada fator muda a chance de vitória (tirando só ele)
-        val factors = ts.map { term -> Factor(term.label, (all[0] - outcome(ts.filter { it !== term })[0]) * 100.0) }
+        val factors = ts.map { term -> Factor(term.label, (all[0] - outcome(ts.filter { it !== term }, base)[0]) * 100.0) }
             .filter { kotlin.math.abs(it.pts) >= 0.5 }
         val known = listOf(
             i.plan != null, i.rivalAtk != null && i.rivalDef != null, i.rivalFormation != null, i.home != null,
