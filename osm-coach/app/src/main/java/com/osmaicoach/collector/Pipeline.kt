@@ -121,6 +121,8 @@ class FramePipeline private constructor(private val ctx: Context) {
             "S$slot: sem tática gerada para este jogo. Gere no app antes de montar."
         } else {
             val w = Parsers.tacticCheck(ocr, j, f[K.REFEREE]?.value)
+            // igual ao gerado: a tarefa "montar a tática" está feita
+            if (w.isEmpty()) dao.putPlan(PlanEntity(slot, "tacticdone", JSONObject().put("at", p.at).toString(), now))
             if (w.isEmpty()) "" else "⚠ S$slot: " + w.joinToString(" • ")
         }
         if (msg.isEmpty() || (msg == lastCheck && now - lastCheckAt < 20000L)) return

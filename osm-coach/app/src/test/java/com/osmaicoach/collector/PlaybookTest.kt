@@ -105,8 +105,23 @@ class PlaybookTest {
 
     @Test fun onlyNegativeThingsCountOnTheBubble() {
         fun act(icon: String, prio: Int = 50) = Hints.asHint(Playbook.Tip(icon, "t", "w", prio, 0)).action
-        assertTrue(act("🏋") && act("🚨") && act("📝") && act("🤝", 90))
+        assertTrue(act("🏋") && act("🚨") && act("📝") && act("🤝", 90) && act("🏗") && act("🏟") && act("⏰"))
         // sugestão de melhoria, informação e dica velha não contam
-        assertTrue(!act("🎖") && !act("🗒") && !act("💰") && !act("🤝", 30) && !act("📋") && !act("🏟"))
+        assertTrue(!act("🎖") && !act("🗒") && !act("💰") && !act("🤝", 30) && !act("📋") && !act("🗓"))
+    }
+
+    @Test fun stadiumClaimComesFirstAndUnaffordableUpgradeIsHidden() {
+        val xi = setOf("gka", "defa", "defb", "defc", "defd", "mida", "midb", "midc", "midd", "atka", "atkb")
+        fun run(status: Map<String, String>, cash: Double) = Playbook.tips(
+            Playbook.Input(
+                squad, xi, cash, null, 1, 3, 1, false, 8, 22, emptyList(), matchAt = null, now = 0L, stadiumStatus = status
+            )
+        )
+        val claim = run(mapOf("Relvado" to "concluir melhoria", "Treino" to "665K + 18h"), 5.0)
+        assertTrue(claim.any { it.icon == "🏗" && it.title.contains("Relvado") })
+        assertTrue(claim.none { it.title.startsWith("Próxima obra") })
+        // sem dinheiro para a obra (665K com 0,5M em caixa): não há o que fazer agora
+        assertTrue(run(mapOf("Treino" to "665K + 18h"), 0.5).none { it.icon == "🏟" })
+        assertTrue(run(mapOf("Treino" to "665K + 18h"), 5.0).any { it.icon == "🏟" })
     }
 }

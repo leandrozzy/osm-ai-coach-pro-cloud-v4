@@ -262,7 +262,7 @@ class CaptureService : AccessibilityService() {
         lv.removeAllViews()
         if (list.isEmpty()) {
             lv.addView(TextView(this).apply {
-                text = "✅ Nada pendente nesta tela. Navegue pelo OSM: eu mostro o que fazer em cada tela (Treinamento, Transferências, Estádio, Pré-jogo)."
+                text = "✅ Nada pendente."
                 setTextColor(0xFFB8C7E6.toInt()); textSize = 12f
                 setPadding(0, (4 * dp).toInt(), 0, (4 * dp).toInt())
             })
