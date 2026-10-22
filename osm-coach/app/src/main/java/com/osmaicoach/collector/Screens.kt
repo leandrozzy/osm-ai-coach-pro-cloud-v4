@@ -20,7 +20,9 @@ object Screens {
         t.contains("medico") && (t.contains("lesion") || t.contains("lesao")) -> ScreenType.DOCTOR
         t.contains("advogado") && t.contains("suspens") -> ScreenType.LAWYER
         Regex("acordo de patrocinio").findAll(t).count() >= 2 -> ScreenType.SPONSORS
-        t.contains("seleciona uma posicao") && t.contains("procurar jogadores") -> ScreenType.SCOUT
+        (t.contains("seleciona uma posicao") && t.contains("procurar jogadores")) ||
+            // olheiro já buscando: "Estou a caminho! Voltarei em: 15h 59m 53s"
+            (t.contains("voltarei em") && t.contains("olheiro")) -> ScreenType.SCOUT
         (t.contains("jogador idade") && t.contains("preco") && t.contains("hora")) || t.contains("negociacoes pendentes") -> ScreenType.DEALS
         t.contains("jogadores transferidos") && t.contains("golos marcados") -> ScreenType.STATS
         else -> null
@@ -28,16 +30,16 @@ object Screens {
 
     // ------------------------------------------------------------ preparação para o jogo (lista de afazeres do jogo)
 
-    data class PrepDef(val key: String, val prefix: String, val title: String, val why: String, val tab: Int)
+    data class PrepDef(val key: String, val prefix: String, val title: String, val why: String, val tab: Int, val costsBc: Boolean = false)
 
     /** O que o jogo pede antes de cada partida (textos do próprio jogo) e onde fazer. */
     val PREP_DEFS = listOf(
         PrepDef("treino", "conclui", "Conclua 4 sessões de treino", "jogadores de melhor qualidade têm melhor desempenho", 2),
-        PrepDef("amistoso", "joga 1 amig", "Jogue 1 amistoso", "jogadores de melhor qualidade têm melhor desempenho (amistoso custa ~4 BC)", 6),
+        PrepDef("amistoso", "joga 1 amig", "Jogue 1 amistoso", "jogadores de melhor qualidade têm melhor desempenho (gasta Boss Coins)", 6, costsBc = true),
         PrepDef("posicao", "posiciona os jog", "Posicione os jogadores", "os jogadores rendem mais na posição específica deles", 4),
         PrepDef("banco", "preenche o banco", "Preencha o banco de suplentes", "a sua hipótese de influenciar as substituições possíveis", 4),
-        PrepDef("secreto", "planeia um treino", "Planeje um Treino Secreto", "esconde as suas táticas do Analista do rival", 4),
-        PrepDef("estagio", "faz um estagio", "Faça um Estágio", "melhora verdadeiramente a sua equipa (+25% no jogo)", 4),
+        PrepDef("secreto", "planeia um treino", "Planeje um Treino Secreto", "esconde as suas táticas do Analista do rival (gasta Boss Coins)", 4, costsBc = true),
+        PrepDef("estagio", "faz um estagio", "Faça um Estágio", "melhora a equipa em 25% no jogo (gasta Boss Coins)", 4, costsBc = true),
         PrepDef("onze", "escolhe o 11", "Escolha o 11 inicial", "equipes que não têm 11 jogadores estão enfraquecidas", 4),
         PrepDef("especialistas", "seleciona os teus esp", "Selecione os Especialistas", "os especialistas certos fortalecem a equipa", 4),
         PrepDef("analista", "analisa o advers", "Analise o adversário", "usa as informações do Analista de Dados", 4),

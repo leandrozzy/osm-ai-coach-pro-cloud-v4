@@ -26,7 +26,6 @@ class PlaybookTest {
         )
         val titles = tips.map { it.title }
         assertTrue(titles.any { it.contains("treinador de médios") && it.contains("Mid D") })   // o mais jovem
-        assertTrue(titles.any { it.startsWith("Lista com 3 vaga") && it.contains("Mid E") && !it.contains("Gk B") })  // reserva velho; goleiro no mínimo fica
         assertTrue(titles.any { it.contains("Titular treinando") })
         assertTrue(titles.any { it.contains("Elenco curto (15)") })
         assertTrue(titles.any { it.contains("Próxima obra do estádio: Treino") })
@@ -42,16 +41,42 @@ class PlaybookTest {
 
     @Test fun doesNotSellYoungGoodReservesAndKeepsPositionMinimums() {
         val xi = setOf("gka", "defa", "defb", "defc", "defd", "mida", "midb", "midc", "midd", "atka", "atkb")
-        val extra = squad + listOf(p("Young 72", "MEI", 19, 72, "7M"), p("Old Mid", "MEI", 33, 66, "1M"))
+        val extra = squad + listOf(
+            p("Young 72", "MEI", 19, 72, "7M"), p("Old Mid", "MEI", 33, 66, "1M"),
+            p("Old Atk", "ATA", 34, 60, "1M"), p("Old Def", "DEF", 34, 60, "1M"), p("Old Mid2", "MEI", 35, 61, "1M")
+        )
         val tips = Playbook.tips(
             Playbook.Input(
                 extra, xi, 3.0, listedUsed = 2, capLevel = 2, pitchLevel = 2, trainLevel = 2, stadiumBuilding = false,
                 round = 8, roundTotal = 22, seats = emptyList(), matchAt = null, now = 0L
             )
         )
-        val sell = tips.first { it.title.startsWith("Lista com 2 vaga") }.title
-        assertTrue(sell.contains("Old Mid"))
+        val sell = tips.first { it.title.startsWith("Sobram") }.title
+        assertTrue(sell.contains("Old"))
         assertTrue(!sell.contains("Young 72"))
         assertTrue(!sell.contains("Gk B")) // 2 goleiros é o mínimo
+    }
+
+    @Test fun neverAsksToSellWhenSquadIsAtMinimum() {
+        val xi = setOf("gka", "defa", "defb", "defc", "defd", "mida", "midb", "midc", "midd", "atka", "atkb")
+        val tips = Playbook.tips(
+            Playbook.Input(
+                squad, xi, 3.0, listedUsed = 0, capLevel = 2, pitchLevel = 2, trainLevel = 2, stadiumBuilding = false,
+                round = 8, roundTotal = 22, seats = emptyList(), matchAt = null, now = 0L
+            )
+        )
+        assertTrue(tips.none { it.title.startsWith("Sobram") || it.title.startsWith("Lista com") })
+    }
+
+    @Test fun bcCostingPrepIsHiddenUnlessAccepted() {
+        val xi = setOf("gka", "defa", "defb", "defc", "defd", "mida", "midb", "midc", "midd", "atka", "atkb")
+        fun run(spend: Boolean) = Playbook.tips(
+            Playbook.Input(
+                squad, xi, 1.0, null, 2, 2, 2, false, 8, 22, emptyList(), matchAt = 5 * 3600000L, now = 0L,
+                prep = mapOf("onze" to true, "amistoso" to false, "secreto" to false, "estagio" to false), spendBc = spend
+            )
+        )
+        assertTrue(run(false).none { it.icon == "📝" })
+        assertTrue(run(true).any { it.icon == "📝" })
     }
 }

@@ -283,7 +283,7 @@ class CaptureService : AccessibilityService() {
 
     private fun updateBadge() {
         val b = badgeView ?: return
-        val n = hints.count { it.icon != "📋" }
+        val n = hints.count { it.action }
         b.text = n.toString()
         b.visibility = if (n > 0) View.VISIBLE else View.GONE
     }

@@ -22,7 +22,7 @@ object OsmEvents {
         OLDIES("Veteranos de ouro × Lendas", "veteranos evoluem mais: treine os mais velhos que são titulares"),
         CAMP("Mania de estágio", "estágios em promoção: veja o preço no jogo antes de um jogo decisivo"),
         FACILITIES("Instalações de topo", "pode baratear ou acelerar obras do estádio: confira no jogo e comece a próxima obra"),
-        SCOUT("Olheiro barato", "o relatório do olheiro leva 2 h (normalmente 16 h) e os jogadores saem mais baratos: compre pelo valor e revenda"),
+        SCOUT("Olheiro barato", "o relatório do olheiro leva 2 h em vez de 16 h"),
         LEGENDS("Lendas", "evento de jogadores lendários: confira as ofertas no jogo"),
         BLITZ("Blitz do estádio", "evento do estádio: confira as condições no jogo"),
         FRIENDLY("Amistosos intensos", "amistosos rendem mais: confira as condições no jogo"),

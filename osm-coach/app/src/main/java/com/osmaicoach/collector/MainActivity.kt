@@ -2190,7 +2190,7 @@ private suspend fun loadDirector(ctx: Context): List<DirSlot> {
             seats.any { it.state == "unknown" } -> "abrir a tela de Treinamento no jogo"
             else -> null
         }
-        val tips = Hints.slotTips(repo, s.slot, res?.rows?.flatten()?.mapNotNull { it?.nameKey }?.toSet() ?: emptySet(), s.nextAt, s.title, trainRates)
+        val tips = Hints.slotTips(repo, s.slot, res?.rows?.flatten()?.mapNotNull { it?.nameKey }?.toSet() ?: emptySet(), s.nextAt, s.title, trainRates, Settings.get(ctx, "spend_bc", "0") == "1")
         out.add(
             DirSlot(
                 s = s,
@@ -4656,6 +4656,14 @@ private fun SettingsTab() {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
         Text("Ajustes", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
         NotificationsPanel()
+        var spendBc by remember { mutableStateOf(Settings.get(ctx, "spend_bc", "0") == "1") }
+        Fold("💎", "Boss Coins", if (spendBc) "gastar" else "preservar") {
+            SwitchRow("Aceitar dicas que gastam Boss Coins (amistoso, estágio, treino secreto, olheiro imediato)", spendBc) {
+                spendBc = it
+                Settings.put(ctx, "spend_bc", if (it) "1" else "0")
+            }
+            Text("Desligado (padrão): o app nunca sugere gastar Boss Coins; só dicas que usam dinheiro comum ($).", fontSize = 12.sp, color = C.MUTED)
+        }
         val exportScope = rememberCoroutineScope()
         var exportMsg by remember { mutableStateOf("") }
         var metaMsg by remember { mutableStateOf("") }
