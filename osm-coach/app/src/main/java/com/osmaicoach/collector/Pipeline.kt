@@ -227,6 +227,14 @@ class FramePipeline private constructor(private val ctx: Context) {
         ScreenType.STADIUM -> Parsers.stadium(ocr, img, now)
         ScreenType.RESULT -> Parsers.matchResult(ocr)
         ScreenType.TRAINING -> Extraction(ScreenType.TRAINING, trainees = Parsers.training(ocr, now))
+        ScreenType.PREP -> Extraction(ScreenType.PREP, extra = Screens.prep(ocr, img))
+        ScreenType.DOCTOR, ScreenType.LAWYER -> Extraction(type, extra = Screens.roster(ocr))
+        ScreenType.SPECIALISTS -> Extraction(ScreenType.SPECIALISTS, extra = Screens.specialists(ocr))
+        ScreenType.SCOUT -> Extraction(ScreenType.SCOUT, extra = Screens.scout(ocr))
+        ScreenType.DEALS -> Extraction(ScreenType.DEALS, extra = Screens.deals(ocr))
+        ScreenType.STATS -> Extraction(ScreenType.STATS, extra = Screens.stats(ocr))
+        ScreenType.MISSIONS -> Extraction(ScreenType.MISSIONS, extra = Screens.missions(ocr))
+        ScreenType.SPONSORS -> Extraction(ScreenType.SPONSORS)
         else -> Extraction(type)
     }
 
@@ -241,6 +249,15 @@ class FramePipeline private constructor(private val ctx: Context) {
         ScreenType.REPORT -> "Relatório"
         ScreenType.STADIUM -> "Estádio"
         ScreenType.RESULT -> "Resultado do jogo"
+        ScreenType.PREP -> "Preparação para o jogo"
+        ScreenType.DOCTOR -> "Médico"
+        ScreenType.LAWYER -> "Advogado"
+        ScreenType.SPECIALISTS -> "Especialistas"
+        ScreenType.SPONSORS -> "Patrocinadores"
+        ScreenType.SCOUT -> "Olheiro"
+        ScreenType.DEALS -> "Negociações"
+        ScreenType.STATS -> "Estatísticas da liga"
+        ScreenType.MISSIONS -> "Missões"
         else -> "Outra tela do OSM"
     }
 

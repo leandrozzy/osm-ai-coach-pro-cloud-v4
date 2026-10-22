@@ -378,6 +378,7 @@ object Director {
             headToHead = h2h,
             calib = Calib.offset(repo.dao.tacticLogs(slot).mapNotNull { runCatching { JSONObject(it.json) }.getOrNull() }),
             learned = runCatching { Learned.fit(allLogs(repo)) }.getOrNull(),
+            leagueGoals = runCatching { repo.dao.plan(slot, "lstats")?.json?.let { JSONObject(it).optDouble("avg", Double.NaN) }?.takeIf { !it.isNaN() } }.getOrNull(),
             meta = run {
                 val my = int(K.MY_STRENGTH)
                 val rv = SecretTraining.rivalStrength(f)

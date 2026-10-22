@@ -22,6 +22,8 @@ object ScreenClassifier {
             "formacao", "marcacao", "desarme", "estilo de jogo", "jornada", "analista", "relatorio", "adversario",
             "plantel", "estadio", "campo de treinamento", "fora de jogo", "temporizacao", "capacidade"
         ).count { t.contains(it) } >= 3
+        // Telas com texto bem específico (Missões nem tem a barra do OSM): antes do filtro de anúncios
+        Screens.classify(t)?.let { return it }
         if (!osmTopBar && !osmish) return ScreenType.NON_OSM
 
         // Menu lateral aberto por cima de qualquer tela: tem "Lista de transferências" e "Olheiro" e engana o mercado.

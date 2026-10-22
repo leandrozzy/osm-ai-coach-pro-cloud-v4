@@ -135,7 +135,7 @@ object Notifier {
         val now = System.currentTimeMillis()
         val on = enabled(ctx, "timers")
         val p = prefs(ctx)
-        for (slot in 1..4) {
+        for (slot in 0..4) {
             val list = repo.timers(slot).associateBy { it.key }
             for (key in Timers.KEYS) {
                 val e = list[key]
@@ -174,7 +174,18 @@ object Notifier {
         val f = repo.fieldMap(slot)
         val team = f[K.TEAM]?.value ?: f[K.HUB_TITLE]?.value ?: "Slot $slot"
         val label = e.label.substringAfter(": ")
-        if (e.training) {
+        if (e.mission) {
+            post(
+                ctx, CH_TIMER, timerCode(slot, key),
+                if (key == "mission_week") "🎯 A semana de missões reiniciou" else "🎯 Novas missões disponíveis",
+                "Abra o OSM → Missões: elas dão Boss Coins e renovam sozinhas.", 0, 0, true
+            )
+        } else if (e.scout) {
+            post(
+                ctx, CH_TIMER, timerCode(slot, key), "🔎 S$slot • O olheiro voltou",
+                "$team: abra o OSM → Olheiro e veja os jogadores que ele encontrou (compre pelo valor e revenda).", slot, 6, true
+            )
+        } else if (e.training) {
             post(
                 ctx, CH_TIMER, timerCode(slot, key), "🏋 S$slot • Treino terminou: $label",
                 "$team: abra o OSM, reclame o treino e coloque outro jogador para não perder tempo de treino.", slot, 5, true
@@ -343,6 +354,14 @@ object Notifier {
             if (plan != null) {
                 val free = 5 - plan.trainingActive
                 if (free > 0 && plan.train.isNotEmpty()) lines.add("S$slot: $free treino(s) livre(s)")
+            }
+            runCatching {
+                val st = f[K.SLOT_STATE]?.value
+                if ((st == null || st == "ativo") && f[K.TEAM] != null) {
+                    Hints.needsFor(repo, slot, null, true).filter { it.urgency >= 2 }.take(2).forEach { n ->
+                        lines.add("S$slot: atualize ${Fresh.NAME[n.type] ?: n.type.name} (${n.reason})")
+                    }
+                }
             }
             lines.addAll(Director.priceDrops(repo, slot))
             val sp = Director.stadiumPlan(f)

@@ -101,7 +101,15 @@ object Ledger {
 
     /** Não duplica: a mesma compra/venda do mesmo jogador em 3 dias é a mesma. */
     fun add(list: MutableList<Entry>, e: Entry): Boolean {
-        if (list.any { it.type == e.type && it.key == e.key && kotlin.math.abs(it.at - e.at) < 3L * 86400000L }) return false
+        val same = list.firstOrNull { it.type == e.type && it.key == e.key && kotlin.math.abs(it.at - e.at) < 3L * 86400000L }
+        if (same != null) {
+            // a leitura exata (tela de Negociações) vale mais que a estimada pelo elenco: troca, mantendo força e idade
+            if (same.estimated && !e.estimated) {
+                list[list.indexOf(same)] = e.copy(strength = e.strength ?: same.strength, age = e.age ?: same.age)
+                return true
+            }
+            return false
+        }
         list.add(e)
         return true
     }

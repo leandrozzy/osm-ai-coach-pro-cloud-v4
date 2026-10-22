@@ -155,8 +155,21 @@ class Repo(private val ctx: Context) {
     /** Aplica uma extração. Só escreve no slot atribuído; sem slot confiável, nada é gravado. */
     suspend fun apply(slot: Int?, ex: Extraction, source: String, now: Long): Int {
         if (ex.type == ScreenType.HUB) return applyHub(ex, now)
+        if (ex.type == ScreenType.MISSIONS) return applyExtra(0, ex, now)
         if (slot == null) return 0
         val n = applyTyped(slot, ex, source, now)
+        // registra que a tela foi lida (base do "telas para atualizar"): só se trouxe conteúdo de verdade
+        val meaningful = when (ex.type) {
+            ScreenType.TRAINING -> ex.trainees.isNotEmpty()
+            ScreenType.STADIUM -> ex.fields.isNotEmpty() || ex.timers.isNotEmpty()
+            ScreenType.MARKET -> ex.listings.isNotEmpty() || ex.fields.isNotEmpty()
+            ScreenType.PREGAME -> ex.fields.containsKey(K.RIVAL_TEAM) || ex.fields.containsKey(K.MY_STRENGTH)
+            ScreenType.REPORT -> ex.fields.size >= 3
+            ScreenType.CALENDAR -> ex.matches.size >= 3
+            ScreenType.RESULT -> ex.matchReport != null
+            else -> false
+        }
+        if (meaningful) runCatching { noteScreen(slot, ex.type, now) }
         if (n > 0 && ex.type in setOf(ScreenType.PREGAME, ScreenType.REPORT, ScreenType.SQUAD)) {
             runCatching { checkRivalChange(slot, now) }
         }
@@ -204,6 +217,8 @@ class Repo(private val ctx: Context) {
             }
             ScreenType.RESULT -> applyResult(slot, ex, now)
             ScreenType.TRAINING -> applyTraining(slot, ex.trainees, now)
+            ScreenType.PREP, ScreenType.DOCTOR, ScreenType.LAWYER, ScreenType.SPECIALISTS, ScreenType.SCOUT,
+            ScreenType.DEALS, ScreenType.STATS -> applyExtra(slot, ex, now)
             else -> 0
         }
     }
@@ -520,6 +535,20 @@ class Repo(private val ctx: Context) {
             // jogador novo num elenco que já estava lido = contratação (a 1ª leitura do elenco não conta)
             if (old == null && existing.size >= 14 && source != "ai" && n.strength != null && n.valueText != null && !looksGarbled(n.name)) arrived.add(key)
         }
+        if (ex.players.size >= 3) {
+            runCatching { noteScreen(slot, ScreenType.SQUAD, now) }
+            // cartão amarelo (coluna Estado): guarda por jogador; quem foi lido sem amarelo sai da lista
+            val cards = planJson(slot, "cards")
+            var cardsChanged = false
+            for (p in ex.players) {
+                val y = p.yellow ?: continue
+                val k = Txt.key(p.name)
+                val near = existing.firstOrNull { it.nameKey == k }?.nameKey ?: existing.firstOrNull { SquadDedupe.samePlayer(it.nameKey, it.age, it.strength, k, p.age, p.strength) }?.nameKey ?: k
+                if (y && !cards.optBoolean(near)) { cards.put(near, true); cardsChanged = true }
+                if (!y && cards.has(near)) { cards.remove(near); cardsChanged = true }
+            }
+            if (cardsChanged) dao.putPlan(PlanEntity(slot, "cards", cards.toString(), now))
+        }
         if (seen.isNotEmpty()) markSeen(slot, seen, now)
         if (seen.isNotEmpty()) trackProgress(slot, seen, arrived, now)
         if (seen.isNotEmpty()) dedupeSlot(slot, now)
@@ -679,6 +708,134 @@ class Repo(private val ctx: Context) {
         return changed
     }
 
+    // ------------------------------------------------------------------ telas novas (Preparação, Médico, Advogado…)
+
+    /** Quando cada tela foi lida pela última vez (por slot; 0 = global): base do "telas para atualizar". */
+    suspend fun noteScreen(slot: Int, type: ScreenType, now: Long) {
+        val j = planJson(slot, "seen")
+        j.put(type.name, now)
+        dao.putPlan(PlanEntity(slot, "seen", j.toString(), now))
+    }
+
+    suspend fun seenMap(slot: Int): Map<String, Long> {
+        val j = planJson(slot, "seen")
+        return j.keys().asSequence().associateWith { j.optLong(it) }
+    }
+
+    private fun nameMatches(line: String, p: PlayerEntity): Boolean {
+        val k = Txt.key(line)
+        if (k.length < 3) return false
+        if (Txt.sim(k, p.nameKey) >= 0.85) return true
+        // "Rúben Dias" na tela × "r dias" no elenco: o sobrenome (4+ letras) contido basta se for único
+        val last = Txt.key(p.name.trim().split(" ").last())
+        // palavra inteira igual ao sobrenome (não basta o sobrenome "estar contido" em outro texto)
+        return last.length >= 4 && line.split(" ", ",", ".").map { Txt.key(it) }.any { it == last }
+    }
+
+    private suspend fun applyExtra(slot: Int, ex: Extraction, now: Long): Int {
+        val x = ex.extra ?: return 0
+        when (ex.type) {
+            ScreenType.PREP -> {
+                val items = x.optJSONArray("items") ?: return 0
+                if (items.length() == 0) return 0
+                val cur = planJson(slot, "prep")
+                for (i in 0 until items.length()) {
+                    val o = items.optJSONObject(i) ?: continue
+                    cur.put(o.optString("k"), JSONObject().put("done", o.optBoolean("done")).put("at", now))
+                }
+                dao.putPlan(PlanEntity(slot, "prep", cur.toString(), now))
+                noteScreen(slot, ScreenType.PREP, now)
+                return 1
+            }
+            ScreenType.DOCTOR, ScreenType.LAWYER -> {
+                val kind = if (ex.type == ScreenType.DOCTOR) "injured" else "suspended"
+                val mine = dao.playersOf(slot).filter { it.owner == "MY" }
+                val lines = x.optJSONArray("lines")
+                val names = ArrayList<String>()
+                if (!x.optBoolean("empty") && lines != null) {
+                    for (i in 0 until lines.length()) {
+                        val l = lines.optString(i)
+                        mine.firstOrNull { nameMatches(l, it) }?.let { if (it.nameKey !in names) names.add(it.nameKey) }
+                    }
+                }
+                // tela vazia só vale com o aviso do próprio jogo; lista cheia sem nenhum nome reconhecido não apaga nada
+                if (names.isEmpty() && !x.optBoolean("empty")) return 0
+                val old = planJson(slot, kind)
+                val oldNames = old.optJSONArray("names")?.let { a -> (0 until a.length()).map { a.optString(it) } } ?: emptyList()
+                dao.putPlan(PlanEntity(slot, kind, JSONObject().put("names", JSONArray(names)).put("at", now).toString(), now))
+                noteScreen(slot, ex.type, now)
+                if (names.sorted() != oldNames.sorted()) {
+                    val txt = if (names.isEmpty()) "nenhum" else names.joinToString { n -> mine.firstOrNull { it.nameKey == n }?.name ?: n }
+                    learn(slot, "elenco", (if (kind == "injured") "Lesionados (Médico): " else "Suspensos (Advogado): ") + txt + ".", now)
+                }
+                return 1
+            }
+            ScreenType.SPECIALISTS -> {
+                if (x.length() < 4) return 0
+                dao.putPlan(PlanEntity(slot, "spec", x.put("at", now).toString(), now))
+                noteScreen(slot, ScreenType.SPECIALISTS, now)
+                return 1
+            }
+            ScreenType.SCOUT -> {
+                noteScreen(slot, ScreenType.SCOUT, now)
+                val secs = if (x.isNull("endsIn")) null else x.optLong("endsIn")
+                if (secs != null) updateTimers(slot, mapOf("scout" to Pair(now + secs * 1000L, "olheiro: relatório")), now)
+                else updateTimers(slot, mapOf("scout" to null), now)
+                return 1
+            }
+            ScreenType.DEALS -> {
+                val rows = x.optJSONArray("rows") ?: return 0
+                val team = fieldMap(slot)[K.TEAM]?.value ?: return 0
+                val tk = Txt.key(team)
+                val ledger = Ledger.parse(dao.plan(slot, "ledger")?.json)
+                var added = 0
+                val cal = java.util.Calendar.getInstance()
+                for (i in 0 until rows.length()) {
+                    val r = rows.optJSONObject(i) ?: continue
+                    val price = r.optDouble("price", 0.0).takeIf { it > 0 } ?: continue
+                    val from = Txt.key(r.optString("from"))
+                    val to = Txt.key(r.optString("to"))
+                    val sold = from.length >= 3 && Txt.sim(from, tk) >= 0.85
+                    val bought = to.length >= 3 && Txt.sim(to, tk) >= 0.85
+                    if (!sold && !bought) continue
+                    val h = r.optInt("h", -1)
+                    val m = r.optInt("m", -1)
+                    val at = if (h in 0..23 && m in 0..59) cal.apply { timeInMillis = now; set(java.util.Calendar.HOUR_OF_DAY, h); set(java.util.Calendar.MINUTE, m); set(java.util.Calendar.SECOND, 0) }.timeInMillis else now
+                    val name = r.optString("name")
+                    if (Ledger.add(ledger, Ledger.Entry(if (sold) "sell" else "buy", Txt.key(name), name, minOf(at, now), price, false, null, null))) added++
+                }
+                noteScreen(slot, ScreenType.DEALS, now)
+                if (added > 0) dao.putPlan(PlanEntity(slot, "ledger", Ledger.toJson(ledger), now))
+                return added
+            }
+            ScreenType.STATS -> {
+                if (x.length() < 2) return 0
+                dao.putPlan(PlanEntity(slot, "lstats", x.put("at", now).toString(), now))
+                noteScreen(slot, ScreenType.STATS, now)
+                return 1
+            }
+            ScreenType.MISSIONS -> {
+                val up = LinkedHashMap<String, Pair<Long, String>?>()
+                if (x.has("newIn")) up["mission_new"] = Pair(now + x.optLong("newIn") * 1000L, "missões: novas")
+                if (x.has("weekIn")) up["mission_week"] = Pair(now + x.optLong("weekIn") * 1000L, "missões: semana")
+                if (up.isEmpty()) return 0
+                updateTimers(0, up, now)
+                noteScreen(0, ScreenType.MISSIONS, now)
+                return 1
+            }
+            else -> return 0
+        }
+    }
+
+    /** Lesionados e suspensos lidos do Médico/Advogado (nameKeys). */
+    suspend fun outByDoctorOrLawyer(slot: Int): Pair<Set<String>, Set<String>> {
+        fun names(j: JSONObject): Set<String> {
+            val a = j.optJSONArray("names") ?: return emptySet()
+            return (0 until a.length()).map { a.optString(it) }.toSet()
+        }
+        return Pair(names(planJson(slot, "injured")), names(planJson(slot, "suspended")))
+    }
+
     // ------------------------------------------------------------------ leituras extras (eventos, teto de venda, patrocínio)
 
     /** Coisas que valem em qualquer tela: teto de venda da liga (tela de preço) e patrocínio (tela de patrocinadores). */
@@ -690,7 +847,10 @@ class Repo(private val ctx: Context) {
             if (r > old) dao.putPlan(PlanEntity(slot, "ceiling", org.json.JSONObject().put("r", r).put("at", now).toString(), now))
         }
         val deals = Sponsors.parse(ocr)
-        if (deals.size >= 2) dao.putPlan(PlanEntity(slot, "sponsor", Sponsors.toJson(deals, now), now))
+        if (deals.size >= 2) {
+            dao.putPlan(PlanEntity(slot, "sponsor", Sponsors.toJson(deals, now), now))
+            noteScreen(slot, ScreenType.SPONSORS, now)
+        }
     }
 
     // ------------------------------------------------------------------ cronômetros (treino e estádio)
@@ -1030,7 +1190,9 @@ class Repo(private val ctx: Context) {
     suspend fun unavailable(slot: Int): Set<String> {
         val round = fieldMap(slot)[K.ROUND]?.value?.toIntOrNull() ?: -1
         val j = planJson(slot, "unavail")
-        return j.keys().asSequence().filter { j.optInt(it, -9) == round }.toSet()
+        val manual = j.keys().asSequence().filter { j.optInt(it, -9) == round }.toSet()
+        val (inj, susp) = outByDoctorOrLawyer(slot)
+        return manual + inj + susp
     }
 
     suspend fun setUnavailable(slot: Int, nameKey: String, out: Boolean) {

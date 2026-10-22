@@ -56,6 +56,12 @@ object PixelProbe {
         return if (n == 0) 0f else hit.toFloat() / n.toFloat()
     }
 
+    /** Fração de pixels verdes vivos na caixa (polegar "feito" da lista de afazeres). */
+    fun greenBox(img: Img, x0: Float, x1: Float, y0: Float, y1: Float): Float = frac(img, x0, x1, y0, y1, GREEN)
+
+    /** Fração de pixels amarelo-ouro na caixa (cartão amarelo do plantel). */
+    fun goldBox(img: Img, x0: Float, x1: Float, y0: Float, y1: Float): Float = frac(img, x0, x1, y0, y1, GOLD)
+
     /** Barra superior do OSM: pílula azul-clara de moedas + pílula laranja de gemas. Anúncios não têm. */
     fun isOsmTopBar(img: Img): Boolean =
         frac(img, 0.20f, 0.28f, 0.01f, 0.08f, ORANGE) >= 0.08f &&
