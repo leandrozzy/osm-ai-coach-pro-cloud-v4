@@ -160,9 +160,8 @@ class Repo(private val ctx: Context) {
         val n = applyTyped(slot, ex, source, now)
         // registra que a tela foi lida (base do "telas para atualizar"): só se trouxe conteúdo de verdade
         val meaningful = when (ex.type) {
-            ScreenType.TRAINING -> ex.trainees.isNotEmpty()
-            ScreenType.STADIUM -> ex.fields.isNotEmpty() || ex.timers.isNotEmpty()
-            ScreenType.MARKET -> ex.listings.isNotEmpty() || ex.fields.isNotEmpty()
+            // tela reconhecida pelo classificador = você passou por ela (mesmo sem treinador/obra/listagem para ler)
+            ScreenType.TRAINING, ScreenType.STADIUM, ScreenType.MARKET -> true
             ScreenType.PREGAME -> ex.fields.containsKey(K.RIVAL_TEAM) || ex.fields.containsKey(K.MY_STRENGTH)
             ScreenType.REPORT -> ex.fields.size >= 3
             ScreenType.CALENDAR -> ex.matches.size >= 3
