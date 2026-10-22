@@ -12,8 +12,8 @@ object Hints {
     /** [action] = coisa por fazer (conta no número vermelho da bolha); o resto é só informação. */
     data class Hint(val icon: String, val title: String, val detail: String, val action: Boolean = false)
 
-    /** Dicas que são "ainda não fiz": treinador parado, faltam jogadores, preparação, especialistas, patrocínio vencido. */
-    private val ACTION_ICONS = setOf("🏋", "🚨", "📝", "🎖", "🤝", "🔄")
+    /** Dicas que são "ainda não fiz": treinador parado, faltam jogadores, preparação, patrocínio vencido. Sugestão de melhoria não conta. */
+    private val ACTION_ICONS = setOf("🏋", "🚨", "📝", "🤝", "🔄")
 
     fun asHint(t: Playbook.Tip): Hint = Hint(t.icon, t.title, t.why, t.icon in ACTION_ICONS && !(t.icon == "🤝" && t.priority < 88))
 
@@ -116,47 +116,53 @@ object Hints {
         val title = kv(f, K.TEAM) ?: kv(f, K.HUB_TITLE) ?: "Slot $slot"
         val spend = Settings.get(ctx, "spend_bc", "0") == "1"
         val tips = slotTips(repo, slot, null, null, title, trainRates(repo), spend)
-        val out = ArrayList<Hint>()
-        tips.filter { it.icon == "🎉" }.forEach { out.add(asHint(it)) }
-        // lembrete de quais telas visitar (menos a que está aberta agora)
-        val needs = runCatching {
-            val st = f[K.SLOT_STATE]?.value
-            needsFor(repo, slot, null, (st == null || st == "ativo") && kv(f, K.TEAM) != null)
-        }.getOrDefault(emptyList()).filter { it.type != type && it.urgency >= 1 }
-        needs.take(2).forEach { n ->
-            out.add(Hint("🔄", "Atualize: " + (Fresh.NAME[n.type] ?: n.type.name), n.reason.replaceFirstChar { it.uppercase() } + ". " + (Fresh.PATH[n.type] ?: ""), true))
+        val now = System.currentTimeMillis()
+        val st0 = f[K.SLOT_STATE]?.value
+        val activeSlot = (st0 == null || st0 == "ativo") && kv(f, K.TEAM) != null
+        // O número vermelho da bolha = só o que está NEGATIVO neste slot (independe da tela aberta): tela ainda não lida,
+        // treinador parado, jogadores faltando, preparação por fazer, contrato vencido, tática do jogo por gerar.
+        val pend = ArrayList<Hint>()
+        runCatching { needsFor(repo, slot, null, activeSlot) }.getOrDefault(emptyList()).filter { it.type != type && it.urgency >= 1 }.forEach { n ->
+            pend.add(Hint("🔄", "Atualize: " + (Fresh.NAME[n.type] ?: n.type.name), n.reason.replaceFirstChar { it.uppercase() } + ". " + (Fresh.PATH[n.type] ?: ""), true))
         }
+        tips.filter { it.icon != "🔄" }.map { asHint(it) }.filter { it.action }
+            .filter { !(type == ScreenType.PREP && (it.icon == "📝" || it.icon == "🗒")) }.forEach { pend.add(it) }
+        val tp = repo.dao.plan(slot, "tactic")
+        val tj = tp?.json?.let { runCatching { JSONObject(it) }.getOrNull() }
+        val tacticOk = tp != null && tj != null && Director.tacticValid(tj, tp.at, f, now)
+        val matchAt = f[K.MATCH_AT]?.value?.toLongOrNull()
+        val gameSoon = matchAt != null && matchAt > now && matchAt - now <= 24L * 3600000L
+        val ch = rivalChangesOf(repo, slot)
+        if (activeSlot && tacticOk.not() && gameSoon) pend.add(Hint("⚡", "Gere a tática deste jogo no app", "Toque em 📱 App → Slots → Tática → Gerar.", true))
+        if (activeSlot && ch.isNotEmpty()) pend.add(Hint("⚠", "O rival mudou: gere a tática de novo", RivalWatch.headline(ch), true))
+
+        // informação da tela aberta (não conta no número)
+        val info = ArrayList<Hint>()
+        tips.filter { it.icon == "🎉" }.forEach { info.add(asHint(it)) }
         when (type) {
             ScreenType.PREP -> {
-                val pend = Screens.PREP_DEFS.filter { d -> (!d.costsBc || spend) && repo.dao.plan(slot, "prep")?.json?.let { JSONObject(it).optJSONObject(d.key)?.optBoolean("done") } == false }
-                if (pend.isEmpty()) out.add(Hint("✅", "Preparação do jogo em dia", "Nenhum item pendente entre os que vi. Role a lista para eu ler os outros."))
-                pend.take(5).forEach { out.add(Hint("📝", it.title, it.why.replaceFirstChar { c -> c.uppercase() }, true)) }
+                val pendItems = Screens.PREP_DEFS.filter { d -> (!d.costsBc || spend) && repo.dao.plan(slot, "prep")?.json?.let { JSONObject(it).optJSONObject(d.key)?.optBoolean("done") } == false }
+                if (pendItems.isEmpty()) info.add(Hint("✅", "Preparação do jogo em dia", "Nenhum item pendente entre os que vi. Role a lista para eu ler os outros."))
+                pendItems.take(5).forEach { info.add(Hint("📝", it.title, it.why.replaceFirstChar { c -> c.uppercase() }, true)) }
             }
-            ScreenType.SPECIALISTS -> tips.filter { it.icon == "🎖" }.forEach { out.add(asHint(it)) }
+            ScreenType.SPECIALISTS -> tips.filter { it.icon == "🎖" }.forEach { info.add(asHint(it)) }
             ScreenType.DOCTOR, ScreenType.LAWYER -> {
-                tips.filter { it.icon == "🚑" }.forEach { out.add(asHint(it)) }
-                if (tips.none { it.icon == "🚑" }) out.add(Hint("✅", "Ninguém fora do jogo", "Li esta tela: nenhum jogador do seu elenco aparece como " + (if (type == ScreenType.DOCTOR) "lesionado" else "suspenso") + "."))
+                tips.filter { it.icon == "🚑" }.forEach { info.add(asHint(it)) }
+                if (tips.none { it.icon == "🚑" }) info.add(Hint("✅", "Ninguém fora do jogo", "Li esta tela: nenhum jogador do seu elenco aparece como " + (if (type == ScreenType.DOCTOR) "lesionado" else "suspenso") + "."))
             }
-            ScreenType.SCOUT -> tips.filter { it.icon == "🔎" }.forEach { out.add(asHint(it)) }
-            ScreenType.SPONSORS -> tips.filter { it.icon == "🤝" }.forEach { out.add(asHint(it)) }
+            ScreenType.SPONSORS -> tips.filter { it.icon == "🤝" }.forEach { info.add(asHint(it)) }
             ScreenType.PREGAME, ScreenType.TACTIC, ScreenType.REPORT -> {
-                tips.filter { it.icon == "📝" || it.icon == "🗒" || it.icon == "🎖" || it.icon == "🚑" }.take(2).forEach { out.add(asHint(it)) }
-                val ch = rivalChangesOf(repo, slot)
-                if (ch.isNotEmpty()) out.add(Hint("⚠", "O rival mudou: gere a tática de novo", RivalWatch.headline(ch), true))
-                val p = repo.dao.plan(slot, "tactic")
-                val j = p?.json?.let { runCatching { JSONObject(it) }.getOrNull() }
-                if (p != null && j != null && Director.tacticValid(j, p.at, f, System.currentTimeMillis())) {
-                    out.add(Hint("📋", "Monte: ${j.optString("formation")} • ${j.optString("playStyle")}", Director.tacticSummary(j)))
-                } else {
-                    out.add(Hint("⚡", "Gere a tática deste jogo no app", "Toque em 📱 App → Slots → Tática → Gerar.", true))
-                }
+                tips.filter { it.icon == "📝" || it.icon == "🗒" || it.icon == "🎖" || it.icon == "🚑" }.take(2).forEach { info.add(asHint(it)) }
+                if (tacticOk && tj != null) info.add(Hint("📋", "Monte: ${tj.optString("formation")} • ${tj.optString("playStyle")}", Director.tacticSummary(tj)))
+                else info.add(Hint("⚡", "Gere a tática deste jogo no app", "Toque em 📱 App → Slots → Tática → Gerar."))
             }
             else -> {
                 val keep = BY_SCREEN[type]
                 val list = if (keep != null) tips.filter { it.icon in keep } else tips.filter { it.icon != "🎉" && it.icon != "🔄" }.take(3)
-                list.forEach { out.add(asHint(it)) }
+                list.forEach { info.add(asHint(it)) }
             }
         }
+        val out = pend + info.filter { h -> pend.none { it.title == h.title } }
         return out.filter { !dismissed(ctx, it.title) }
     }
 

@@ -102,4 +102,11 @@ class PlaybookTest {
         assertTrue(run(10 * 3600000L - 600_000L).any { it.icon == "📝" })
         assertTrue(run(0L).none { it.icon == "📝" } && run(0L).any { it.icon == "🗒" })
     }
+
+    @Test fun onlyNegativeThingsCountOnTheBubble() {
+        fun act(icon: String, prio: Int = 50) = Hints.asHint(Playbook.Tip(icon, "t", "w", prio, 0)).action
+        assertTrue(act("🏋") && act("🚨") && act("📝") && act("🤝", 90))
+        // sugestão de melhoria, informação e dica velha não contam
+        assertTrue(!act("🎖") && !act("🗒") && !act("💰") && !act("🤝", 30) && !act("📋") && !act("🏟"))
+    }
 }
