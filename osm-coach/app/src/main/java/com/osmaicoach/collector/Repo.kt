@@ -728,7 +728,8 @@ class Repo(private val ctx: Context) {
         if (Txt.sim(k, p.nameKey) >= 0.85) return true
         // "Rúben Dias" na tela × "r dias" no elenco: o sobrenome (4+ letras) contido basta se for único
         val last = Txt.key(p.name.trim().split(" ").last())
-        return last.length >= 4 && k.contains(last)
+        // palavra inteira igual ao sobrenome (não basta o sobrenome "estar contido" em outro texto)
+        return last.length >= 4 && line.split(" ", ",", ".").map { Txt.key(it) }.any { it == last }
     }
 
     private suspend fun applyExtra(slot: Int, ex: Extraction, now: Long): Int {

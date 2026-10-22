@@ -48,6 +48,26 @@ object Fresh {
         ScreenType.MISSIONS to "Menu ☰ → Missões"
     )
 
+    /** Guia fixo: o que cada tela alimenta e de quanto em quanto tempo vale passar por ela. */
+    val GUIDE = listOf(
+        Triple(ScreenType.SQUAD, "Elenco, forças, condição, moral e cartões → 11 ideal, treino, vendas", "1x ao dia e depois de contratar ou vender"),
+        Triple(ScreenType.PREGAME, "Rival, forças, bônus e árbitro → a tática do jogo", "até 20 min antes de cada jogo"),
+        Triple(ScreenType.REPORT, "Formação e estilo do rival → contra-tática", "antes do jogo (rival humano muda)"),
+        Triple(ScreenType.DOCTOR, "Lesionados → saem do 11", "no dia do jogo"),
+        Triple(ScreenType.LAWYER, "Suspensos → saem do 11", "no dia do jogo"),
+        Triple(ScreenType.TRAINING, "Quem treina e quando termina → avisos e quem treinar", "a cada sessão (o app avisa quando acaba)"),
+        Triple(ScreenType.MARKET, "Vagas na lista, vendas e mercado → dicas de venda/compra", "1x ao dia e depois de vender"),
+        Triple(ScreenType.STADIUM, "Níveis e obra em andamento → aviso de fim de obra", "a cada obra"),
+        Triple(ScreenType.CALENDAR, "Rodadas, rivais e horários → próximo jogo e alarmes", "a cada 3 dias"),
+        Triple(ScreenType.SPONSORS, "Contratos e valores → hora de renovar", "quando um contrato acabar"),
+        Triple(ScreenType.SPECIALISTS, "Capitão, pênaltis, faltas, escanteios → sugestão", "quando mudar o time"),
+        Triple(ScreenType.PREP, "Itens da preparação do jogo → o que falta fazer", "no dia do jogo"),
+        Triple(ScreenType.SCOUT, "Busca do olheiro → aviso quando volta", "ao iniciar uma busca"),
+        Triple(ScreenType.DEALS, "Preços reais de venda da CPU → preço sugerido", "de vez em quando"),
+        Triple(ScreenType.STATS, "Gols por jogo da liga → calibra a previsão", "1x por semana"),
+        Triple(ScreenType.MISSIONS, "Renovação das missões → aviso", "1x por semana")
+    )
+
     fun ago(ms: Long): String {
         val m = ms / 60000L
         return when {

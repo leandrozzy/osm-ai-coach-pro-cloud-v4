@@ -1867,6 +1867,17 @@ private fun TodayTab(onGoSettings: () -> Unit, onOpenSlot: (Int, Int) -> Unit) {
         }
 
         if (data.needs.any { it.urgency >= 1 }) NeedsCard(data.needs)
+        Fold("🗺", "Guia: o que cada tela do OSM alimenta") {
+            Text("Passe por estas telas com a captura ligada. Vale para todos os slots (repita em cada um).", fontSize = 12.sp, color = C.MUTED)
+            for ((t, gives, every) in Fresh.GUIDE) {
+                Column(Modifier.padding(top = 8.dp)) {
+                    Text(Fresh.NAME[t] ?: t.name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text(gives, fontSize = 11.sp, color = C.MUTED)
+                    Text("Quando: $every", fontSize = 11.sp, color = C.GOLD)
+                    Text(Fresh.PATH[t] ?: "", fontSize = 11.sp, color = C.PRIMARY)
+                }
+            }
+        }
         if (data.work.isNotEmpty()) {
             Title("⏱ Treinos e estádio")
             for (w in data.work) WorkFold(w) { onOpenSlot(w.slot, 5) }
