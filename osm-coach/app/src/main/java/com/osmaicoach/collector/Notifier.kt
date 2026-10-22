@@ -183,7 +183,7 @@ object Notifier {
         } else if (e.scout) {
             post(
                 ctx, CH_TIMER, timerCode(slot, key), "🔎 S$slot • O olheiro voltou",
-                "$team: abra o OSM → Olheiro e veja os jogadores que ele encontrou (compre pelo valor e revenda).", slot, 6, true
+                "$team: abra o OSM → Olheiro e veja os jogadores que ele encontrou.", slot, 6, true
             )
         } else if (e.training) {
             post(

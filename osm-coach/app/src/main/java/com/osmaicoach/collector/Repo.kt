@@ -1870,7 +1870,13 @@ class Repo(private val ctx: Context) {
             dao.deletePlayer(slot, "MY", bad)
             learn(slot, "elenco", "Jogador repetido removido: \"${mine.first { it.nameKey == bad }.name}\" era o mesmo que \"${mine.first { it.nameKey == keep }.name}\".", now)
         }
-        return drop.size
+        val left = mine.filter { m -> drop.none { it.first == m.nameKey } }
+        val ghosts = SquadDedupe.ghosts(left.map { SquadDedupe.P(it.nameKey, it.name, it.age, it.strength, it.cat, it.valueText, seenAt.optLong(it.nameKey, it.updatedAt)) })
+        for ((bad, keep) in ghosts) {
+            dao.deletePlayer(slot, "MY", bad)
+            learn(slot, "elenco", "Nome mal lido removido: \"${left.first { it.nameKey == bad }.name}\" (agora lido como \"${left.first { it.nameKey == keep }.name}\").", now)
+        }
+        return drop.size + ghosts.size
     }
 
     /** Apaga jogadores "fantasma" (nome ilegível) que repetem outro jogador com mesma idade, força e posição. */

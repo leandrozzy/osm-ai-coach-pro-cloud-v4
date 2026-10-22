@@ -53,6 +53,7 @@ object Hints {
         val sponsor = Sponsors.fromJson(repo.dao.plan(slot, "sponsor")?.json)
         val nations = repo.dao.plan(slot, "nations")?.json?.let { j -> JSONObject(j).let { o -> o.keys().asSequence().associateWith { o.optString(it) } } } ?: emptyMap()
         val prep = repo.dao.plan(slot, "prep")?.json?.let { j -> JSONObject(j).let { o -> o.keys().asSequence().associateWith { k -> o.optJSONObject(k)?.optBoolean("done") ?: false } } } ?: emptyMap()
+        val prepAt = repo.dao.plan(slot, "prep")?.json?.let { j -> JSONObject(j).let { o -> o.keys().asSequence().mapNotNull { k -> o.optJSONObject(k)?.optLong("at") }.maxOrNull() } }
         val (inj, susp) = repo.outByDoctorOrLawyer(slot)
         val yellow = repo.dao.plan(slot, "cards")?.json?.let { j -> JSONObject(j).let { o -> o.keys().asSequence().filter { o.optBoolean(it) }.toSet() } } ?: emptySet()
         val spec = repo.dao.plan(slot, "spec")?.json?.let { j -> JSONObject(j).let { o -> Screens.SPEC_ROLES.filter { o.has(it) }.associateWith { o.optString(it) } } } ?: emptyMap()
@@ -62,7 +63,7 @@ object Hints {
         Playbook.tips(
             Playbook.Input(
                 events = events, activeEvents = active, upcomingEvents = upcoming,
-                prep = prep, injured = inj, suspended = susp, yellow = yellow, spec = spec, needs = needs, spendBc = spendBc,
+                prep = prep, prepAt = prepAt, injured = inj, suspended = susp, yellow = yellow, spec = spec, needs = needs, spendBc = spendBc,
                 ceiling = repo.dao.plan(slot, "ceiling")?.json?.let { JSONObject(it).optDouble("r", Playbook.MAX_PRICE) } ?: Playbook.MAX_PRICE,
                 paid = SellPrices.learnedRatio(Ledger.parse(repo.dao.plan(slot, "ledger")?.json), repo.dao.plan(slot, "phist")?.json?.let { JSONObject(it) } ?: JSONObject()),
                 trainRates = rates,
@@ -139,7 +140,7 @@ object Hints {
             ScreenType.SCOUT -> tips.filter { it.icon == "🔎" }.forEach { out.add(asHint(it)) }
             ScreenType.SPONSORS -> tips.filter { it.icon == "🤝" }.forEach { out.add(asHint(it)) }
             ScreenType.PREGAME, ScreenType.TACTIC, ScreenType.REPORT -> {
-                tips.filter { it.icon == "📝" || it.icon == "🎖" || it.icon == "🚑" }.take(2).forEach { out.add(asHint(it)) }
+                tips.filter { it.icon == "📝" || it.icon == "🗒" || it.icon == "🎖" || it.icon == "🚑" }.take(2).forEach { out.add(asHint(it)) }
                 val ch = rivalChangesOf(repo, slot)
                 if (ch.isNotEmpty()) out.add(Hint("⚠", "O rival mudou: gere a tática de novo", RivalWatch.headline(ch), true))
                 val p = repo.dao.plan(slot, "tactic")
