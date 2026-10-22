@@ -17,8 +17,10 @@ object Screens {
             PREP_DEFS.count { d -> t.contains(d.prefix) } >= 1 -> ScreenType.PREP
         t.contains("especialistas") && (t.contains("grandes penalidades") || t.contains("capitao")) &&
             (t.contains("substituir jogador") || t.contains("livres")) -> ScreenType.SPECIALISTS
-        t.contains("medico") && (t.contains("lesion") || t.contains("lesao")) -> ScreenType.DOCTOR
-        t.contains("advogado") && t.contains("suspens") -> ScreenType.LAWYER
+        // o menu lateral lista os dois; a tela de cada um tem só o seu nome e o aviso de "ninguém"/a lista
+        t.contains("medico") && !t.contains("advogado") && (t.contains("lesion") || t.contains("lesao") || t.contains("nao tens")) -> ScreenType.DOCTOR
+        t.contains("advogado") && !t.contains("medico") &&
+            (t.contains("suspens") || t.contains("expuls") || t.contains("castig") || t.contains("nao tens")) -> ScreenType.LAWYER
         Regex("acordo de patrocinio").findAll(t).count() >= 2 -> ScreenType.SPONSORS
         (t.contains("seleciona uma posicao") && t.contains("procurar jogadores")) ||
             // olheiro já buscando: "Estou a caminho! Voltarei em: 15h 59m 53s"
@@ -65,7 +67,8 @@ object Screens {
     /** Texto das linhas (para casar com o elenco) e se o jogo disse que não há ninguém. */
     fun roster(o: OcrResult): JSONObject {
         val t = Txt.norm(o.fullText)
-        val empty = t.contains("nao tens qualquer jogador") || t.contains("nao tens nenhum jogador")
+        val empty = t.contains("nao tens qualquer jogador") || t.contains("nao tens nenhum jogador") || t.contains("nao tens jogadores") ||
+            t.contains("nenhum jogador")
         val lines = JSONArray()
         for (ln in o.lines.take(80)) {
             val s = ln.text.trim()
