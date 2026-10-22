@@ -79,4 +79,15 @@ class PlaybookTest {
         assertTrue(run(false).none { it.icon == "📝" })
         assertTrue(run(true).any { it.icon == "📝" })
     }
+
+    @Test fun suggestsAgeMixWhenXiIsAllOneAge() {
+        val xi = setOf("gka", "defa", "defb", "defc", "defd", "mida", "midb", "midc", "midd", "atka", "atkb")
+        val tips = Playbook.tips(
+            Playbook.Input(
+                squad.map { it.copy(age = 23) }, xi, 3.0, listedUsed = 0, capLevel = 2, pitchLevel = 2, trainLevel = 2, stadiumBuilding = false,
+                round = 8, roundTotal = 22, seats = emptyList(), matchAt = null, now = 0L
+            )
+        )
+        assertTrue(tips.any { it.icon == "👥" })
+    }
 }

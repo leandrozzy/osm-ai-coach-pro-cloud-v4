@@ -59,7 +59,7 @@ object Fresh {
         Triple(ScreenType.MARKET, "Vagas na lista, vendas e mercado → dicas de venda/compra", "1x ao dia e depois de vender"),
         Triple(ScreenType.STADIUM, "Níveis e obra em andamento → aviso de fim de obra", "a cada obra"),
         Triple(ScreenType.CALENDAR, "Rodadas, rivais e horários → próximo jogo e alarmes", "a cada 3 dias"),
-        Triple(ScreenType.SPONSORS, "Contratos e valores → hora de renovar", "quando um contrato acabar"),
+        Triple(ScreenType.SPONSORS, "Contratos e valores → hora de renovar", "a cada 2–3 dias ou quando um contrato acabar"),
         Triple(ScreenType.SPECIALISTS, "Capitão, pênaltis, faltas, escanteios → sugestão", "quando mudar o time"),
         Triple(ScreenType.PREP, "Itens da preparação do jogo → o que falta fazer", "no dia do jogo"),
         Triple(ScreenType.SCOUT, "Busca do olheiro → aviso quando volta", "ao iniciar uma busca"),
@@ -127,7 +127,7 @@ object Fresh {
         when {
             sp == null -> add(ScreenType.SPONSORS, 1, "ainda não li os contratos de patrocínio")
             i.sponsorEnding && sp > 2 * 24 * H -> add(ScreenType.SPONSORS, 1, "contrato acabando: veja se já dá para renovar")
-            sp > 7 * 24 * H -> add(ScreenType.SPONSORS, 0, "última leitura ${ago(sp)}")
+            sp > 3 * 24 * H -> add(ScreenType.SPONSORS, 0, "última leitura ${ago(sp)}: a comunidade revê os patrocínios a cada 2–3 dias")
         }
         for ((t, why) in listOf(ScreenType.DOCTOR to "lesões", ScreenType.LAWYER to "suspensões")) {
             val x = age(t)

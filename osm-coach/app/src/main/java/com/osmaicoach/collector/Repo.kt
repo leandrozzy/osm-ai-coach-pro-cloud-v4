@@ -733,6 +733,8 @@ class Repo(private val ctx: Context) {
     }
 
     private suspend fun applyExtra(slot: Int, ex: Extraction, now: Long): Int {
+        // quem abriu Médico/Advogado/Especialistas já "passou" pela tela, mesmo que a leitura não tenha achado nada
+        if (ex.type == ScreenType.DOCTOR || ex.type == ScreenType.LAWYER || ex.type == ScreenType.SPECIALISTS) noteScreen(slot, ex.type, now)
         val x = ex.extra ?: return 0
         when (ex.type) {
             ScreenType.PREP -> {

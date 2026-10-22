@@ -201,15 +201,16 @@ object Playbook {
                     "O elenco tem $size jogadores e só estes passam do que você precisa (mínimo $MIN_SQUAD: 2 GL, 6 DEF, 6 MEI, 4 ATA; todas as formações continuam possíveis). " +
                         (left?.let { "Há $it vaga(s) na lista (máx. $maxListed). " } ?: "") +
                         (i.paid?.let { "Nas suas ${it.second} vendas a CPU pagou em média ${"%.2f".format(it.first).replace('.', ',')}× o valor. " } ?: "") +
-                        (if (early) "Agora a CPU paga o preço máximo." else "Para vender rápido, peça menos que o máximo."), 60, 6
+                        (if (early) "Agora a CPU paga o preço máximo." else "Para vender rápido, peça menos que o máximo.") +
+                        " Jogador de força 90+ costuma vender melhor perto de 1,9–2× o valor (105+: ~1,8×); se não vender em 2–3 dias, retire e liste de novo.", 60, 6
                 )
             )
         }
         if (early) {
             out.add(
                 Tip(
-                    "🔁", "Início da competição: compre barato e revenda pelo máximo",
-                    "No começo da temporada e nos eventos de transferência a CPU compra quase tudo pelo preço máximo. Jogadores com valor abaixo de 2M vendem mais rápido.", 75, 6
+                    "🔁", "Início da competição: venda seus melhores no máximo e recompre",
+                    "Nos primeiros 2–3 dias (pré-temporada) e nos eventos de transferência a CPU paga o preço máximo: liste até $maxListed no teto, reponha assim que vender e recompre jogadores melhores depois. Nunca use a venda instantânea (gasta Boss Coins e paga pouco).", 75, 6
                 )
             )
         } else if (late) {
@@ -219,6 +220,21 @@ object Playbook {
                     "As vendas para a CPU caem depois do meio da liga. Peça 90% do máximo para jogadores de até 6M, 80% até 12M, 70% até 18M e 60% acima.", 45, 6
                 )
             )
+        }
+
+        // idades do 11: a comunidade pede mistura (3+ acima de 26 e 3+ abaixo); capitão com mais de 30 anos
+        val xiAges = mine.filter { it.nameKey in i.xi }.mapNotNull { it.age }
+        if (xiAges.size >= 11) {
+            val old = xiAges.count { it > 26 }
+            val young = xiAges.count { it < 26 }
+            if (old < 3 || young < 3) {
+                out.add(
+                    Tip(
+                        "👥", "Misture idades no 11 (hoje: $young abaixo de 26, $old acima)",
+                        "A comunidade recomenda pelo menos 3 jogadores acima de 26 e 3 abaixo; elenco só de jovens (ou só de veteranos) rende menos. Treine os jovens e mantenha veteranos no meio da liga.", 38, 4
+                    )
+                )
+            }
         }
 
         // 4) tamanho do elenco: 18–21

@@ -159,4 +159,11 @@ class ScreensTest {
             Fx.line("Ver anúncio", 0.3f, 0.8f), Fx.line("Pesquisar imediat.", 0.7f, 0.8f)
         ))
     }
+
+    @Test fun lawyerAndDoctorScreensAreRecognisedEvenWithOtherWording() {
+        assertEquals(ScreenType.LAWYER, cls(Fx.line("Advogado", 0.5f, 0.1f), Fx.line("Não tens jogadores expulsos neste momento.", 0.5f, 0.5f)))
+        assertEquals(ScreenType.DOCTOR, cls(Fx.line("Médico", 0.5f, 0.1f), Fx.line("Não tens nenhum jogador lesionado.", 0.5f, 0.5f)))
+        // o menu lateral lista os dois e não é nenhuma das duas telas
+        assertEquals(null, Screens.classify(Txt.norm("Médico Advogado Não tens suspensos lesionados")))
+    }
 }
