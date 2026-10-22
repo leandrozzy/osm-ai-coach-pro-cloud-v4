@@ -48,6 +48,24 @@ class CaptureService : AccessibilityService() {
         Diag.serviceConnected = true
         Diag.lastError = null
         startLoop()
+        startWatchdog()
+    }
+
+    private var watchdog: kotlinx.coroutines.Job? = null
+
+    /**
+     * Alguns celulares (ASUS/ROG, Xiaomi) apagam os alarmes quando o app é deslizado para fora dos recentes. Este
+     * serviço o sistema religa sozinho: aqui os alarmes são conferidos a cada minuto e refeitos (e os avisos que
+     * ficaram atrasados saem na hora).
+     */
+    private fun startWatchdog() {
+        watchdog?.cancel()
+        watchdog = scope.launch(Dispatchers.IO) {
+            while (isActive) {
+                try { Notifier.reschedule(applicationContext) } catch (e: Exception) { Diag.lastError = "Avisos: " + (e.message ?: e.javaClass.simpleName) }
+                delay(60_000L)
+            }
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -64,6 +82,7 @@ class CaptureService : AccessibilityService() {
         Diag.serviceConnected = false
         instance = null
         loop?.cancel()
+        watchdog?.cancel()
         return super.onUnbind(intent)
     }
 

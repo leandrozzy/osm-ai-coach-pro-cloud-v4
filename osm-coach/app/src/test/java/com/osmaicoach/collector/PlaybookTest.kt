@@ -76,8 +76,8 @@ class PlaybookTest {
                 prep = mapOf("onze" to true, "amistoso" to false, "secreto" to false, "estagio" to false), spendBc = spend
             )
         )
-        assertTrue(run(false).none { it.icon == "📝" })
-        assertTrue(run(true).any { it.icon == "📝" })
+        assertTrue(run(false).none { it.icon == "📝" || it.icon == "🗒" })
+        assertTrue(run(true).any { it.icon == "📝" || it.icon == "🗒" })
     }
 
     @Test fun suggestsAgeMixWhenXiIsAllOneAge() {
@@ -89,5 +89,17 @@ class PlaybookTest {
             )
         )
         assertTrue(tips.any { it.icon == "👥" })
+    }
+
+    @Test fun oldPrepReadingIsOnlyInformation() {
+        val xi = setOf("gka", "defa", "defb", "defc", "defd", "mida", "midb", "midc", "midd", "atka", "atkb")
+        fun run(prepAt: Long) = Playbook.tips(
+            Playbook.Input(
+                squad, xi, 1.0, null, 2, 2, 2, false, 8, 22, emptyList(), matchAt = 5 * 3600000L, now = 10 * 3600000L,
+                prep = mapOf("onze" to false, "banco" to false), prepAt = prepAt
+            )
+        )
+        assertTrue(run(10 * 3600000L - 600_000L).any { it.icon == "📝" })
+        assertTrue(run(0L).none { it.icon == "📝" } && run(0L).any { it.icon == "🗒" })
     }
 }

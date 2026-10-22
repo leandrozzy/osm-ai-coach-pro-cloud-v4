@@ -141,7 +141,7 @@ class ScreensTest {
                 prep = mapOf("onze" to true, "banco" to false, "estagio" to false),
                 injured = setOf("defb"), suspended = setOf("atkc"), yellow = setOf("mida"),
                 spec = mapOf("capitao" to "MID D", "penalti" to "ATK A", "falta" to "MID A", "escanteio" to "MID B"),
-                needs = listOf(Fresh.Need(1, ScreenType.DOCTOR, 2, "o jogo é hoje")), spendBc = true
+                needs = listOf(Fresh.Need(1, ScreenType.DOCTOR, 2, "o jogo é hoje")), spendBc = true, prepAt = 0L
             )
         )
         val titles = tips.map { it.title }
@@ -165,5 +165,18 @@ class ScreensTest {
         assertEquals(ScreenType.DOCTOR, cls(Fx.line("Médico", 0.5f, 0.1f), Fx.line("Não tens nenhum jogador lesionado.", 0.5f, 0.5f)))
         // o menu lateral lista os dois e não é nenhuma das duas telas
         assertEquals(null, Screens.classify(Txt.norm("Médico Advogado Não tens suspensos lesionados")))
+    }
+
+    @Test fun ghostNameFromOcrIsDroppedWhenRealOneIsSeenLater() {
+        val min = 60_000L
+        val list = listOf(
+            SquadDedupe.P("laialal", "LaiaLal", 27, 88, "MEI", "15M", 0L),
+            SquadDedupe.P("zalazar", "Zalazar", 27, 89, "MEI", "15,7M", 60 * min),
+            SquadDedupe.P("carrascal", "Carrascal", 28, 82, "MEI", "10,2M", 60 * min)
+        )
+        val g = SquadDedupe.ghosts(list)
+        assertEquals(listOf(Pair("laialal", "zalazar")), g)
+        // dois jogadores diferentes lidos no mesmo momento não são fantasmas
+        assertTrue(SquadDedupe.ghosts(list.map { it.copy(seen = 0L) }).isEmpty())
     }
 }

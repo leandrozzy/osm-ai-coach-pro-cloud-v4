@@ -44,6 +44,8 @@ object Playbook {
         /** Lesionados (Médico) e suspensos (Advogado) lidos: nameKeys. */
         val injured: Set<String> = emptySet(),
         val suspended: Set<String> = emptySet(),
+        /** Quando a Preparação do jogo foi lida pela última vez (itens antigos podem já estar feitos). */
+        val prepAt: Long? = null,
         /** Jogadores com cartão amarelo (coluna Estado do plantel). */
         val yellow: Set<String> = emptySet(),
         /** Especialistas escolhidos no jogo (capitao/penalti/falta/escanteio -> nome na tela). */
@@ -312,9 +314,12 @@ object Playbook {
         val soonGame = i.matchAt != null && i.matchAt > i.now && i.matchAt - i.now <= 24L * 3600000L
         val pend = Screens.PREP_DEFS.filter { i.prep[it.key] == false && (!it.costsBc || i.spendBc) }
         if (pend.isNotEmpty()) {
+            // leitura velha: o item pode já estar feito; vira informação (não conta na bolha) até você reabrir a Preparação
+            val stale = i.prepAt == null || i.now - i.prepAt > 2L * 3600000L
             out.add(
                 Tip(
-                    "📝", "Preparação do jogo: falta${if (pend.size > 1) "m" else ""} ${pend.size} — " + pend.take(4).joinToString { it.title },
+                    if (stale) "🗒" else "📝",
+                    (if (stale) "Na última leitura da Preparação" else "Preparação do jogo") + ": falta${if (pend.size > 1) "m" else ""} ${pend.size} — " + pend.take(4).joinToString { it.title },
                     "O jogo mostra a barra \"Preparação para o jogo\"; cada item pendente pesa. " + pend.first().let { "Primeiro: ${it.title} (${it.why})." }, if (soonGame) 66 else 40, pend.first().tab
                 )
             )

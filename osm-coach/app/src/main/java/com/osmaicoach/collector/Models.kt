@@ -552,6 +552,25 @@ object SquadDedupe {
         return str1 != null && str2 != null && similarNames(k1, k2)
     }
 
+    /**
+     * Fantasma de OCR: nome lido errado ("LaiaLal" para "Zalazar") que ficou no elenco com a força antiga. Mesma idade e
+     * posição, força até 2 de diferença, nome ainda parecido, e o outro foi visto depois (o fantasma não reaparece mais).
+     */
+    fun ghosts(list: List<P>, gap: Long = 10 * 60_000L): List<Pair<String, String>> {
+        val out = ArrayList<Pair<String, String>>()
+        val dropped = HashSet<String>()
+        for (a in list) for (b in list) {
+            if (a.key == b.key || a.key in dropped || b.key in dropped) continue
+            if (b.seen < a.seen + gap) continue // a é o mais antigo; b foi visto depois
+            if (a.age == null || a.age != b.age || a.cat == null || a.cat != b.cat) continue
+            if (a.strength == null || b.strength == null || kotlin.math.abs(a.strength - b.strength) > 2) continue
+            if (Txt.sim(a.key, b.key) < 0.4) continue
+            dropped.add(a.key)
+            out.add(Pair(a.key, b.key))
+        }
+        return out
+    }
+
     /** Pares (repetido, o que fica). Fica o nome legível; empate: o visto por último. */
     fun duplicates(list: List<P>): List<Pair<String, String>> {
         val out = ArrayList<Pair<String, String>>()
