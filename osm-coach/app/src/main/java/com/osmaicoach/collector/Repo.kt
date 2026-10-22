@@ -681,26 +681,16 @@ class Repo(private val ctx: Context) {
 
     // ------------------------------------------------------------------ leituras extras (eventos, teto de venda, patrocínio)
 
-    /** Coisas que valem em qualquer tela: evento do OSM citado, teto de venda da liga e patrocínio. */
-    suspend fun smartReads(slot: Int?, type: ScreenType, text: String, now: Long) {
-        val kinds = OsmEvents.kindsIn(text)
-        if (kinds.isNotEmpty()) {
-            val old = OsmEvents.parse(dao.plan(0, "events")?.json)
-            val add = kinds.map { k -> old.firstOrNull { it.kind == k && it.end != null && it.end > now } ?: OsmEvents.Ev(k, now, now + 24L * 3600000L, "tela") }
-            dao.putPlan(PlanEntity(0, "events", OsmEvents.toJson(OsmEvents.merge(old, add, now)), now))
-        }
+    /** Coisas que valem em qualquer tela: teto de venda da liga (tela de preço) e patrocínio (tela de patrocinadores). */
+    suspend fun smartReads(slot: Int?, type: ScreenType, ocr: OcrResult, now: Long) {
         if (slot == null) return
-        SellPrices.ceilingFrom(text)?.let { r ->
-            dao.putPlan(PlanEntity(slot, "ceiling", org.json.JSONObject().put("r", r).put("at", now).toString(), now))
+        SellPrices.fromScreen(ocr)?.let { r ->
+            // vale o maior teto já visto (o controle de preço começa no máximo)
+            val old = dao.plan(slot, "ceiling")?.json?.let { runCatching { org.json.JSONObject(it).optDouble("r", 0.0) }.getOrNull() } ?: 0.0
+            if (r > old) dao.putPlan(PlanEntity(slot, "ceiling", org.json.JSONObject().put("r", r).put("at", now).toString(), now))
         }
-        val t = Txt.norm(text)
-        if (t.contains("patrocin")) {
-            val games = Regex("(\\d{1,2})\\s*(?:jogos?|partidas?)\\s*(?:restantes|em casa|por jogar)?").find(t)?.groupValues?.get(1)?.toIntOrNull()
-            val renew = t.contains("escolhe") || t.contains("escolher") || t.contains("renova") || t.contains("contrato terminou") || t.contains("sem patrocin")
-            if (games != null || renew) {
-                dao.putPlan(PlanEntity(slot, "sponsor", org.json.JSONObject().put("games", games ?: org.json.JSONObject.NULL).put("renew", renew).put("at", now).toString(), now))
-            }
-        }
+        val deals = Sponsors.parse(ocr)
+        if (deals.size >= 2) dao.putPlan(PlanEntity(slot, "sponsor", Sponsors.toJson(deals, now), now))
     }
 
     // ------------------------------------------------------------------ cronômetros (treino e estádio)
