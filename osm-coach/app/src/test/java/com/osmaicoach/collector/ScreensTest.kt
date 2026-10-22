@@ -141,7 +141,7 @@ class ScreensTest {
                 prep = mapOf("onze" to true, "banco" to false, "estagio" to false),
                 injured = setOf("defb"), suspended = setOf("atkc"), yellow = setOf("mida"),
                 spec = mapOf("capitao" to "MID D", "penalti" to "ATK A", "falta" to "MID A", "escanteio" to "MID B"),
-                needs = listOf(Fresh.Need(1, ScreenType.DOCTOR, 2, "o jogo é hoje"))
+                needs = listOf(Fresh.Need(1, ScreenType.DOCTOR, 2, "o jogo é hoje")), spendBc = true
             )
         )
         val titles = tips.map { it.title }
@@ -150,5 +150,13 @@ class ScreensTest {
         assertTrue(titles.any { it.startsWith("Especialistas: ajuste") })
         assertTrue(titles.any { it.startsWith("Preparação do jogo: faltam 2") })
         assertEquals("Atualize: Médico", tips.first { it.icon == "🔄" }.title)
+    }
+
+    @Test fun scoutInProgressScreenIsRecognised() {
+        assertEquals(ScreenType.SCOUT, cls(
+            Fx.line("Critérios para o Olheiro", 0.5f, 0.1f), Fx.line("Estou a caminho!", 0.5f, 0.4f),
+            Fx.line("Voltarei em:", 0.5f, 0.5f), Fx.line("15h 59m 53s", 0.5f, 0.55f),
+            Fx.line("Ver anúncio", 0.3f, 0.8f), Fx.line("Pesquisar imediat.", 0.7f, 0.8f)
+        ))
     }
 }

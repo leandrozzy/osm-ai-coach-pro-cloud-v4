@@ -49,13 +49,18 @@ object Playbook {
         /** Especialistas escolhidos no jogo (capitao/penalti/falta/escanteio -> nome na tela). */
         val spec: Map<String, String> = emptyMap(),
         /** Telas desatualizadas deste slot. */
-        val needs: List<Fresh.Need> = emptyList()
+        val needs: List<Fresh.Need> = emptyList(),
+        /** O usuário aceita dicas que gastam Boss Coins (amistoso, estágio, treino secreto)? Padrão: não. */
+        val spendBc: Boolean = false
     )
 
     const val MAX_LISTED = 4
     /** Teto de venda do OSM: 2,5× o valor (algumas ligas testaram 2×; o jogo mostra o máximo ao listar). */
     const val MAX_PRICE = 2.5
     private val MIN_POS = linkedMapOf("GOL" to 2, "DEF" to 4, "MEI" to 4, "ATA" to 3)
+    /** O que o elenco precisa manter para as formações do app e o banco (18 jogadores): 2 GL, 6 DEF, 6 MEI, 4 ATA. */
+    private val KEEP = linkedMapOf("GOL" to 2, "DEF" to 6, "MEI" to 6, "ATA" to 4)
+    const val MIN_SQUAD = 18
     private val CAT_LABEL = mapOf("GOL" to "goleiros", "DEF" to "defensores", "MEI" to "meias", "ATA" to "atacantes")
     private val ROLE_CAT = mapOf("ATA" to "ATA", "MEI" to "MEI", "DEF" to "DEF", "GOL" to "GOL")
 
@@ -164,31 +169,39 @@ object Playbook {
         val size = mine.size
         val extra = (size - 21).coerceAtLeast(0)
         // vender: reservas mais velhos e mais fracos primeiro; jovens bons ficam (valor sobe com o treino)
-        // jovem bom (até 21 anos e 70+) vale mais no elenco; com elenco enxuto só sai quem é velho ou fraco
+        // Só sugere vender o que SOBRA para este slot: nunca abaixo de 18 jogadores, nunca abaixo do mínimo de cada
+        // posição e nunca de modo que alguma formação que o elenco monta hoje deixe de ser possível.
+        // (vaga livre na lista não é motivo para vender: com elenco enxuto não aparece sugestão nenhuma)
+        val fieldable = Formations.BASES.filter { TacticEngine.lineup(it, mine) != null }
+        val canGo = (size - MIN_SQUAD).coerceAtLeast(0)
         val remaining = byCat.toMutableMap()
+        val pool = ArrayList(mine)
         val sellOrder = ArrayList<PlayerEntity>()
         for (p in reserves.sortedWith(compareByDescending<PlayerEntity> { (it.age ?: 0) >= 29 }.thenBy { it.strength ?: 0 }.thenByDescending { it.age ?: 0 })) {
-            val young = (p.age ?: 99) <= 21 && (p.strength ?: 0) >= 70
-            val lean = size <= 18 && (p.age ?: 0) < 29 && (p.strength ?: 99) > 60
-            if (young || lean) continue
-            // nunca abaixo do mínimo da posição (conta o que já foi escolhido)
-            if ((remaining[p.cat] ?: 0) <= (MIN_POS[p.cat] ?: 0)) continue
+            if (sellOrder.size >= canGo) break
+            // jovem bom (até 21 anos e 70+) vale mais no elenco (o treino faz o valor subir)
+            if ((p.age ?: 99) <= 21 && (p.strength ?: 0) >= 70) continue
+            if ((remaining[p.cat] ?: 0) <= (KEEP[p.cat] ?: 0)) continue
+            val after = pool.filter { it.nameKey != p.nameKey }
+            if (fieldable.any { TacticEngine.lineup(it, after) == null }) continue
             remaining[p.cat] = (remaining[p.cat] ?: 0) - 1
+            pool.removeAll { it.nameKey == p.nameKey }
             sellOrder.add(p)
         }
-        if (left != null && left > 0 && sellOrder.isNotEmpty()) {
-            val names = sellOrder.take(left).joinToString("; ") { p ->
+        val sellNow = sellOrder.take(left ?: maxListed)
+        if (sellNow.isNotEmpty()) {
+            val names = sellNow.joinToString("; ") { p ->
                 val v = Money.parse(p.valueText)
                 val pr = v?.let { prices(it, early, i.ceiling, i.paid?.first) }
                 p.name + " (${p.age ?: "?"}a, ${p.strength ?: "?"})" + (pr?.let { " — máx. ${money(it.first)}" + (if (!early) ", rápido ${money(it.second)}" else "") } ?: "")
             }
             out.add(
                 Tip(
-                    "💰", "Lista com $left vaga(s) livre(s): liste $names",
-                    "Até $maxListed jogadores na lista ao mesmo tempo, e a CPU compra até 9 vezes por dia. Vaga vazia é dinheiro parado. " +
-                        (i.paid?.let { "Nas suas ${it.second} vendas a CPU pagou em média ${"%.2f".format(it.first).replace('.', ',')}× o valor: o preço rápido usa isso. " } ?: "") +
-                        "Venda reservas mais velhos e fracos; mantenha jovens bons e titulares." +
-                        (if (early) " Agora a CPU paga o preço máximo (${"%.2f".format(i.ceiling).replace('.', ',').removeSuffix("0").removeSuffix(",0")}× o valor)." else " Para vender rápido, peça menos que o máximo."), 85, 6
+                    "💰", "Sobram ${sellNow.size} no elenco: pode listar $names",
+                    "O elenco tem $size jogadores e só estes passam do que você precisa (mínimo $MIN_SQUAD: 2 GL, 6 DEF, 6 MEI, 4 ATA; todas as formações continuam possíveis). " +
+                        (left?.let { "Há $it vaga(s) na lista (máx. $maxListed). " } ?: "") +
+                        (i.paid?.let { "Nas suas ${it.second} vendas a CPU pagou em média ${"%.2f".format(it.first).replace('.', ',')}× o valor. " } ?: "") +
+                        (if (early) "Agora a CPU paga o preço máximo." else "Para vender rápido, peça menos que o máximo."), 60, 6
                 )
             )
         }
@@ -221,26 +234,6 @@ object Playbook {
             )
         }
 
-        // olheiro: compra pelo valor (+15 BC) e revende até o teto
-        if ((i.cashM ?: 0.0) >= 1.0) {
-            val v = minOf(i.cashM!!, 10.0)
-            val pr = prices(v, early, i.ceiling, i.paid?.first)
-            // filtro sugerido: o setor do XI com a média mais baixa, até 24 anos e qualidade acima dessa média
-            val xiPlayers = mine.filter { it.nameKey in i.xi && it.strength != null }
-            val weak = listOf("GOL", "DEF", "MEI", "ATA").mapNotNull { c ->
-                val l = xiPlayers.filter { it.cat == c }
-                if (l.isEmpty()) null else Triple(c, l.map { it.strength!! }.average(), l.size)
-            }.minByOrNull { it.second }
-            val filtro = weak?.let { " Filtro sugerido: ${CAT_LABEL[it.first]}, até 24 anos, qualidade acima de ${it.second.toInt()}." } ?: ""
-            out.add(
-                Tip(
-                    "🔎", "Olheiro: jogador de ~${money(v)} custa ${money(v)} + 15 BC e revende por ${money(pr.second)}",
-                    "O olheiro traz o jogador pelo valor (mais barato que a lista).$filtro Lucro estimado: ${money(pr.second - v)} por jogador" +
-                        (if (OsmEvents.Kind.SCOUT in i.events) " — e o olheiro está em promoção agora." else ". Abaixo de ~10M vende mais rápido."),
-                    if (OsmEvents.Kind.SCOUT in i.events) 80 else 40, 6
-                )
-            )
-        }
         if (i.sponsorDeals.isNotEmpty()) {
             val total = i.sponsorDeals.sumOf { it.perGameM }
             val ending = i.sponsorDeals.count { it.games <= 1 }
@@ -301,7 +294,7 @@ object Playbook {
         }
         // preparação do jogo (lista do próprio jogo): faltas pesam perto da partida
         val soonGame = i.matchAt != null && i.matchAt > i.now && i.matchAt - i.now <= 24L * 3600000L
-        val pend = Screens.PREP_DEFS.filter { i.prep[it.key] == false }
+        val pend = Screens.PREP_DEFS.filter { i.prep[it.key] == false && (!it.costsBc || i.spendBc) }
         if (pend.isNotEmpty()) {
             out.add(
                 Tip(
