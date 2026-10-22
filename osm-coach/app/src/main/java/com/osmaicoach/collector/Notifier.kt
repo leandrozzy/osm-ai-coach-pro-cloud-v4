@@ -128,8 +128,9 @@ object Notifier {
         )
 
     /** Um alarme para o fim de cada treino/obra de cada slot; os que acabaram ou sumiram são cancelados. */
-    suspend fun scheduleTimers(ctx: Context) {
+    suspend fun scheduleTimers(ctx: Context): List<Push.Item> {
         ensureChannels(ctx)
+        val items = ArrayList<Push.Item>()
         val repo = Repo(ctx)
         val am = ctx.getSystemService(AlarmManager::class.java)
         val now = System.currentTimeMillis()
@@ -137,6 +138,8 @@ object Notifier {
         val p = prefs(ctx)
         for (slot in 0..4) {
             val list = repo.timers(slot).associateBy { it.key }
+            val sf = repo.fieldMap(slot)
+            val teamName = sf[K.TEAM]?.value ?: sf[K.HUB_TITLE]?.value ?: "Slot $slot"
             for (key in Timers.KEYS) {
                 val e = list[key]
                 val pk = "timer_${slot}_$key"
@@ -149,6 +152,8 @@ object Notifier {
                     if (p.getLong(pk, -1L) != -2L) { fireTimer(ctx, slot, key); p.edit().putLong(pk, -2L).apply() }
                     continue
                 }
+                val (ptitle, ptext) = timerText(slot, e, teamName)
+                items.add(Push.Item("t${slot}_$key", e.at, ptitle, ptext))
                 val stored = p.getLong(pk, -1L)
                 val alive = PendingIntent.getBroadcast(
                     ctx, timerCode(slot, key),
@@ -161,6 +166,7 @@ object Notifier {
                 }
             }
         }
+        return items
     }
 
     /** Aviso de fim do treino/obra; o cronômetro sai da lista (a próxima leitura da tela traz o novo). */
@@ -173,28 +179,22 @@ object Notifier {
         ensureChannels(ctx)
         val f = repo.fieldMap(slot)
         val team = f[K.TEAM]?.value ?: f[K.HUB_TITLE]?.value ?: "Slot $slot"
+        val (title, text) = timerText(slot, e, team)
+        post(ctx, CH_TIMER, timerCode(slot, key), title, text, if (e.mission) 0 else slot, if (e.mission) 0 else if (e.scout) 6 else 5, true)
+        runCatching { Push.cancel(ctx, "t${slot}_$key") }
+    }
+
+    /** Título e texto do aviso de fim de treino/obra/olheiro/missões (o mesmo no alarme local e na nuvem). */
+    private fun timerText(slot: Int, e: Timers.Entry, team: String): Pair<String, String> {
         val label = e.label.substringAfter(": ")
-        if (e.mission) {
-            post(
-                ctx, CH_TIMER, timerCode(slot, key),
-                if (key == "mission_week") "🎯 A semana de missões reiniciou" else "🎯 Novas missões disponíveis",
-                "Abra o OSM → Missões: elas dão Boss Coins e renovam sozinhas.", 0, 0, true
+        return when {
+            e.mission -> Pair(
+                if (e.key == "mission_week") "🎯 A semana de missões reiniciou" else "🎯 Novas missões disponíveis",
+                "Abra o OSM → Missões: elas dão Boss Coins e renovam sozinhas."
             )
-        } else if (e.scout) {
-            post(
-                ctx, CH_TIMER, timerCode(slot, key), "🔎 S$slot • O olheiro voltou",
-                "$team: abra o OSM → Olheiro e veja os jogadores que ele encontrou.", slot, 6, true
-            )
-        } else if (e.training) {
-            post(
-                ctx, CH_TIMER, timerCode(slot, key), "🏋 S$slot • Treino terminou: $label",
-                "$team: abra o OSM, reclame o treino e coloque outro jogador para não perder tempo de treino.", slot, 5, true
-            )
-        } else {
-            post(
-                ctx, CH_TIMER, timerCode(slot, key), "🏟 S$slot • Obra do estádio terminou: $label",
-                "$team: abra o OSM, conclua o melhoramento e veja se já dá para começar o próximo.", slot, 5, true
-            )
+            e.scout -> Pair("🔎 S$slot • O olheiro voltou", "$team: abra o OSM → Olheiro e veja os jogadores que ele encontrou.")
+            e.training -> Pair("🏋 S$slot • Treino terminou: $label", "$team: abra o OSM, reclame o treino e coloque outro jogador para não perder tempo de treino.")
+            else -> Pair("🏟 S$slot • Obra do estádio terminou: $label", "$team: abra o OSM, conclua o melhoramento e veja se já dá para começar o próximo.")
         }
     }
 
@@ -268,11 +268,22 @@ object Notifier {
             legacy.forEach { e.remove(it) }
             e.apply()
         }
+        val gameItems = ArrayList<Push.Item>()
         for (slot in 1..4) {
             val nextAt = (try { repo.syncRound(slot, now).at } catch (e: Exception) { repo.fieldMap(slot)[K.MATCH_AT]?.value?.toLongOrNull() })
                 // competição encerrada: não há jogo para avisar
                 ?.takeIf { !Fixtures.seasonEnded(repo.fieldMap(slot), repo.dao.matchesOf(slot), now) }
             val wanted = if (nextAt == null) emptyList() else alarms(nextAt, now)
+            if (nextAt != null) {
+                // reserva na nuvem (ntfy) dos avisos de jogo
+                val pf = repo.fieldMap(slot)
+                val head = "S$slot • ${pf[K.TEAM]?.value ?: pf[K.HUB_TITLE]?.value ?: "Slot $slot"} vs ${pf[K.RIVAL_TEAM]?.value ?: "adversário"}"
+                for (a in wanted) {
+                    if (!enabled(ctx, a.kind)) continue
+                    if (a.kind == "pre") gameItems.add(Push.Item("g${slot}_pre", a.at, "⚽ Faltam 20 min: $head", "Abra o OSM e passe pelo Pré-jogo e pela análise do rival para o app reler os dados e revisar a tática."))
+                    else if (a.kind == "tactic" && !tacticReady(repo, slot, pf)) gameItems.add(Push.Item("g${slot}_tactic", a.at, "🧠 Falta a tática: $head", "O jogo é em cerca de 1 hora e a tática desta rodada ainda não foi gerada."))
+                }
+            }
             for (kind in listOf("tactic", "pre", "result")) {
                 val key = "alarm_${slot}_$kind"
                 val at = wanted.firstOrNull { it.kind == kind }?.at
@@ -294,7 +305,9 @@ object Notifier {
                 if (p.getLong(firedKey(slot), -1L) != nextAt / MIN) fire(ctx, "pre", slot)
             }
         }
-        runCatching { scheduleTimers(ctx) }
+        val timerItems = runCatching { scheduleTimers(ctx) }.getOrNull()
+        // só sincroniza com o servidor se a lista de cronômetros foi lida direito (senão apagaria avisos válidos)
+        if (timerItems != null) runCatching { Push.sync(ctx, gameItems + timerItems) }
     }
 
     @Suppress("UNUSED_PARAMETER")
@@ -319,6 +332,7 @@ object Notifier {
         if (kind == "pre") {
             if (!enabled(ctx, "pre")) return
             if (nextAt != null) prefs(ctx).edit().putLong(firedKey(slot), nextAt / MIN).apply()
+            runCatching { Push.cancel(ctx, "g${slot}_pre") }
             val mins = if (nextAt != null) ((nextAt - now) / MIN).coerceAtLeast(0L).toString() else "~20"
             val (sw, chk) = try { repo.rivalSwitches(slot) } catch (e: Exception) { Pair(0, 0) }
             val extra = if (sw > 0) " ⚠ Este usuário já trocou a tática na última hora ($sw de $chk): releia a análise dele AGORA e gere de novo." else ""
@@ -329,6 +343,7 @@ object Notifier {
             )
         } else if (kind == "tactic") {
             if (!enabled(ctx, "tactic") || tacticReady(repo, slot, f)) return
+            runCatching { Push.cancel(ctx, "g${slot}_tactic") }
             post(ctx, CH_GAME, slot * 10 + 2, "🧠 Falta a tática: $head", "O jogo é em cerca de 1 hora e a tática desta rodada ainda não foi gerada. Toque para gerar.", slot, 4, false)
         } else if (kind == "result") {
             if (!enabled(ctx, "result")) return
@@ -429,7 +444,7 @@ class NotifyReceiver : BroadcastReceiver() {
                     Notifier.directorSummary(app)
                 } else if (kind == "timer") {
                     Notifier.fireTimer(app, slot, intent.getStringExtra("key") ?: "")
-                    Notifier.scheduleTimers(app)
+                    Notifier.reschedule(app)
                 } else {
                     Notifier.fire(app, kind, slot)
                     Notifier.reschedule(app)

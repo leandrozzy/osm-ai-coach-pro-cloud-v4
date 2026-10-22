@@ -4460,6 +4460,61 @@ private fun NotificationsPanel() {
             }
         }
     }
+
+    // Reserva na nuvem: alguns celulares apagam os alarmes ao fechar o app; o ntfy.sh entrega o aviso no horário.
+    var push by remember { mutableStateOf(Push.enabled(ctx)) }
+    val pushTopic = remember { Push.topic(ctx) }
+    val pushScope = rememberCoroutineScope()
+    Fold("☁", "Avisos pela nuvem (app fechado)", if (push) "ligados" else "desligados") {
+        Text(
+            "Se o seu celular apaga os alarmes quando você fecha o app, use esta reserva: o servidor do ntfy.sh guarda cada aviso e o entrega no horário, mesmo com o app morto. Passa só o texto do aviso (slot, time, \"treino terminou\"); o tópico é secreto e só seu.",
+            fontSize = 12.sp, color = C.MUTED
+        )
+        Text(
+            "1) Instale o app ntfy (Play Store).  2) Toque em Assinar no ntfy.  3) Ligue abaixo.  4) Toque em Testar, feche tudo e espere 1 minuto.  No ntfy, deixe a bateria sem restrição.",
+            fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 6.dp)
+        )
+        Text("Tópico: $pushTopic", fontSize = 12.sp, color = C.OK, modifier = Modifier.padding(top = 6.dp))
+        Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = {
+                    val sub = Intent(Intent.ACTION_VIEW, Uri.parse("ntfy://ntfy.sh/$pushTopic")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    try { ctx.startActivity(sub) } catch (e: Exception) {
+                        try {
+                            ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=io.heckel.ntfy")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        } catch (e2: Exception) {
+                            Toast.makeText(ctx, "Instale o app ntfy e assine o tópico " + pushTopic, Toast.LENGTH_LONG).show()
+                        }
+                    }
+                },
+                modifier = Modifier.weight(1f)
+            ) { Text("Assinar no ntfy", fontSize = 12.sp) }
+            OutlinedButton(
+                onClick = {
+                    ctx.getSystemService(android.content.ClipboardManager::class.java)
+                        .setPrimaryClip(android.content.ClipData.newPlainText("tópico", pushTopic))
+                    Toast.makeText(ctx, "Tópico copiado.", Toast.LENGTH_SHORT).show()
+                },
+                modifier = Modifier.weight(1f)
+            ) { Text("Copiar tópico", fontSize = 12.sp) }
+        }
+        SwitchRow("Ligar avisos pela nuvem", push) { v ->
+            push = v
+            Settings.put(ctx, "push_on", if (v) "1" else "0")
+            pushScope.launch(Dispatchers.IO) { if (v) Notifier.reschedule(ctx.applicationContext) else Push.disable(ctx.applicationContext) }
+        }
+        OutlinedButton(
+            onClick = {
+                if (!push) {
+                    Toast.makeText(ctx, "Ligue os avisos pela nuvem primeiro.", Toast.LENGTH_SHORT).show()
+                } else pushScope.launch {
+                    val ok = Push.test(ctx.applicationContext)
+                    Toast.makeText(ctx, if (ok) "Enviado. Feche o app: o aviso chega em ~1 minuto." else "Sem internet ou o servidor recusou. Tente de novo.", Toast.LENGTH_LONG).show()
+                }
+            },
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+        ) { Text("Testar pela nuvem", fontSize = 12.sp) }
+    }
 }
 
 /** Regras da comunidade em cartões: situação -> tática, de onde veio e como foi a última pesquisa. */
