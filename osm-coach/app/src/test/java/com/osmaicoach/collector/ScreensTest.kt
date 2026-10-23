@@ -201,4 +201,17 @@ class ScreensTest {
         assertTrue(r.optBoolean("busy"))
         assertEquals(7 * 3600L + 59 * 60 + 59, r.optLong("endsIn"))
     }
+
+    @Test fun doctorAndLawyerOnlyAfterAMatch() {
+        val h = 3600000L
+        val now = 100 * h
+        fun need(seen: Map<String, Long>, last: Long?) = Fresh.needs(
+            Fresh.In(1, seen + mapOf("SQUAD" to now, "MARKET" to now, "TRAINING" to now, "PREGAME" to now, "CALENDAR" to now, "SPONSORS" to now, "SPECIALISTS" to now, "STADIUM" to now, "STATS" to now, "DEALS" to now),
+                emptyList(), now + 5 * h, false, now, true, last)
+        ).filter { it.type == ScreenType.DOCTOR }
+        // lido depois do último jogo: tudo certo, sem cobrar de novo (mesmo "hoje")
+        assertTrue(need(mapOf("DOCTOR" to now - 30 * h, "LAWYER" to now - 30 * h), now - 40 * h).isEmpty())
+        // houve jogo depois da leitura: vale reler
+        assertEquals(2, need(mapOf("DOCTOR" to now - 30 * h, "LAWYER" to now - 30 * h), now - 10 * h).single().urgency)
+    }
 }

@@ -31,7 +31,10 @@ object Hints {
     /** Telas desatualizadas deste slot (com as regras do Fresh). */
     suspend fun needsFor(repo: Repo, slot: Int, matchAt: Long?, active: Boolean, now: Long = System.currentTimeMillis()): List<Fresh.Need> {
         val sp = Sponsors.fromJson(repo.dao.plan(slot, "sponsor")?.json)?.first.orEmpty()
-        return Fresh.needs(Fresh.In(slot, repo.seenMap(slot), repo.timers(slot), matchAt, sp.any { it.games <= 1 }, now, active))
+        val lastMatch = runCatching {
+            repo.dao.matchesOf(slot).filter { it.scoreMine != null || it.result != null }.mapNotNull { Fixtures.kickoff(it) }.filter { it <= now }.maxOrNull()
+        }.getOrNull()
+        return Fresh.needs(Fresh.In(slot, repo.seenMap(slot), repo.timers(slot), matchAt, sp.any { it.games <= 1 }, now, active, lastMatch))
     }
 
     suspend fun slotTips(

@@ -16,7 +16,9 @@ object Fresh {
         val sponsorEnding: Boolean,
         val now: Long,
         /** Slot com competição em andamento (sem isso não há jogo para preparar). */
-        val active: Boolean = true
+        val active: Boolean = true,
+        /** Quando começou o último jogo já disputado (lesão/suspensão só mudam depois de uma partida). */
+        val lastMatchAt: Long? = null
     )
 
     val NAME = mapOf(
@@ -131,10 +133,12 @@ object Fresh {
         }
         for ((t, why) in listOf(ScreenType.DOCTOR to "lesões", ScreenType.LAWYER to "suspensões")) {
             val x = age(t)
+            val readAt = i.seen[t.name]
             when {
-                soon && (x == null || x > 12 * H) -> add(t, 2, "o jogo é hoje: $why mudam o 11")
+                soon && x == null -> add(t, 2, "o jogo é hoje e ainda não li ($why mudam o 11)")
                 x == null -> add(t, 1, "ainda não li ($why tiram jogadores do 11)")
-                x > 48 * H -> add(t, 0, "última leitura ${ago(x)}")
+                // só muda depois de uma partida: se a leitura é de antes do último jogo, vale reler
+                i.lastMatchAt != null && readAt != null && readAt < i.lastMatchAt -> add(t, if (soon) 2 else 1, "teve jogo depois da última leitura: $why podem ter mudado")
             }
         }
         val sc = age(ScreenType.SPECIALISTS)
