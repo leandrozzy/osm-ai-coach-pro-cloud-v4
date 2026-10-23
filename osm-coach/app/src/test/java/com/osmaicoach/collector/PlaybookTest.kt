@@ -136,4 +136,16 @@ class PlaybookTest {
         assertTrue(run(false).any { it.icon == "⚖" && it.title.contains("Atk A") })
         assertTrue(run(true).none { it.icon == "⚖" })
     }
+
+    @Test fun suggestsSendingInjuredPlayerToDoctorOnlyWhenIdle() {
+        val xi = setOf("gka", "defa", "defb", "defc", "defd", "mida", "midb", "midc", "midd", "atka", "atkb")
+        fun run(busy: Boolean) = Playbook.tips(
+            Playbook.Input(
+                squad, xi, 3.0, listedUsed = 0, capLevel = 2, pitchLevel = 2, trainLevel = 2, stadiumBuilding = false,
+                round = 8, roundTotal = 22, seats = emptyList(), matchAt = null, now = 0L, injured = setOf("mida"), doctorBusy = busy
+            )
+        )
+        assertTrue(run(false).any { it.icon == "🩹" && it.title.contains("Mid A") })
+        assertTrue(run(true).none { it.icon == "🩹" })
+    }
 }

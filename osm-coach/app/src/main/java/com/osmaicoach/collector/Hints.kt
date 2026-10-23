@@ -13,7 +13,7 @@ object Hints {
     data class Hint(val icon: String, val title: String, val detail: String, val action: Boolean = false)
 
     /** Dicas que são "ainda não fiz": treinador parado, faltam jogadores, preparação, patrocínio vencido. Sugestão de melhoria não conta. */
-    private val ACTION_ICONS = setOf("🏋", "🚨", "📝", "🤝", "🔄", "🏗", "🏟", "⏰", "⚖")
+    private val ACTION_ICONS = setOf("🏋", "🚨", "📝", "🤝", "🔄", "🏗", "🏟", "⏰", "⚖", "🩹")
 
     fun asHint(t: Playbook.Tip): Hint = Hint(t.icon, t.title, t.why, t.icon in ACTION_ICONS && !(t.icon == "🤝" && t.priority < 88))
 
@@ -79,6 +79,7 @@ object Hints {
                 trainLevel = f[K.MY_STAD_TRAIN]?.value?.toIntOrNull(),
                 stadiumBuilding = timers.any { it.key.startsWith("stad_") && it.at > now },
                 lawyerBusy = timers.any { it.lawyer && it.at > now },
+                doctorBusy = timers.any { it.doctor && it.at > now },
                 round = kv(f, K.ROUND)?.toIntOrNull(), roundTotal = kv(f, K.ROUND_TOTAL)?.toIntOrNull(),
                 seats = work.seats, matchAt = matchAt ?: f[K.MATCH_AT]?.value?.toLongOrNull(), now = now
             )
@@ -128,7 +129,7 @@ object Hints {
         // treinador parado, jogadores faltando, preparação por fazer, contrato vencido, tática do jogo por gerar.
         val pend = ArrayList<Hint>()
         runCatching { needsFor(repo, slot, null, activeSlot) }.getOrDefault(emptyList()).filter { it.type != type && it.urgency >= 1 }.forEach { n ->
-            pend.add(Hint("🔄", "Atualize: " + (Fresh.NAME[n.type] ?: n.type.name), n.reason.replaceFirstChar { it.uppercase() } + ". " + (Fresh.PATH[n.type] ?: ""), true))
+            pend.add(Hint("🔄", "Atualize: " + (Fresh.NAME[n.type] ?: n.type.name), n.reason.substringBefore(":").replaceFirstChar { it.uppercase() } + " • " + (Fresh.PATH[n.type]?.substringBefore(" (") ?: ""), true))
         }
         tips.filter { it.icon != "🔄" }.map { asHint(it) }.filter { it.action }
             .filter { !(type == ScreenType.PREP && (it.icon == "📝" || it.icon == "🗒")) }.forEach { pend.add(it) }

@@ -95,7 +95,7 @@ object Fresh {
             a == null -> add(ScreenType.TRAINING, 1, "ainda não li os treinadores deste slot")
             a > 12 * H -> add(ScreenType.TRAINING, 1, "última leitura ${ago(a)}")
         }
-        val sEnd = i.timers.filter { !it.training && !it.scout && !it.mission && !it.lawyer && it.at <= i.now }
+        val sEnd = i.timers.filter { !it.training && !it.scout && !it.mission && !it.lawyer && !it.doctor && it.at <= i.now }
         val s = age(ScreenType.STADIUM)
         when {
             sEnd.isNotEmpty() -> add(ScreenType.STADIUM, 2, "a obra terminou: conclua e comece a próxima")

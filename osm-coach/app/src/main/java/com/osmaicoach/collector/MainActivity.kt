@@ -4477,6 +4477,29 @@ private fun NotificationsPanel() {
             Settings.put(ctx, "keepalive", if (v) "1" else "0")
             if (v) KeepAliveService.start(ctx.applicationContext) else KeepAliveService.stop(ctx.applicationContext)
         }
+        Text(
+            "ASUS/ROG: o Mobile Manager bloqueia o app de acordar sozinho. Abra o ajuste abaixo e permita OSM Coach (e o ntfy) em Inicialização automática; e trave os dois nos recentes (cadeado), sem deslizar para fechar.",
+            fontSize = 12.sp, color = C.MUTED, modifier = Modifier.padding(top = 6.dp)
+        )
+        OutlinedButton(
+            onClick = {
+                val tries = listOf(
+                    android.content.ComponentName("com.asus.mobilemanager", "com.asus.mobilemanager.autostart.AutoStartActivity"),
+                    android.content.ComponentName("com.asus.mobilemanager", "com.asus.mobilemanager.powersaver.PowerSaverSettings"),
+                    android.content.ComponentName("com.asus.mobilemanager", "com.asus.mobilemanager.MainActivity")
+                )
+                var ok = false
+                for (c in tries) {
+                    if (ok) break
+                    ok = try { ctx.startActivity(Intent().setComponent(c).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); true } catch (e: Exception) { false }
+                }
+                if (!ok) ok = try {
+                    ctx.startActivity(ctx.packageManager.getLaunchIntentForPackage("com.asus.mobilemanager")!!.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); true
+                } catch (e: Exception) { false }
+                if (!ok) openBatterySettings(ctx)
+            },
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+        ) { Text("Abrir Inicialização automática (ROG/ASUS)", fontSize = 12.sp) }
         val log = Notifier.fireLog(ctx)
         Text(
             "Últimos eventos de aviso:\n" + (if (log.isEmpty()) "nenhum ainda" else log.joinToString("\n")),

@@ -214,4 +214,15 @@ class ScreensTest {
         // houve jogo depois da leitura: vale reler
         assertEquals(2, need(mapOf("DOCTOR" to now - 30 * h, "LAWYER" to now - 30 * h), now - 10 * h).single().urgency)
     }
+
+    @Test fun doctorScreensWithInjuredPlayersAreRecognisedAndTimed() {
+        // conversa, cartão do jogador e tratamento em curso (prints reais do Médico)
+        assertEquals(ScreenType.DOCTOR, cls(Fx.line("Reed precisa de tratamento. Queres vê-lo?", 0.3f, 0.5f), Fx.line("Continuar", 0.4f, 0.6f), Fx.line("Médico", 0.9f, 0.9f), Fx.line("Olga Meditsina", 0.9f, 0.95f)))
+        assertEquals(ScreenType.DOCTOR, cls(Fx.line("15 HARRISON REED", 0.5f, 0.2f), Fx.line("Nariz partido", 0.5f, 0.8f), Fx.line("Tratar jogador", 0.5f, 0.87f), Fx.line("Médico", 0.9f, 0.9f)))
+        val busy = Fx.ocr(Fx.line("15 HARRISON REED", 0.25f, 0.28f), Fx.line("Nariz partido", 0.25f, 0.84f), Fx.line("Tratamento em curso...", 0.75f, 0.3f), Fx.line("7h 59m 59s", 0.75f, 0.67f), Fx.line("Tratar imediatamente", 0.75f, 0.75f), Fx.line("Médico", 0.9f, 0.9f))
+        assertEquals(ScreenType.DOCTOR, Screens.classify(Txt.norm(busy.fullText)))
+        assertEquals(7 * 3600L + 59 * 60 + 59, Screens.roster(busy).optLong("endsIn"))
+        // conversa do advogado também conta
+        assertEquals(ScreenType.LAWYER, cls(Fx.line("Li o caso de Bergier. Vamos apresentar recurso!", 0.3f, 0.5f), Fx.line("Continuar", 0.4f, 0.6f), Fx.line("Advogado", 0.9f, 0.9f)))
+    }
 }
