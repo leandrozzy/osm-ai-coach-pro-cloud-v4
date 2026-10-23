@@ -124,4 +124,16 @@ class PlaybookTest {
         assertTrue(run(mapOf("Treino" to "665K + 18h"), 0.5).none { it.icon == "🏟" })
         assertTrue(run(mapOf("Treino" to "665K + 18h"), 5.0).any { it.icon == "🏟" })
     }
+
+    @Test fun suggestsSendingSuspendedPlayerToLawyerOnlyWhenIdle() {
+        val xi = setOf("gka", "defa", "defb", "defc", "defd", "mida", "midb", "midc", "midd", "atka", "atkb")
+        fun run(busy: Boolean) = Playbook.tips(
+            Playbook.Input(
+                squad, xi, 3.0, listedUsed = 0, capLevel = 2, pitchLevel = 2, trainLevel = 2, stadiumBuilding = false,
+                round = 8, roundTotal = 22, seats = emptyList(), matchAt = null, now = 0L, suspended = setOf("atka"), lawyerBusy = busy
+            )
+        )
+        assertTrue(run(false).any { it.icon == "⚖" && it.title.contains("Atk A") })
+        assertTrue(run(true).none { it.icon == "⚖" })
+    }
 }

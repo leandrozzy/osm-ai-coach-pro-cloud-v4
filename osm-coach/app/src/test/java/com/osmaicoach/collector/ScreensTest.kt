@@ -179,4 +179,26 @@ class ScreensTest {
         // dois jogadores diferentes lidos no mesmo momento não são fantasmas
         assertTrue(SquadDedupe.ghosts(list.map { it.copy(seen = 0L) }).isEmpty())
     }
+
+    @Test fun scoutResultsListIsNotTheScoutReturning() {
+        val o = Fx.ocr(
+            Fx.line("Resultados do olheiro", 0.1f, 0.12f), Fx.line("Procurar jogadores", 0.9f, 0.12f),
+            Fx.line("F. Esposito (21)", 0.1f, 0.3f), Fx.line("29m 51s", 0.95f, 0.3f), Fx.line("Fofana (31)", 0.1f, 0.5f), Fx.line("29m 51s", 0.95f, 0.5f)
+        )
+        assertEquals(ScreenType.SCOUT, Screens.classify(Txt.norm(o.fullText)))
+        // o prazo das ofertas não vira "o olheiro voltou"
+        assertTrue(Screens.scout(o).isNull("endsIn"))
+    }
+
+    @Test fun lawyerAppealInProgressReadsTheTimer() {
+        val o = Fx.ocr(
+            Fx.line("9 SEBASTIAN BERGIER", 0.25f, 0.28f), Fx.line("2 jogos de suspensão", 0.25f, 0.84f),
+            Fx.line("A apresentar recurso...", 0.75f, 0.3f), Fx.line("7h 59m 59s", 0.75f, 0.67f),
+            Fx.line("Recorre imediatamente", 0.75f, 0.75f), Fx.line("Advogado", 0.9f, 0.9f)
+        )
+        assertEquals(ScreenType.LAWYER, Screens.classify(Txt.norm(o.fullText)))
+        val r = Screens.roster(o)
+        assertTrue(r.optBoolean("busy"))
+        assertEquals(7 * 3600L + 59 * 60 + 59, r.optLong("endsIn"))
+    }
 }

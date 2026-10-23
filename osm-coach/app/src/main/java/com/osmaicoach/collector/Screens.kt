@@ -22,7 +22,8 @@ object Screens {
         t.contains("advogado") && !t.contains("medico") &&
             (t.contains("suspens") || t.contains("expuls") || t.contains("castig") || t.contains("nao tens")) -> ScreenType.LAWYER
         Regex("acordo de patrocinio").findAll(t).count() >= 2 -> ScreenType.SPONSORS
-        (t.contains("seleciona uma posicao") && t.contains("procurar jogadores")) ||
+        t.contains("resultados do olheiro") ||
+            (t.contains("seleciona uma posicao") && t.contains("procurar jogadores")) ||
             // olheiro já buscando: "Estou a caminho! Voltarei em: 15h 59m 53s"
             (t.contains("voltarei em") && t.contains("olheiro")) -> ScreenType.SCOUT
         (t.contains("jogador idade") && t.contains("preco") && t.contains("hora")) || t.contains("negociacoes pendentes") -> ScreenType.DEALS
@@ -74,7 +75,10 @@ object Screens {
             val s = ln.text.trim()
             if (s.length in 3..40 && Txt.letters(s) >= 3) lines.put(s)
         }
-        return JSONObject().put("empty", empty).put("lines", lines)
+        // Advogado "A apresentar recurso..." + cronômetro: recurso em andamento
+        val busy = t.contains("a apresentar recurso")
+        val secs = if (busy) o.lines.mapNotNull { Parsers.timerSecs(it.text) }.firstOrNull() else null
+        return JSONObject().put("empty", empty).put("lines", lines).put("busy", busy).put("endsIn", secs ?: JSONObject.NULL)
     }
 
     // ------------------------------------------------------------ especialistas
@@ -95,6 +99,8 @@ object Screens {
 
     /** Contagem regressiva do olheiro (se estiver procurando); "16h" sozinho é só a duração do botão. */
     fun scout(o: OcrResult): JSONObject {
+        // lista de resultados: a busca já terminou; o "29m 51s" é só o prazo das ofertas (não é o olheiro voltando)
+        if (Txt.norm(o.fullText).contains("resultados do olheiro")) return JSONObject().put("endsIn", JSONObject.NULL)
         val secs = o.lines.mapNotNull { Parsers.timerSecs(it.text) }.firstOrNull()
         return JSONObject().put("endsIn", secs ?: JSONObject.NULL)
     }

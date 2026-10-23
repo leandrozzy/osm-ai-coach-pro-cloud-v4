@@ -180,6 +180,7 @@ class MainActivity : ComponentActivity() {
             notifPerm.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         AppScope.scope.launch(Dispatchers.IO) { Notifier.reschedule(applicationContext) }
+        KeepAliveService.start(applicationContext)
         // Ao recriar a tela (girar o celular) o intent antigo continua aqui: não reabre o slot da notificação.
         if (savedInstanceState == null) handleIntent(intent)
         setContent {
@@ -4465,6 +4466,24 @@ private fun NotificationsPanel() {
     var push by remember { mutableStateOf(Push.enabled(ctx)) }
     val pushTopic = remember { Push.topic(ctx) }
     val pushScope = rememberCoroutineScope()
+    var keep by remember { mutableStateOf(KeepAliveService.enabled(ctx)) }
+    Fold("🛡", "Monitor ativo (notificação fixa)", if (keep) "ligado" else "desligado") {
+        Text(
+            "Mantém o app vivo com a tela fechada e confere os avisos a cada minuto. Se o celular apagar os alarmes ao fechar o app, deixe ligado e também coloque o OSM Coach como \"Sem restrições\" na bateria e fixe o app nos recentes (cadeado).",
+            fontSize = 12.sp, color = C.MUTED
+        )
+        SwitchRow("Manter monitor ativo", keep) { v ->
+            keep = v
+            Settings.put(ctx, "keepalive", if (v) "1" else "0")
+            if (v) KeepAliveService.start(ctx.applicationContext) else KeepAliveService.stop(ctx.applicationContext)
+        }
+        val log = Notifier.fireLog(ctx)
+        Text(
+            "Últimos eventos de aviso:\n" + (if (log.isEmpty()) "nenhum ainda" else log.joinToString("\n")),
+            fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 6.dp)
+        )
+        Text(Push.status(ctx), fontSize = 11.sp, color = C.MUTED, modifier = Modifier.padding(top = 4.dp))
+    }
     Fold("☁", "Avisos pela nuvem (app fechado)", if (push) "ligados" else "desligados") {
         Text(
             "Se o seu celular apaga os alarmes quando você fecha o app, use esta reserva: o servidor do ntfy.sh guarda cada aviso e o entrega no horário, mesmo com o app morto. Passa só o texto do aviso (slot, time, \"treino terminou\"); o tópico é secreto e só seu.",
@@ -4497,6 +4516,12 @@ private fun NotificationsPanel() {
                 },
                 modifier = Modifier.weight(1f)
             ) { Text("Copiar tópico", fontSize = 12.sp) }
+            OutlinedButton(
+                onClick = {
+                    try { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://ntfy.sh/$pushTopic")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (_: Exception) {}
+                },
+                modifier = Modifier.weight(1f)
+            ) { Text("Ver no navegador", fontSize = 12.sp) }
         }
         SwitchRow("Ligar avisos pela nuvem", push) { v ->
             push = v
