@@ -95,9 +95,19 @@ object Notifier {
     private fun code(slot: Int, kind: String): Int =
         slot * 10 + (if (kind == "pre") 1 else if (kind == "tactic") 2 else if (kind == "test") 4 else 3)
 
+    /** Últimos eventos de aviso (alarme recebido, notificação enviada ou bloqueada): mostra onde o aviso se perdeu. */
+    fun logFire(ctx: Context, text: String) {
+        val now = java.text.SimpleDateFormat("dd/MM HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
+        val old = prefs(ctx).getString("fire_log", "").orEmpty().split("\n").filter { it.isNotBlank() }
+        prefs(ctx).edit().putString("fire_log", (listOf("$now $text") + old).take(6).joinToString("\n")).apply()
+    }
+
+    fun fireLog(ctx: Context): List<String> = prefs(ctx).getString("fire_log", "").orEmpty().split("\n").filter { it.isNotBlank() }
+
     /** Teste real: agenda um aviso para daqui a 1 minuto (feche o app e espere). */
     fun testLater(ctx: Context) {
         ensureChannels(ctx)
+        logFire(ctx, "teste agendado para daqui a 1 min")
         setAlarm(ctx, ctx.getSystemService(AlarmManager::class.java), 0, "test", System.currentTimeMillis() + 60000L)
     }
 
@@ -192,6 +202,7 @@ object Notifier {
                 if (e.key == "mission_week") "🎯 A semana de missões reiniciou" else "🎯 Novas missões disponíveis",
                 "Abra o OSM → Missões: elas dão Boss Coins e renovam sozinhas."
             )
+            e.lawyer -> Pair("⚖ S$slot • O recurso do advogado terminou", "$team: abra o OSM → Advogado e veja se o jogador foi liberado.")
             e.scout -> Pair("🔎 S$slot • O olheiro voltou", "$team: abra o OSM → Olheiro e veja os jogadores que ele encontrou.")
             e.training -> Pair("🏋 S$slot • Treino terminou: $label", "$team: abra o OSM, reclame o treino e coloque outro jogador para não perder tempo de treino.")
             else -> Pair("🏟 S$slot • Obra do estádio terminou: $label", "$team: abra o OSM, conclua o melhoramento e veja se já dá para começar o próximo.")
@@ -406,7 +417,10 @@ object Notifier {
     }
 
     private fun post(ctx: Context, channel: String, id: Int, title: String, text: String, slot: Int, tab: Int, withOsm: Boolean) {
-        if (!canPost(ctx)) return
+        if (!canPost(ctx)) { logFire(ctx, "bloqueado: sem permissão de notificação"); return }
+        val nmg = ctx.getSystemService(NotificationManager::class.java)
+        if (!nmg.areNotificationsEnabled()) { logFire(ctx, "bloqueado: notificações do app desligadas no Android"); return }
+        if (nmg.getNotificationChannel(channel)?.importance == NotificationManager.IMPORTANCE_NONE) { logFire(ctx, "bloqueado: canal de aviso desligado no Android"); return }
         val open = Intent(ctx, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             .putExtra("slot", slot).putExtra("tab", tab)
@@ -425,7 +439,12 @@ object Notifier {
                 b.addAction(Notification.Action.Builder(Icon.createWithResource(ctx, R.drawable.ic_stat_notify), "Abrir OSM", opi).build())
             }
         }
-        ctx.getSystemService(NotificationManager::class.java).notify(id, b.build())
+        try {
+            ctx.getSystemService(NotificationManager::class.java).notify(id, b.build())
+            logFire(ctx, "notificação enviada: " + title.take(40))
+        } catch (e: Exception) {
+            logFire(ctx, "erro ao notificar: " + (e.message ?: e.javaClass.simpleName))
+        }
     }
 }
 
@@ -436,6 +455,7 @@ class NotifyReceiver : BroadcastReceiver() {
         Health.install(app)
         val kind = intent.getStringExtra("kind") ?: ""
         val slot = intent.getIntExtra("slot", 0)
+        if (kind != "tick") Notifier.logFire(app, "alarme recebido: $kind" + (if (slot > 0) " S$slot" else ""))
         AppScope.scope.launch(Dispatchers.IO) {
             try {
                 if (kind == "tick") {
@@ -466,6 +486,7 @@ class BootReceiver : BroadcastReceiver() {
         AppScope.scope.launch(Dispatchers.IO) {
             try {
                 Notifier.reschedule(app, force = true)
+                KeepAliveService.start(app)
             } catch (e: Exception) {
                 Diag.lastError = "Notificação: " + (e.message ?: e.javaClass.simpleName)
             } finally {

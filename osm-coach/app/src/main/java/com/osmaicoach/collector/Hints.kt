@@ -13,7 +13,7 @@ object Hints {
     data class Hint(val icon: String, val title: String, val detail: String, val action: Boolean = false)
 
     /** Dicas que são "ainda não fiz": treinador parado, faltam jogadores, preparação, patrocínio vencido. Sugestão de melhoria não conta. */
-    private val ACTION_ICONS = setOf("🏋", "🚨", "📝", "🤝", "🔄", "🏗", "🏟", "⏰")
+    private val ACTION_ICONS = setOf("🏋", "🚨", "📝", "🤝", "🔄", "🏗", "🏟", "⏰", "⚖")
 
     fun asHint(t: Playbook.Tip): Hint = Hint(t.icon, t.title, t.why, t.icon in ACTION_ICONS && !(t.icon == "🤝" && t.priority < 88))
 
@@ -74,7 +74,8 @@ object Hints {
                 players = repo.playersOf(slot), xi = xi, cashM = Money.parse(f[K.CASH]?.value), listedUsed = used,
                 capLevel = f[K.MY_STAD_CAP]?.value?.toIntOrNull(), pitchLevel = f[K.MY_STAD_PITCH]?.value?.toIntOrNull(),
                 trainLevel = f[K.MY_STAD_TRAIN]?.value?.toIntOrNull(),
-                stadiumBuilding = timers.any { !it.training && it.at > now },
+                stadiumBuilding = timers.any { it.key.startsWith("stad_") && it.at > now },
+                lawyerBusy = timers.any { it.lawyer && it.at > now },
                 round = kv(f, K.ROUND)?.toIntOrNull(), roundTotal = kv(f, K.ROUND_TOTAL)?.toIntOrNull(),
                 seats = work.seats, matchAt = matchAt ?: f[K.MATCH_AT]?.value?.toLongOrNull(), now = now
             )

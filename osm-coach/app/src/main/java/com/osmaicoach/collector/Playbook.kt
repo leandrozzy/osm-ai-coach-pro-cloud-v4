@@ -46,6 +46,8 @@ object Playbook {
         val suspended: Set<String> = emptySet(),
         /** Quando a Preparação do jogo foi lida pela última vez (itens antigos podem já estar feitos). */
         val prepAt: Long? = null,
+        /** O advogado já está com um recurso em andamento (cronômetro lido). */
+        val lawyerBusy: Boolean = false,
         /** Situação de cada card do estádio como o jogo mostra ("Relvado" -> "concluir melhoria" ou "665K + 18h"). */
         val stadiumStatus: Map<String, String> = emptyMap(),
         /** Jogadores com cartão amarelo (coluna Estado do plantel). */
@@ -288,6 +290,14 @@ object Playbook {
         if (i.injured.isNotEmpty() || i.suspended.isNotEmpty()) {
             val parts = i.injured.map { nameOf(it) + " (lesão)" } + i.suspended.map { nameOf(it) + " (suspenso)" }
             out.add(Tip("🚑", "Fora do próximo jogo: " + parts.joinToString(), "O 11 sugerido já deixa de fora quem está no Médico ou no Advogado. Se faltar gente na posição, reforce o banco.", 72, 4))
+        }
+        if (i.suspended.isNotEmpty() && !i.lawyerBusy) {
+            out.add(
+                Tip(
+                    "⚖", "Mande ao advogado: " + i.suspended.joinToString { nameOf(it) },
+                    "Recurso grátis: Menu ☰ → Advogado → Iniciar (8 h). Não use \"Recorre imediatamente\" (gasta Boss Coins).", 80, 4
+                )
+            )
         }
         // cartão amarelo nos titulares: risco de suspensão
         val yTitulares = mine.filter { it.nameKey in i.yellow && it.nameKey in i.xi }

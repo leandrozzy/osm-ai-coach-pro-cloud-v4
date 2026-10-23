@@ -66,6 +66,8 @@ object Push {
         prefs(ctx).edit().putString("sent", j.toString()).apply()
     }
 
+    @Volatile private var lastStatus = ""
+
     private fun call(method: String, url: String, body: String?): Boolean = try {
         val c = URL(url).openConnection() as HttpURLConnection
         c.requestMethod = method
@@ -78,9 +80,19 @@ object Push {
         }
         val code = c.responseCode
         c.disconnect()
-        code in 200..299 || (method == "DELETE" && code == 404)
+        val ok = code in 200..299 || (method == "DELETE" && code == 404)
+        lastStatus = (if (ok) "ok" else "erro HTTP $code") + " ($method)"
+        ok
     } catch (e: Exception) {
+        lastStatus = "erro: " + (e.message ?: e.javaClass.simpleName)
         false
+    }
+
+    /** Resultado da última chamada ao servidor + quantos avisos ele guarda para este aparelho. */
+    fun status(ctx: Context): String {
+        val n = readSent(ctx).count { it.value > System.currentTimeMillis() }
+        val last = lastStatus.ifBlank { "nenhuma ainda neste uso do app" }
+        return "Última chamada ao servidor: $last • avisos agendados lá: $n"
     }
 
     private fun publish(ctx: Context, it: Item): Boolean {

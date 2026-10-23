@@ -49,6 +49,7 @@ class CaptureService : AccessibilityService() {
         Diag.lastError = null
         startLoop()
         startWatchdog()
+        KeepAliveService.start(applicationContext)
     }
 
     private var watchdog: kotlinx.coroutines.Job? = null
