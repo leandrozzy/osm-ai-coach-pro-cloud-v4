@@ -27,7 +27,7 @@ Código ativo: `osm-coach/` (applicationId `com.osmaicoach.collector`, minSdk 30
     `Fresh` ("telas para atualizar"), `Screens` (leitores das telas novas), `Progress`, `RivalWatch`.
   - Avisos: `Notifier` (alarmes locais) + `Push` (reserva na nuvem via ntfy.sh, opt-in em Ajustes: agenda cada aviso no
     servidor com `sequence_id` fixo; cancela quando o alarme local toca) + `KeepAliveService` (monitor em primeiro plano,
-    confere alarmes a cada minuto). Diagnóstico em Ajustes: log de eventos de aviso (`Notifier.fireLog`) e status do `Push`.
+    confere alarmes a cada minuto). Diagnóstico em Ajustes: log de eventos de aviso (`Notifier.fireLog`) e status do `Push`; botão para a Inicialização automática da ASUS/ROG.
   - IA: `Ai.kt` (`Settings`, `AiClient`, `Processor`, `MetaRefresh`): Gemini, Groq/compatível, OpenRouter, Mistral, Claude.
     Chaves ficam em SharedPreferences `settings` (nunca no código/repositório).
   - UI/avisos: `MainActivity` (5 mil linhas; abas Hoje, Sessões, Slots, Diretor, Ajustes), `OsmUi`, `Illustrations`,
@@ -71,7 +71,7 @@ Sem slot confiável nada é gravado. Texto de tela: sempre comparar com `Txt.nor
 - **Implementadas:** captura/OCR por slot; geração de tática (simulação `WinModel` + IA, validada por
   `TacticValidator`); aprendizado com gols reais (`Learned`); calendário/próximo jogo; eventos do OSM só do calendário da
   comunidade (`source == "calendario"`); cronômetros de treino/estádio/olheiro/missões com alarmes; bolha por cima do
-  jogo com dicas; "Telas para atualizar" com caminho de menu; Médico/Advogado (jogadores fora do 11); Especialistas;
+  jogo com dicas; "Telas para atualizar" com caminho de menu; Médico/Advogado (jogadores fora do 11; lê conversa, cartão e "em curso" + cronômetro; sugere mandar ao médico/advogado, grátis 8 h); Especialistas;
   cartão amarelo (leitura); sponsors; diagnóstico exportável.
 - **Incompletas / não confirmadas:** avisos com o app fechado no ROG/ASUS: o teste local "Testar fechado" **falhou**
   no aparelho (o OEM apaga os alarmes ao fechar o app); a reserva `Push` (ntfy; o servidor foi testado por curl: agenda e entrega no horário) e o `KeepAliveService` foram criados, **não validados em aparelho**; leitura de Médico/Advogado **com jogadores na lista** (falta print real); aba "Lista de

@@ -271,16 +271,17 @@ class CaptureService : AccessibilityService() {
         for (h in list.take(6)) {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
-                setPadding((8 * dp).toInt(), (8 * dp).toInt(), (8 * dp).toInt(), (8 * dp).toInt())
+                setPadding((8 * dp).toInt(), (5 * dp).toInt(), (8 * dp).toInt(), (5 * dp).toInt())
                 background = GradientDrawable().apply { cornerRadius = 12 * dp; setColor(0x33FFFFFF) }
             }
             row.addView(TextView(this).apply { text = h.icon; textSize = 18f; setPadding(0, 0, (8 * dp).toInt(), 0) })
             val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             col.addView(TextView(this).apply {
-                text = h.title; setTextColor(android.graphics.Color.WHITE); textSize = 13f
+                text = h.title; setTextColor(android.graphics.Color.WHITE); textSize = 12.5f; maxLines = 2
+                ellipsize = android.text.TextUtils.TruncateAt.END
                 setTypeface(typeface, android.graphics.Typeface.BOLD)
             })
-            col.addView(TextView(this).apply { text = h.detail; setTextColor(0xFFB8C7E6.toInt()); textSize = 11f; maxLines = if (allowDone) 3 else 30 })
+            col.addView(TextView(this).apply { text = h.detail; setTextColor(0xFFB8C7E6.toInt()); textSize = 10.5f; maxLines = if (allowDone) 2 else 30; ellipsize = android.text.TextUtils.TruncateAt.END })
             row.addView(col, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
             if (allowDone) {
                 val done = TextView(this).apply {
@@ -295,7 +296,7 @@ class CaptureService : AccessibilityService() {
                 }
                 row.addView(done)
             }
-            lv.addView(row, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = (6 * dp).toInt() })
+            lv.addView(row, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = (4 * dp).toInt() })
         }
         card.visibility = View.VISIBLE
         overlayBox?.post { overlayBox?.let { markBounds(it) } }
@@ -420,7 +421,7 @@ class CaptureService : AccessibilityService() {
         // a lista não passa de ~55% da tela (o resto rola)
         scroll.layoutParams = LinearLayout.LayoutParams(maxW, LinearLayout.LayoutParams.WRAP_CONTENT)
         scroll.viewTreeObserver.addOnGlobalLayoutListener {
-            val cap = (resources.displayMetrics.heightPixels * 0.55f).toInt()
+            val cap = (resources.displayMetrics.heightPixels * 0.62f).toInt()
             if (scroll.height > cap) scroll.layoutParams = scroll.layoutParams.apply { height = cap }
         }
         val notice = chip("", 0xF2FFB300.toInt(), dp).apply {

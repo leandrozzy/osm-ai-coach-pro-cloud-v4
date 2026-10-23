@@ -18,9 +18,10 @@ object Screens {
         t.contains("especialistas") && (t.contains("grandes penalidades") || t.contains("capitao")) &&
             (t.contains("substituir jogador") || t.contains("livres")) -> ScreenType.SPECIALISTS
         // o menu lateral lista os dois; a tela de cada um tem só o seu nome e o aviso de "ninguém"/a lista
-        t.contains("medico") && !t.contains("advogado") && (t.contains("lesion") || t.contains("lesao") || t.contains("nao tens")) -> ScreenType.DOCTOR
+        t.contains("medico") && !t.contains("advogado") &&
+            (t.contains("lesion") || t.contains("lesao") || t.contains("nao tens") || t.contains("tratamento") || t.contains("tratar")) -> ScreenType.DOCTOR
         t.contains("advogado") && !t.contains("medico") &&
-            (t.contains("suspens") || t.contains("expuls") || t.contains("castig") || t.contains("nao tens")) -> ScreenType.LAWYER
+            (t.contains("suspens") || t.contains("expuls") || t.contains("castig") || t.contains("nao tens") || t.contains("recurso") || t.contains("recorr")) -> ScreenType.LAWYER
         Regex("acordo de patrocinio").findAll(t).count() >= 2 -> ScreenType.SPONSORS
         t.contains("resultados do olheiro") ||
             (t.contains("seleciona uma posicao") && t.contains("procurar jogadores")) ||
@@ -76,7 +77,7 @@ object Screens {
             if (s.length in 3..40 && Txt.letters(s) >= 3) lines.put(s)
         }
         // Advogado "A apresentar recurso..." + cronômetro: recurso em andamento
-        val busy = t.contains("a apresentar recurso")
+        val busy = t.contains("a apresentar recurso") || t.contains("tratamento em curso")
         val secs = if (busy) o.lines.mapNotNull { Parsers.timerSecs(it.text) }.firstOrNull() else null
         return JSONObject().put("empty", empty).put("lines", lines).put("busy", busy).put("endsIn", secs ?: JSONObject.NULL)
     }

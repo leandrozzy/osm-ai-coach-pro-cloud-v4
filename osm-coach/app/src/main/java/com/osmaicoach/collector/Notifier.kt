@@ -202,6 +202,7 @@ object Notifier {
                 if (e.key == "mission_week") "🎯 A semana de missões reiniciou" else "🎯 Novas missões disponíveis",
                 "Abra o OSM → Missões: elas dão Boss Coins e renovam sozinhas."
             )
+            e.doctor -> Pair("🩹 S$slot • O tratamento do médico terminou", "$team: abra o OSM → Médico e veja se o jogador foi liberado.")
             e.lawyer -> Pair("⚖ S$slot • O recurso do advogado terminou", "$team: abra o OSM → Advogado e veja se o jogador foi liberado.")
             e.scout -> Pair("🔎 S$slot • O olheiro voltou", "$team: abra o OSM → Olheiro e veja os jogadores que ele encontrou.")
             e.training -> Pair("🏋 S$slot • Treino terminou: $label", "$team: abra o OSM, reclame o treino e coloque outro jogador para não perder tempo de treino.")

@@ -48,6 +48,7 @@ object Playbook {
         val prepAt: Long? = null,
         /** O advogado já está com um recurso em andamento (cronômetro lido). */
         val lawyerBusy: Boolean = false,
+        val doctorBusy: Boolean = false,
         /** Situação de cada card do estádio como o jogo mostra ("Relvado" -> "concluir melhoria" ou "665K + 18h"). */
         val stadiumStatus: Map<String, String> = emptyMap(),
         /** Jogadores com cartão amarelo (coluna Estado do plantel). */
@@ -291,11 +292,14 @@ object Playbook {
             val parts = i.injured.map { nameOf(it) + " (lesão)" } + i.suspended.map { nameOf(it) + " (suspenso)" }
             out.add(Tip("🚑", "Fora do próximo jogo: " + parts.joinToString(), "O 11 sugerido já deixa de fora quem está no Médico ou no Advogado. Se faltar gente na posição, reforce o banco.", 72, 4))
         }
+        if (i.injured.isNotEmpty() && !i.doctorBusy) {
+            out.add(Tip("🩹", "Mande ao médico: " + i.injured.joinToString { nameOf(it) }, "Menu ☰ → Médico → Iniciar (8 h, grátis). Não use \"Tratar imediatamente\" (gasta Boss Coins).", 80, 4))
+        }
         if (i.suspended.isNotEmpty() && !i.lawyerBusy) {
             out.add(
                 Tip(
                     "⚖", "Mande ao advogado: " + i.suspended.joinToString { nameOf(it) },
-                    "Recurso grátis: Menu ☰ → Advogado → Iniciar (8 h). Não use \"Recorre imediatamente\" (gasta Boss Coins).", 80, 4
+                    "Menu ☰ → Advogado → Iniciar (8 h, grátis). Não use \"Recorre imediatamente\" (gasta Boss Coins).", 80, 4
                 )
             )
         }
@@ -340,7 +344,7 @@ object Playbook {
         // 5) estádio: obra pronta para concluir; depois Treino até 2★ → Capacidade → Relvado 1★ → Treino 3★ → equilibrar
         val toClaim = i.stadiumStatus.filter { it.value.contains("concluir") }.keys.toList()
         if (toClaim.isNotEmpty()) {
-            out.add(Tip("🏗", "Conclua o melhoramento do estádio: ${toClaim.joinToString()}", "A obra já terminou: toque em Concluir no Estádio para liberar a próxima.", 87, 5))
+            out.add(Tip("🏗", "Conclua o melhoramento do estádio: ${toClaim.joinToString()}", "Toque em Concluir no Estádio para liberar a próxima.", 87, 5))
         }
         if (toClaim.isEmpty() && !i.stadiumBuilding && (i.capLevel != null || i.trainLevel != null || i.pitchLevel != null)) {
             val order = listOf(

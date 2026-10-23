@@ -749,10 +749,11 @@ class Repo(private val ctx: Context) {
                 return 1
             }
             ScreenType.DOCTOR, ScreenType.LAWYER -> {
-                if (ex.type == ScreenType.LAWYER) {
+                run {
+                    val tk = if (ex.type == ScreenType.LAWYER) "lawyer" else "doctor"
                     val secs = if (x.isNull("endsIn")) null else x.optLong("endsIn")
-                    if (secs != null) updateTimers(slot, mapOf("lawyer" to Pair(now + secs * 1000L, "advogado: recurso")), now)
-                    else if (!x.optBoolean("busy")) updateTimers(slot, mapOf("lawyer" to null), now)
+                    if (secs != null) updateTimers(slot, mapOf(tk to Pair(now + secs * 1000L, if (tk == "lawyer") "advogado: recurso" else "médico: tratamento")), now)
+                    else if (!x.optBoolean("busy")) updateTimers(slot, mapOf(tk to null), now)
                 }
                 val kind = if (ex.type == ScreenType.DOCTOR) "injured" else "suspended"
                 val mine = dao.playersOf(slot).filter { it.owner == "MY" }
